@@ -308,3 +308,15 @@ th { color: var(--fal-yellow); font-size: 0.8rem; text-transform: uppercase; }
 @media (max-width: 768px) {
   .betting-grid-responsive { grid-template-columns: 1fr !important; }
 }
+
+.club-logo-icon {
+  object-fit: contain;
+  display: inline-block;
+}
+
+.club-badge-inline {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-weight: bold;
+}
