@@ -1533,3 +1533,12 @@ function evaluateBetsForMatch(matchId, isKO, winningTeamId) {
   if (match) match.betsEvaluated = true;
   saveData();
 }
+// Hilfsfunktion: Gibt Wappen-HTML + Vereinsnamen aus
+function renderClubNameWithBadge(clubName) {
+  if (!clubName) return '';
+  const logoUrl = getClubLogoUrl(clubName); // Deine Funktion/Map für Logos
+  const badgeHtml = logoUrl 
+    ? `<img src="${escapeHtml(logoUrl)}" alt="${escapeHtml(clubName)}" class="club-logo-icon" style="width:18px; height:18px; vertical-align:middle; margin-right:4px;">`
+    : '';
+  return `<span class="club-badge-inline">${badgeHtml}${escapeHtml(clubName)}</span>`;
+}
