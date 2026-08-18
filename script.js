@@ -67,6 +67,8 @@ window.removeClub = removeClub;
 window.resetClubsToDefault = resetClubsToDefault;
 window.setClubLogo = setClubLogo;
 window.startInteractiveDraft = startInteractiveDraft;
+window.addDraftCheat = addDraftCheat;
+window.removeDraftCheat = removeDraftCheat;
 window.quickDrawTeams = quickDrawTeams;
 window.spinWheel = spinWheel;
 window.nextDraftStep = nextDraftStep;
@@ -151,6 +153,10 @@ let clubLogos = { ...DEFAULT_CLUB_LOGOS };     // { clubName: "https://...wappen
 let teams = [];
 let numGroups = 3;       // Wie viele Gruppen wurden zuletzt ausgelost? (2, 3 oder 4)
 let matchIntervalMinutes = 20; // Zeitabstand zwischen zwei Spiel-Slots (Hauptplatz+Nebenplatz), admin-einstellbar
+// Admin-"Cheat"-Vorauswahl fürs Glücksrad: [{ p1, p2, club }]. Legt fest, welche
+// zwei Spieler garantiert ins selbe Team kommen (und optional welchen Club sie
+// bekommen) - der Rest bleibt komplett echt zufällig. Siehe spinWheel().
+let draftCheats = [];
 let groups = [];
 let groupMatches = [];
 let koMatches = [];
@@ -536,6 +542,7 @@ db.ref('tournament').on('value', (snapshot) => {
   teams = data.teams || [];
   numGroups = data.numGroups || 3;
   matchIntervalMinutes = data.matchIntervalMinutes || 20;
+  draftCheats = data.draftCheats || [];
   groups = data.groups || [];
   groupMatches = data.groupMatches || [];
   koMatches = data.koMatches || [];
@@ -595,6 +602,7 @@ function saveData() {
     teams,
     numGroups,
     matchIntervalMinutes,
+    draftCheats,
     groups,
     groupMatches,
     koMatches,
@@ -640,6 +648,63 @@ function resetClubsToDefault() {
     clubLogos = { ...clubLogos, ...DEFAULT_CLUB_LOGOS };
     saveData();
   }
+}
+// Fügt eine neue Cheat-Vorauswahl hinzu: zwei Spieler, die garantiert ins selbe
+// Team kommen, optional mit festem Club. NUR für den echten Admin (nicht Ref) -
+// das ist bewusst geheim und soll nicht jeder mit erweiterten Rechten nutzen können.
+function addDraftCheat() {
+  if (!isAdmin()) return;
+  const p1Sel = document.getElementById('cheat-p1-select');
+  const p2Sel = document.getElementById('cheat-p2-select');
+  const clubSel = document.getElementById('cheat-club-select');
+  const p1 = p1Sel ? p1Sel.value : '';
+  const p2 = p2Sel ? p2Sel.value : '';
+  const club = clubSel ? clubSel.value : '';
+  if (!p1 || !p2 || p1 === p2) return alert('Bitte zwei unterschiedliche Spieler auswählen!');
+  draftCheats.push({ p1, p2, club: club || null });
+  saveData();
+  renderAll();
+}
+// Entfernt eine Cheat-Vorauswahl wieder
+function removeDraftCheat(index) {
+  if (!isAdmin()) return;
+  draftCheats.splice(index, 1);
+  saveData();
+  renderAll();
+}
+// Baut die Cheat-Vorauswahl-UI im Admin-Panel auf (Formular + Liste). Nur der echte
+// Admin sieht das überhaupt - für alle anderen bleibt diese Funktion komplett unsichtbar.
+function renderDraftCheatPanel() {
+  const container = document.getElementById('draft-cheat-container');
+  if (!container) return;
+  if (!isAdmin()) { container.innerHTML = ''; return; }
+  const usedNames = new Set();
+  draftCheats.forEach(c => { usedNames.add(c.p1); usedNames.add(c.p2); });
+  const availablePlayers = players.filter(p => !usedNames.has(p.name));
+  const playerOptions = availablePlayers.map(p => `<option value="${escapeHtml(p.name)}">${escapeHtml(p.name)}</option>`).join('');
+  const clubOptions = '<option value="">(Club zufällig)</option>' + availableClubs.map(c => `<option value="${escapeHtml(c)}">${escapeHtml(c)}</option>`).join('');
+  const list = draftCheats.length ? draftCheats.map((c, i) => `
+    <div style="display:flex; justify-content:space-between; align-items:center; background:rgba(0,0,0,0.25); padding:6px 10px; border-radius:6px; margin-bottom:4px; font-size:0.85em;">
+      <span><strong>${escapeHtml(c.p1)}</strong> &amp; <strong>${escapeHtml(c.p2)}</strong>${c.club ? ` → ${escapeHtml(c.club)}` : ' (Club zufällig)'}</span>
+      <span style="cursor:pointer; color:#ff4d4d; font-weight:bold;" onclick="removeDraftCheat(${i})">×</span>
+    </div>
+  `).join('') : '<p style="font-size:0.85em; opacity:0.7; margin:0 0 8px 0;">Noch keine Vorauswahl - alles bleibt komplett zufällig.</p>';
+
+  container.innerHTML = `
+    <div style="margin-top:14px; padding-top:12px; border-top:1px solid rgba(255,255,255,0.1);">
+      <p style="font-size:0.9em; font-weight:bold; margin:0 0 4px 0;">🎭 Cheat-Vorauswahl (nur für dich als Admin sichtbar)</p>
+      <p style="font-size:0.8em; opacity:0.75; margin:0 0 8px 0;">Lege optional fest, welche Spieler garantiert zusammen ins selbe Team kommen (und welchen Club sie bekommen). Alles ohne Vorauswahl bleibt echt zufällig - das Rad sieht für alle anderen trotzdem ganz normal aus.</p>
+      ${list}
+      ${availablePlayers.length >= 2 ? `
+        <div style="display:flex; gap:6px; flex-wrap:wrap; margin-top:4px;">
+          <select id="cheat-p1-select">${playerOptions}</select>
+          <select id="cheat-p2-select">${playerOptions}</select>
+          <select id="cheat-club-select">${clubOptions}</select>
+          <button class="btn-secondary btn-sm" onclick="addDraftCheat()">+ Hinzufügen</button>
+        </div>
+      ` : ''}
+    </div>
+  `;
 }
 // ============================================================================
 // 6. LIVE-AUSLOSUNGS-SHOW (Glücksrad) — 3-Schritt-System pro Team: Spieler 1 -> Spieler 2 -> Club.
@@ -902,7 +967,31 @@ function spinWheel() {
   if (!currentPool || currentPool.length === 0) {
     return alert("Keine Elemente mehr zum Auslosen im aktuellen Pool!");
   }
-  const targetIndex = Math.floor(Math.random() * currentPool.length);
+  // Cheat-Vorauswahl prüfen: Spieler 1 bleibt IMMER ehrlich zufällig (schließlich muss
+  // irgendwer als erstes gezogen werden) - erst bei Spieler 2 (dem Partner) und beim
+  // Club wird geschaut, ob der Admin für dieses Duo etwas vorausgewählt hat. Das Rad
+  // dreht sich optisch trotzdem ganz normal, landet aber gezielt auf dem passenden Feld.
+  let targetIndex = null;
+  if (draftState.currentStep === 1 && draftState.tempP1) {
+    const cheat = draftCheats.find(c => c.p1 === draftState.tempP1 || c.p2 === draftState.tempP1);
+    if (cheat) {
+      const partner = cheat.p1 === draftState.tempP1 ? cheat.p2 : cheat.p1;
+      const idx = currentPool.indexOf(partner);
+      if (idx !== -1) targetIndex = idx;
+    }
+  } else if (draftState.currentStep === 2 && draftState.tempP1 && draftState.tempP2) {
+    const cheat = draftCheats.find(c =>
+      (c.p1 === draftState.tempP1 && c.p2 === draftState.tempP2) ||
+      (c.p1 === draftState.tempP2 && c.p2 === draftState.tempP1)
+    );
+    if (cheat && cheat.club) {
+      const idx = currentPool.indexOf(cheat.club);
+      if (idx !== -1) targetIndex = idx;
+    }
+  }
+  if (targetIndex === null) {
+    targetIndex = Math.floor(Math.random() * currentPool.length);
+  }
   const targetItem = currentPool[targetIndex];
   const numItems = currentPool.length;
   const sliceAngle = (2 * Math.PI) / numItems;
@@ -973,6 +1062,7 @@ function finishDraft() {
   if (!hasElevated()) return;
   teams = [...draftState.pairs];
   draftState.active = false;
+  draftCheats = []; // erledigt - für die nächste Auslosung muss neu vorausgewählt werden
   saveData();
   showTab('teams');
   renderAll();
@@ -1956,9 +2046,8 @@ function calculateGroupStandings() {
     const stats = {};
     g.teams.forEach(tId => {
       const teamObj = teams.find(t => t.id === tId);
-      let displayName = teamObj ? teamObj.name : `Team ${tId}`;
-      if (teamObj && teamObj.club) displayName += ` (${teamObj.club})`;
-      stats[tId] = { teamId: tId, name: displayName, played: 0, gf: 0, ga: 0, diff: 0, points: 0 };
+      const displayName = teamObj ? teamObj.name : `Team ${tId}`;
+      stats[tId] = { teamId: tId, name: displayName, club: teamObj ? teamObj.club : '', played: 0, gf: 0, ga: 0, diff: 0, points: 0 };
     });
     groupMatches.filter(m => m.group === g.letter && m.played).forEach(m => {
       const t1 = stats[m.t1Id];
@@ -1998,7 +2087,7 @@ function renderGroups() {
             ${g.rankings.map((r, idx) => `
               <tr style="${idx === 2 ? 'opacity: 0.9;' : ''}">
                 <td>${idx + 1}</td>
-                <td><strong>${r.name}</strong></td>
+                <td>${clubLogoImg(r.club, 20)}<strong>${escapeHtml(r.name)}</strong></td>
                 <td>${r.played}</td>
                 <td>${r.gf}:${r.ga}</td>
                 <td>${r.diff > 0 ? '+' + r.diff : r.diff}</td>
@@ -2025,7 +2114,7 @@ function renderGroups() {
               ${thirdPlaces.map((r, idx) => `
                 <tr style="${idx < 2 ? 'background: rgba(0, 255, 100, 0.1);' : 'background: rgba(255, 0, 0, 0.1);'}">
                   <td>${idx + 1}</td>
-                  <td><strong>${r.name}</strong> (${r.group})</td>
+                  <td>${clubLogoImg(r.club, 20)}<strong>${escapeHtml(r.name)}</strong> (${escapeHtml(r.group)})</td>
                   <td>${r.played}</td>
                   <td>${r.gf}:${r.ga}</td>
                   <td>${r.diff > 0 ? '+' + r.diff : r.diff}</td>
@@ -2076,11 +2165,11 @@ function renderMatchBlock(m, isKO) {
       </div>
       <div style="margin: 6px 0;">
         <div style="font-size:1.05em; font-weight:bold;">
-          ${t1.name} <small style="opacity:0.8;">(${t1.p1} & ${t1.p2})</small> ${t1.club ? renderClubNameWithBadge(t1.club) : ''}
+          ${clubLogoImg(t1.club, 22)}${t1.name} <small style="opacity:0.8;">(${t1.p1} & ${t1.p2})</small>
         </div>
         <div style="font-size:0.8em; opacity:0.6; margin:2px 0;">vs</div>
         <div style="font-size:1.05em; font-weight:bold;">
-          ${t2.name} <small style="opacity:0.8;">(${t2.p1} & ${t2.p2})</small> ${t2.club ? renderClubNameWithBadge(t2.club) : ''}
+          ${clubLogoImg(t2.club, 22)}${t2.name} <small style="opacity:0.8;">(${t2.p1} & ${t2.p2})</small>
         </div>
       </div>
       <div style="display:flex; flex-direction:column; gap:8px;">
@@ -2146,6 +2235,7 @@ function renderAdminPanel() {
       ? `<button class="btn-secondary btn-sm" onclick="addTestPlayers()">🧪 Test-Spieler automatisch hinzufügen</button>`
       : '';
   }
+  renderDraftCheatPanel();
   // Zeitabstand-Eingabefeld mit dem aktuellen Wert synchron halten - aber nicht, während
   // der Admin gerade selbst darin tippt (sonst würde ein Live-Update seine Eingabe überschreiben)
   const intervalInput = document.getElementById('match-interval-input');
@@ -2241,9 +2331,9 @@ function renderBettingSystem() {
         <div style="background: rgba(255,255,255,0.05); padding: 12px; border-radius: 8px; margin-bottom: 10px; border: 1px solid rgba(255,255,255,0.1);">
           <div style="font-size: 0.85em; opacity: 0.8; margin-bottom: 5px;">${m.isKO ? m.round : m.group}</div>
           <div style="display: flex; justify-content: space-between; align-items: center; font-weight: bold; margin-bottom: 10px; flex-wrap:wrap; gap:6px;">
-            <span>${t1.name} ${t1.club ? renderClubNameWithBadge(t1.club) : ''}</span>
+            <span>${clubLogoImg(t1.club, 20)}${t1.name}</span>
             <span style="color: var(--fal-yellow);">VS</span>
-            <span>${t2.name} ${t2.club ? renderClubNameWithBadge(t2.club) : ''}</span>
+            <span>${clubLogoImg(t2.club, 20)}${t2.name}</span>
           </div>
           ${myExistingBet ? `
             <div style="text-align:center; font-size: 0.9em; color: var(--fal-yellow); background: rgba(0,0,0,0.2); padding: 5px; border-radius: 5px;">
