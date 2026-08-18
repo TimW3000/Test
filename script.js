@@ -44,12 +44,18 @@ window.removePlayer = removePlayer;
 window.toggleRef = toggleRef;
 window.setPlayerPassword = setPlayerPassword;
 window.removePlayerPassword = removePlayerPassword;
+window.requestOwnPassword = requestOwnPassword;
+window.confirmPendingPassword = confirmPendingPassword;
+window.rejectPendingPassword = rejectPendingPassword;
 window.toggleRegistrationLock = toggleRegistrationLock;
 window.drawGroups = drawGroups;
 window.drawKOPhase = drawKOPhase;
 window.drawSemifinals = drawSemifinals;
 window.drawFinals = drawFinals;
 window.resetTournament = resetTournament;
+window.resetKOPhase = resetKOPhase;
+window.resetGroupPhase = resetGroupPhase;
+window.resetTeamDraft = resetTeamDraft;
 window.updateTeamName = updateTeamName;
 window.submitMatchResult = submitMatchResult;
 window.confirmMatchResult = confirmMatchResult;
@@ -59,6 +65,7 @@ window.removeClub = removeClub;
 window.resetClubsToDefault = resetClubsToDefault;
 window.setClubLogo = setClubLogo;
 window.startInteractiveDraft = startInteractiveDraft;
+window.quickDrawTeams = quickDrawTeams;
 window.spinWheel = spinWheel;
 window.nextDraftStep = nextDraftStep;
 window.finishDraft = finishDraft;
@@ -138,6 +145,15 @@ function getPlayerObj(name) {
   if (!name) return null;
   return players.find(p => p.name.toLowerCase() === name.trim().toLowerCase());
 }
+// Merkt sich lokal, mit welcher "Passwort-Version" gerade eingeloggt wurde. Wird bei
+// jedem erfolgreichen Login aufgerufen. Setzt ein Admin/Ref später ein neues Passwort
+// (siehe setPlayerPassword/confirmPendingPassword), stimmt die Version nicht mehr überein
+// -> der Firebase-Listener meldet den Spieler automatisch ab (siehe Abschnitt 4), damit er
+// das neue Passwort tatsächlich einmal selbst eingeben muss.
+function markLoggedInPasswordVersion(name) {
+  const p = getPlayerObj(name);
+  localStorage.setItem('fifa_my_player_pwv', String(p && p.passwordVersion ? p.passwordVersion : 0));
+}
 // true, wenn der aktuell angemeldete Spieler der Admin ("Tim") ist
 function isAdmin() {
   return myPlayerName && myPlayerName.trim().toLowerCase() === 'tim';
@@ -164,6 +180,11 @@ function getMyTeam() {
 function isTournamentFinished() {
   const finale = koMatches.find(m => m.round === '🏆 FINALE');
   return !!(finale && finale.confirmed);
+}
+// true, sobald irgendein Spiel (Gruppe oder KO) gestartet oder bereits gespielt wurde.
+// Wird genutzt, um den Turniersieger-Tipp zu sperren, sobald das Turnier "live" ist.
+function hasTournamentStarted() {
+  return [...groupMatches, ...koMatches].some(m => m.started || m.played);
 }
 // Gibt ein kleines <img>-Wappen zurück, falls für den Club eine Logo-URL hinterlegt ist
 function clubLogoImg(clubName, size) {
@@ -266,6 +287,14 @@ function enterAsSpectator() {
   document.getElementById('app-header').style.display = 'flex';
   document.getElementById('app-nav').style.display = 'flex';
   document.getElementById('app-main').style.display = 'block';
+  renderUserBadge();
+  const adminBtn = document.getElementById('btn-admin');
+  if (adminBtn) adminBtn.style.display = hasElevated() ? 'inline-block' : 'none';
+  showTab('home');
+}
+// Zeigt den Namens-Badge im Header + (falls zutreffend) den "Passwort vorschlagen"-Button
+// bzw. den Hinweis, dass ein Passwort-Wunsch schon auf Bestätigung wartet.
+function renderUserBadge() {
   const userBadge = document.getElementById('user-badge');
   if (userBadge) {
     let roleTag = '';
@@ -275,13 +304,22 @@ function enterAsSpectator() {
       ? `Angemeldet als: <strong>${myPlayerName}</strong> ${roleTag}`
       : 'Modus: <strong>Zuschauer</strong>';
   }
-  const adminBtn = document.getElementById('btn-admin');
-  if (adminBtn) adminBtn.style.display = hasElevated() ? 'inline-block' : 'none';
-  showTab('home');
+  const pwAction = document.getElementById('user-password-action');
+  if (pwAction) {
+    const pObj = myPlayerName ? getPlayerObj(myPlayerName) : null;
+    if (!pObj || isAdmin()) {
+      pwAction.innerHTML = '';
+    } else if (pObj.pendingPassword) {
+      pwAction.innerHTML = `<span style="font-size:0.8em; color:var(--fal-yellow); margin-left:10px;">⏳ Passwort-Wunsch wartet auf Bestätigung</span>`;
+    } else {
+      pwAction.innerHTML = `<button class="btn-secondary btn-sm" style="margin-left: 10px;" onclick="requestOwnPassword()">🔑 Passwort vorschlagen</button>`;
+    }
+  }
 }
 // Meldet den aktuellen Spieler ab und zeigt wieder die Rollenauswahl beim Start
 function switchUser() {
   localStorage.removeItem('fifa_my_player');
+  localStorage.removeItem('fifa_my_player_pwv');
   myPlayerName = null;
   document.getElementById('app-header').style.display = 'none';
   document.getElementById('app-nav').style.display = 'none';
@@ -352,6 +390,7 @@ function selectMyPlayer(name) {
   }
   myPlayerName = name;
   localStorage.setItem('fifa_my_player', name);
+  markLoggedInPasswordVersion(name);
   enterAsSpectator();
 }
 // Legt einen komplett neuen Spieler an und meldet ihn direkt als "mich" an
@@ -371,6 +410,7 @@ function registerNewPlayer() {
   players.push({ name: name, isRef: false, password: null });
   myPlayerName = name;
   localStorage.setItem('fifa_my_player', name);
+  markLoggedInPasswordVersion(name);
   saveData();
   enterAsSpectator();
 }
@@ -399,6 +439,7 @@ function confirmAdminPassword() {
       }
       myPlayerName = pendingAdminLogin.name;
       localStorage.setItem('fifa_my_player', myPlayerName);
+      markLoggedInPasswordVersion(myPlayerName);
       pendingAdminLogin = false;
       enterAsSpectator();
     } else {
@@ -409,6 +450,7 @@ function confirmAdminPassword() {
     if (pObj && pObj.password === pwd) {
       myPlayerName = pendingAdminLogin.name;
       localStorage.setItem('fifa_my_player', myPlayerName);
+      markLoggedInPasswordVersion(myPlayerName);
       pendingAdminLogin = false;
       enterAsSpectator();
     } else {
@@ -456,12 +498,33 @@ db.ref('tournament').on('value', (snapshot) => {
   if (myPlayerName && !getPlayerObj(myPlayerName)) {
     myPlayerName = null;
     localStorage.removeItem('fifa_my_player');
+    localStorage.removeItem('fifa_my_player_pwv');
     document.getElementById('app-header').style.display = 'none';
     document.getElementById('app-nav').style.display = 'none';
     document.getElementById('app-main').style.display = 'none';
     resetRoleSelection();
     document.getElementById('role-selection-modal').style.display = 'flex';
     return;
+  }
+  // Wurde für den eigenen Spieler gerade ein Passwort gesetzt/bestätigt (siehe
+  // setPlayerPassword/confirmPendingPassword), stimmt die lokal gemerkte Passwort-Version
+  // nicht mehr mit der aktuellen überein -> zwingt zur erneuten Anmeldung MIT Passwort.
+  if (myPlayerName) {
+    const myPObj = getPlayerObj(myPlayerName);
+    const currentVersion = (myPObj && myPObj.passwordVersion) || 0;
+    const knownVersion = parseInt(localStorage.getItem('fifa_my_player_pwv') || '0', 10);
+    if (currentVersion > knownVersion) {
+      myPlayerName = null;
+      localStorage.removeItem('fifa_my_player');
+      localStorage.removeItem('fifa_my_player_pwv');
+      document.getElementById('app-header').style.display = 'none';
+      document.getElementById('app-nav').style.display = 'none';
+      document.getElementById('app-main').style.display = 'none';
+      resetRoleSelection();
+      document.getElementById('role-selection-modal').style.display = 'flex';
+      alert('🔑 Für dein Konto wurde ein neues Passwort gesetzt/bestätigt. Bitte melde dich erneut damit an.');
+      return;
+    }
   }
   renderAll();
   handleLiveDraftUI();
@@ -561,6 +624,41 @@ function startInteractiveDraft() {
     handleLiveDraftUI();
   }
 }
+// Lost Teams & Clubs SOFORT ohne die Glücksrad-Show/Animation aus - praktisch zum
+// schnellen Testen, wenn man nicht jedes Mal die vollen Dreh-Animationen abwarten will.
+// Nutzt exakt dieselben Regeln wie die Live-Show (zufällige 2er-Duos + zufälliger Club).
+function quickDrawTeams() {
+  if (!hasElevated()) return;
+  if (players.length < 4 || players.length % 2 !== 0) {
+    return alert(`Du benötigst eine gerade und ausreichend hohe Anzahl an Spielern (aktuell: ${players.length}).`);
+  }
+  if (availableClubs.length < (players.length / 2)) {
+    return alert(`Du hast zu wenige Profi-Clubs in der Liste! Mindestens ${players.length / 2} benötigt.`);
+  }
+  if (!confirm('Teams & Clubs SOFORT ohne Glücksrad-Show auslosen?')) return;
+  const shuffledPlayers = [...players.map(p => p.name)].sort(() => Math.random() - 0.5);
+  const shuffledClubs = [...availableClubs].sort(() => Math.random() - 0.5);
+  teams = [];
+  groups = [];
+  groupMatches = [];
+  koMatches = [];
+  tips = {};
+  tipsEvaluated = false;
+  for (let i = 0; i < shuffledPlayers.length; i += 2) {
+    teams.push({
+      id: teams.length + 1,
+      name: `Team ${teams.length + 1}`,
+      p1: shuffledPlayers[i],
+      p2: shuffledPlayers[i + 1],
+      club: shuffledClubs[teams.length]
+    });
+  }
+  draftState = { active: false, currentStep: 0, tempP1: null, tempP2: null, remainingPlayers: [], remainingClubs: [], spinning: false, startTime: null, targetAngle: 0, duration: 4000, lastDrawnItem: null, pairs: [] };
+  saveData();
+  showTab('teams');
+  renderAll();
+  alert('⚡ Teams & Clubs wurden sofort ausgelost!');
+}
 
 // Zeigt/versteckt das Auslosungs-Modal je nach draftState und rendert den aktuellen Schritt
 function handleLiveDraftUI() {
@@ -614,6 +712,9 @@ function renderDraftStep() {
     </div>
     ${hasElevated() ? `
       <div style="margin-top:15px; display:flex; gap:10px; justify-content:center;">
+        <button class="btn-secondary role-btn" style="background:#e74c3c; color:white; border:none;" onclick="cancelDraft()">
+          🛑 Abbrechen
+        </button>
         ${!draftState.spinning && !draftState.lastDrawnItem ? `
           <button class="btn-primary role-btn" id="btn-spin-wheel" onclick="spinWheel()">
             🎰 Rad drehen
@@ -624,9 +725,6 @@ function renderDraftStep() {
             Weiter ➡️
           </button>
         ` : ''}
-        <button class="btn-secondary role-btn" style="background:#e74c3c; color:white; border:none;" onclick="cancelDraft()">
-          🛑 Abbrechen
-        </button>
       </div>
     ` : `
       <p style="font-size:0.9em; opacity:0.8; margin-top:10px;">
@@ -897,7 +995,12 @@ function setPlayerPassword(index) {
   if (pwd !== null) {
     if (pwd.trim() === '') return alert('Passwort darf nicht leer sein.');
     players[index].password = pwd.trim();
+    players[index].pendingPassword = null;
+    // Version hochzählen -> zwingt den Spieler (falls gerade angemeldet) zur erneuten
+    // Anmeldung MIT Passwort, siehe markLoggedInPasswordVersion & der Check in Abschnitt 4.
+    players[index].passwordVersion = (players[index].passwordVersion || 0) + 1;
     saveData();
+    alert(`✅ Passwort gesetzt. ${players[index].name} muss sich beim nächsten Laden neu mit diesem Passwort anmelden.`);
   }
 }
 // Entfernt das Passwort eines Spielers wieder (Account ist danach offen)
@@ -907,6 +1010,37 @@ function removePlayerPassword(index) {
     players[index].password = null;
     saveData();
   }
+}
+// Spieler schlägt SELBST ein Passwort vor - wird erst aktiv, wenn ein Admin/Ref es bestätigt
+function requestOwnPassword() {
+  if (!myPlayerName) return;
+  const pObj = getPlayerObj(myPlayerName);
+  if (!pObj) return;
+  const pwd = prompt('Welches Passwort möchtest du für dein Konto vorschlagen?\n(Ein Admin muss es noch bestätigen, bevor es aktiv wird.)');
+  if (pwd === null) return;
+  if (pwd.trim() === '') return alert('Passwort darf nicht leer sein.');
+  pObj.pendingPassword = pwd.trim();
+  saveData();
+  alert('✅ Dein Passwort-Wunsch wurde gespeichert und wartet auf Bestätigung durch den Admin.');
+}
+// Admin/Ref bestätigt einen von einem Spieler selbst vorgeschlagenen Passwort-Wunsch -> wird aktiv
+function confirmPendingPassword(index) {
+  if (!hasElevated()) return;
+  const p = players[index];
+  if (!p || !p.pendingPassword) return;
+  p.password = p.pendingPassword;
+  p.pendingPassword = null;
+  p.passwordVersion = (p.passwordVersion || 0) + 1;
+  saveData();
+  alert(`✅ Passwort-Wunsch von ${p.name} bestätigt. ${p.name} muss sich beim nächsten Laden neu mit diesem Passwort anmelden.`);
+}
+// Admin/Ref lehnt einen vorgeschlagenen Passwort-Wunsch ab (Spieler kann einen neuen vorschlagen)
+function rejectPendingPassword(index) {
+  if (!hasElevated()) return;
+  const p = players[index];
+  if (!p) return;
+  p.pendingPassword = null;
+  saveData();
 }
 // Sperrt/entsperrt die Neu-Registrierung, damit sich keine weiteren Spieler mehr anmelden können
 function toggleRegistrationLock() {
@@ -1140,10 +1274,67 @@ function drawFinals() {
     showTab('matches');
   }
 }
-// Löscht nach Bestätigung das komplette Turnier (Spieler, Teams, Ergebnisse, Coins, Wetten)
+// Erstattet allen Spielern die Coins, die sie auf gelöschte Spiele gesetzt hatten,
+// und entfernt diese Wetten danach (verhindert, dass Coins bei einem Reset "verschwinden")
+function refundAndClearBets(isKO) {
+  bets.filter(b => b.isKO === isKO).forEach(b => {
+    userBalances[b.playerName] = (userBalances[b.playerName] || 0) + b.amount;
+  });
+  bets = bets.filter(b => b.isKO !== isKO);
+}
+// Setzt NUR die KO-Phase zurück (Viertelfinale/Halbfinale/Finale). Gruppenphase & Teams bleiben erhalten.
+function resetKOPhase() {
+  if (!hasElevated()) return;
+  if (koMatches.length === 0) return alert('Es gibt aktuell keine KO-Phase zum Zurücksetzen.');
+  if (!confirm('KO-Phase wirklich zurücksetzen? Viertelfinale/Halbfinale/Finale werden gelöscht (offene Wetten darauf werden erstattet). Die Gruppenphase bleibt erhalten.')) return;
+  koMatches = [];
+  refundAndClearBets(true);
+  saveData();
+  renderAll();
+  alert('✅ KO-Phase wurde zurückgesetzt.');
+}
+// Setzt die Gruppenphase zurück (Gruppen + Gruppenspiele) und damit zwangsläufig auch die KO-Phase.
+// Die Teams selbst bleiben erhalten, es wird nur neu in Gruppen gelost.
+function resetGroupPhase() {
+  if (!hasElevated()) return;
+  if (groups.length === 0) return alert('Es gibt aktuell keine Gruppenphase zum Zurücksetzen.');
+  if (!confirm('Gruppenphase wirklich zurücksetzen? Gruppen, Gruppenspiele UND die komplette KO-Phase werden gelöscht (offene Wetten werden erstattet). Die Teams bleiben erhalten.')) return;
+  groups = [];
+  groupMatches = [];
+  koMatches = [];
+  refundAndClearBets(false);
+  refundAndClearBets(true);
+  saveData();
+  renderAll();
+  alert('✅ Gruppenphase wurde zurückgesetzt.');
+}
+// Setzt die komplette Team-Auslosung zurück (Teams, Gruppen, Spielplan, KO-Phase, Tipps).
+// Die Spielerliste selbst bleibt erhalten - es wird nur neu in Teams gelost.
+function resetTeamDraft() {
+  if (!hasElevated()) return;
+  if (teams.length === 0) return alert('Es gibt aktuell keine Teams zum Zurücksetzen.');
+  if (!confirm('Team-Auslosung wirklich zurücksetzen? Teams, Gruppen, Spielplan, KO-Phase und alle Tipps werden gelöscht (offene Wetten/Tipps werden erstattet). Die Spielerliste bleibt erhalten.')) return;
+  teams = [];
+  groups = [];
+  groupMatches = [];
+  koMatches = [];
+  numGroups = 3;
+  refundAndClearBets(false);
+  refundAndClearBets(true);
+  Object.keys(tips).forEach(name => {
+    userBalances[name] = (userBalances[name] || 0) + tips[name].amount;
+  });
+  tips = {};
+  tipsEvaluated = false;
+  draftState = { active: false, currentStep: 0, tempP1: null, tempP2: null, remainingPlayers: [], remainingClubs: [], spinning: false, startTime: null, targetAngle: 0, duration: 4000, lastDrawnItem: null, pairs: [] };
+  saveData();
+  renderAll();
+  alert('✅ Team-Auslosung wurde zurückgesetzt.');
+}
+// Löscht nach Bestätigung das KOMPLETTE Turnier (Spieler, Teams, Ergebnisse, Coins, Wetten) - die "Nuklear-Option"
 function resetTournament() {
   if (!hasElevated()) return;
-  if (confirm('Turnier wirklich zurücksetzen? Alle Teams, Spieler, Ergebnisse und Coins werden gelöscht!')) {
+  if (confirm('Turnier wirklich KOMPLETT zurücksetzen? Alle Spieler, Teams, Ergebnisse und Coins werden unwiderruflich gelöscht!')) {
     players = [];
     teams = [];
     numGroups = 3;
@@ -1272,6 +1463,7 @@ function markMatchStarted(matchId, isKO) {
 //     und wird nach JEDER Datenänderung neu ausgeführt.
 // ============================================================================
 function renderAll() {
+  renderUserBadge();
   renderHome();
   renderTeams();
   renderGroups();
@@ -1333,6 +1525,10 @@ function renderTipRound() {
     `;
     return;
   }
+  if (hasTournamentStarted()) {
+    container.innerHTML = '<p class="empty-state">🔒 Das Tippspiel ist geschlossen – das erste Spiel hat bereits begonnen.</p>';
+    return;
+  }
   const currentBalance = getUserBalance(myPlayerName);
   const options = teams.map(t => `<option value="${t.id}">${t.name}${t.club ? ' (' + t.club + ')' : ''}</option>`).join('');
   container.innerHTML = `
@@ -1366,6 +1562,7 @@ function renderTipResultsBreakdown() {
 function submitTip() {
   if (!myPlayerName) return;
   if (tips[myPlayerName]) return alert('Du hast bereits getippt – das kann nicht mehr geändert werden.');
+  if (hasTournamentStarted()) return alert('🔒 Das Tippspiel ist geschlossen – das erste Spiel hat bereits begonnen.');
   const teamSelect = document.getElementById('tip-team-select');
   const amountInput = document.getElementById('tip-amount-input');
   if (!teamSelect || !amountInput) return;
@@ -1423,6 +1620,38 @@ function calculatePlayerStats() {
   return Object.values(stats);
 }
 // Zeigt Live-Statistik-Kacheln: Torschützenkönig, beste Abwehr, höchste Siegquote, Fan-Liebling
+// Zeigt eine Kachel mit den eigenen Wetten auf aktuell laufende (vom Admin/Ref
+// als "gestartet" markierte, aber noch nicht ausgewertete) Spiele - inkl. Team,
+// auf das gesetzt wurde. So sieht man auf dem Dashboard sofort: "Wo hab ich grad Geld drauf?"
+function renderLiveBetsTile() {
+  if (!myPlayerName) return '';
+  const liveMatches = [
+    ...groupMatches.map(m => ({ ...m, isKO: false })),
+    ...koMatches.map(m => ({ ...m, isKO: true }))
+  ].filter(m => m.started && !m.betsEvaluated);
+  const myLiveBets = liveMatches
+    .map(m => ({ match: m, bet: bets.find(b => b.matchId === m.id && b.isKO === m.isKO && b.playerName === myPlayerName) }))
+    .filter(x => x.bet);
+  if (myLiveBets.length === 0) return '';
+  const rows = myLiveBets.map(({ match, bet }) => {
+    const t1 = teams.find(t => t.id === match.t1Id);
+    const t2 = teams.find(t => t.id === match.t2Id);
+    const chosenTeam = teams.find(t => t.id === bet.chosenTeamId);
+    return `
+      <div style="padding:8px 0; border-bottom:1px solid rgba(255,255,255,0.08);">
+        <div style="font-size:0.8em; opacity:0.7;">${match.isKO ? match.round : match.group} • 🔴 Läuft gerade</div>
+        <div style="font-size:0.9em;">${t1 ? t1.name : '?'} vs ${t2 ? t2.name : '?'}</div>
+        <div style="font-size:0.9em; margin-top:2px;">Deine Wette: <strong style="color:var(--fal-yellow);">${bet.amount} 🪙</strong> auf <strong>${chosenTeam ? chosenTeam.name : '?'}</strong></div>
+      </div>
+    `;
+  }).join('');
+  return `
+    <div class="admin-card" style="border: 1px solid var(--fal-red); grid-column: 1 / -1;">
+      <p class="stat-label" style="color:var(--fal-red); margin-bottom:4px;">🔴 Laufende Spiele mit deiner Wette</p>
+      ${rows}
+    </div>
+  `;
+}
 function renderDashboard() {
   const container = document.getElementById('dashboard-content');
   if (!container) return;
@@ -1448,6 +1677,7 @@ function renderDashboard() {
   }
   container.innerHTML = `
     <div class="grid-container">
+      ${renderLiveBetsTile()}
       <div class="admin-card stat-tile">
         <p class="stat-label">⚽ Torschützenkönig</p>
         <p class="stat-value">${topScorer && topScorer.goals > 0 ? `${topScorer.name} (${topScorer.goals} Tore)` : 'Noch keine Tore'}</p>
@@ -1706,9 +1936,14 @@ function renderAdminPanel() {
             <strong>${index + 1}. ${p.name}</strong>
             ${p.isRef ? '<span style="color:var(--fal-yellow); font-size:0.85em;">[🟨 Ref]</span>' : ''}
             ${hasPW ? '<span style="font-size:0.85em; opacity:0.8;">[🔒 PW]</span>' : ''}
+            ${p.pendingPassword ? '<span style="color:var(--fal-yellow); font-size:0.85em;">[⏳ Passwort-Wunsch]</span>' : ''}
           </div>
 
           <div style="display:flex; gap: 5px; flex-wrap:wrap;">
+            ${p.pendingPassword ? `
+              <button class="btn-primary btn-sm" style="background:#2ecc71; color:#fff;" onclick="confirmPendingPassword(${index})">✅ PW-Wunsch bestätigen</button>
+              <button class="btn-danger btn-sm" onclick="rejectPendingPassword(${index})">❌ Ablehnen</button>
+            ` : ''}
             ${isAdmin() ? `<button class="${isRefBtnClass} btn-sm" onclick="toggleRef(${index})">${p.isRef ? '🟨 Ref (Aktiv)' : 'Ref vergeben'}</button>` : ''}
             ${hasPW
               ? `<button class="btn-danger btn-sm" onclick="removePlayerPassword(${index})">PW löschen</button>`

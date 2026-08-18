@@ -15,8 +15,9 @@
   <!-- Startscreen / Rollenauswahl-Modal -->
 <div id="role-selection-modal" class="modal-overlay" style="display: flex;">
   <div class="modal-content">
-    <h3>Willkommen zum Turnier</h3>
-    
+    <img src="https://spvgg-fal.de/templates/yootheme/cache/dc/Logo-2017-web-dc30d58a.webp" alt="SpVgg FAL Wappen" class="modal-logo modal-logo-big">
+    <h3>Willkommen zum FAL FIFA Turnier</h3>
+
     <!-- 1. Hauptoptionen -->
     <div id="role-options">
       <button class="btn-primary" style="width: 100%; margin-bottom: 8px;" onclick="showNewPlayerInput()">➕ Neuer Spieler</button>
@@ -29,8 +30,8 @@
       <h4>Neuen Spieler registrieren</h4>
       <input type="text" id="self-player-name" placeholder="Dein Name..." style="width: 100%; padding: 8px; margin-bottom: 10px; box-sizing: border-box;">
       <div style="display: flex; gap: 8px;">
-        <button class="btn-primary" style="flex: 1;" onclick="registerNewPlayer()">Registrieren</button>
         <button class="btn-secondary" style="flex: 1;" onclick="resetRoleSelection()">Zurück</button>
+        <button class="btn-primary" style="flex: 1;" onclick="registerNewPlayer()">Registrieren</button>
       </div>
     </div>
 
@@ -46,8 +47,8 @@
       <h4 id="password-prompt-text">🔒 Passwort erforderlich</h4>
       <input type="password" id="admin-password-input" placeholder="Passwort..." style="width: 100%; padding: 8px; margin-bottom: 10px; box-sizing: border-box;">
       <div style="display: flex; gap: 8px;">
-        <button class="btn-primary" style="flex: 1;" onclick="confirmAdminPassword()">Bestätigen</button>
         <button class="btn-secondary" style="flex: 1;" onclick="resetRoleSelection()">Zurück</button>
+        <button class="btn-primary" style="flex: 1;" onclick="confirmAdminPassword()">Bestätigen</button>
       </div>
     </div>
   </div>
@@ -69,6 +70,7 @@
     </div>
     <div id="user-badge-container">
       <span id="user-badge"></span>
+      <span id="user-password-action"></span>
       <button class="btn-secondary btn-sm" id="btn-switch-user" style="margin-left: 10px;">Wechseln</button>
     </div>
   </header>
@@ -183,11 +185,22 @@
         <h3>Turnier-Steuerung</h3>
         <div style="display: flex; flex-wrap: wrap; gap: 10px;">
           <button class="btn-primary" style="background-color:#ffc800; color:#000;" onclick="startInteractiveDraft()">🎰 1. Teams & Clubs per Glücksrad auslosen</button>
+          <button class="btn-secondary" onclick="quickDrawTeams()">⚡ 1b. Sofort auslosen (ohne Show/Animation)</button>
           <button class="btn-primary" onclick="drawGroups()">📊 2. Gruppen auslosen (Anzahl wählbar) & Spielplan erstellen</button>
           <button class="btn-primary" onclick="drawKOPhase()">⚔️ 3. KO-Phase auslosen (Viertel- oder direkt Halbfinale)</button>
           <button class="btn-primary" onclick="drawSemifinals()">🥈 4. Halbfinale auslosen (nur bei 3/4 Gruppen)</button>
           <button class="btn-primary" onclick="drawFinals()">🏆 5. Finale & Spiel um Platz 3 erstellen</button>
-          <button class="btn-danger" onclick="resetTournament()">🗑️ Turnier komplett zurücksetzen</button>
+        </div>
+      </div>
+
+      <div class="admin-card">
+        <h3>🗑️ Zurücksetzen</h3>
+        <p style="font-size:0.85em; opacity:0.8;">Jede Stufe setzt nur das zurück, was danach kommt (siehe Turnier-Steuerung oben) – offene Wetten/Tipps auf gelöschte Spiele werden dabei automatisch erstattet.</p>
+        <div style="display: flex; flex-wrap: wrap; gap: 10px;">
+          <button class="btn-danger" onclick="resetKOPhase()">🗑️ Nur KO-Phase zurücksetzen</button>
+          <button class="btn-danger" onclick="resetGroupPhase()">🗑️ Gruppenphase zurücksetzen (+ KO)</button>
+          <button class="btn-danger" onclick="resetTeamDraft()">🗑️ Team-Auslosung zurücksetzen (+ Gruppen, KO, Tipps)</button>
+          <button class="btn-danger" onclick="resetTournament()">🗑️ Komplettes Turnier zurücksetzen (+ Spieler, Coins)</button>
         </div>
       </div>
     </section>
