@@ -189,31 +189,44 @@ function switchUser() {
   document.getElementById('role-selection-modal').style.display = 'flex';
 }
 function showNewPlayerInput() {
-  if (registrationLocked) {
+  if (typeof registrationLocked !== 'undefined' && registrationLocked) {
     alert('Die Registrierung neuer Spieler wurde vom Admin gesperrt.');
     return;
   }
-  document.getElementById('role-options').style.display = 'none';
-  document.getElementById('new-player-select').style.display = 'block';
-  document.getElementById('existing-players-select').style.display = 'none';
-  document.getElementById('admin-password-select').style.display = 'none';
+  const opts = document.getElementById('role-options');
+  const newSel = document.getElementById('new-player-select');
+  const existSel = document.getElementById('existing-players-select');
+  const adminSel = document.getElementById('admin-password-select');
+
+  if (opts) opts.style.display = 'none';
+  if (newSel) newSel.style.display = 'block';
+  if (existSel) existSel.style.display = 'none';
+  if (adminSel) adminSel.style.display = 'none';
 }
+
 function showExistingPlayers() {
   const container = document.getElementById('existing-players-list');
-  if (!container) return;
-  if (players.length === 0) {
-    container.innerHTML = '<p class="empty-state">Noch keine Spieler registriert.</p>';
-  } else {
-    container.innerHTML = players.map(p => `
-      <button class="btn-secondary" style="margin: 4px; width: auto;" onclick="selectMyPlayer('${p.name}')">
-        ${p.name} ${p.isRef ? '🟨' : ''} ${p.password ? '🔒' : ''}
-      </button>
-    `).join('');
+  if (container) {
+    if (typeof players !== 'undefined' && players.length === 0) {
+      container.innerHTML = '<p class="empty-state">Noch keine Spieler registriert.</p>';
+    } else if (typeof players !== 'undefined') {
+      container.innerHTML = players.map(p => `
+        <button class="btn-secondary" style="margin: 4px; width: auto;" onclick="selectMyPlayer('${p.name}')">
+          ${p.name} ${p.isRef ? '🟨' : ''} ${p.password ? '🔒' : ''}
+        </button>
+      `).join('');
+    }
   }
-  document.getElementById('role-options').style.display = 'none';
-  document.getElementById('new-player-select').style.display = 'none';
-  document.getElementById('existing-players-select').style.display = 'block';
-  document.getElementById('admin-password-select').style.display = 'none';
+
+  const opts = document.getElementById('role-options');
+  const newSel = document.getElementById('new-player-select');
+  const existSel = document.getElementById('existing-players-select');
+  const adminSel = document.getElementById('admin-password-select');
+
+  if (opts) opts.style.display = 'none';
+  if (newSel) newSel.style.display = 'none';
+  if (existSel) existSel.style.display = 'block';
+  if (adminSel) adminSel.style.display = 'none';
 }
 function resetRoleSelection() {
   pendingAdminLogin = false;
