@@ -337,3 +337,43 @@ th { color: var(--fal-yellow); font-size: 0.8rem; text-transform: uppercase; }
   margin-left: 8px;
   white-space: nowrap;
 }
+
+/* TURNIER-WRAPPED: persönliche Rückblick-Karte im Stil von "Spotify Wrapped" */
+.wrapped-card {
+  max-width: 420px;
+  background: linear-gradient(160deg, #1b2a4a 0%, #5b3a99 55%, #d63384 100%);
+  border: none;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+}
+.wrapped-title-block { text-align: center; margin-bottom: 16px; }
+.wrapped-stats-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+.wrapped-stat {
+  background: rgba(255, 255, 255, 0.14);
+  border-radius: 10px;
+  padding: 12px;
+  text-align: center;
+}
+.wrapped-stat-value { font-size: 1.4em; font-weight: bold; color: var(--fal-yellow); }
+.wrapped-stat-label { font-size: 0.75em; opacity: 0.9; margin-top: 2px; }
+.wrapped-highlight {
+  background: rgba(0, 0, 0, 0.25);
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-size: 0.85em;
+  margin-bottom: 8px;
+}
+
+/* Teaser-Banner auf dem Dashboard, der zur Wrapped-Karte einlädt */
+.wrapped-teaser {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  background: linear-gradient(135deg, #5b3a99, #d63384) !important;
+}

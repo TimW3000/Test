@@ -56,6 +56,7 @@ window.resetTournament = resetTournament;
 window.resetKOPhase = resetKOPhase;
 window.resetGroupPhase = resetGroupPhase;
 window.resetTeamDraft = resetTeamDraft;
+window.resetBettingSystem = resetBettingSystem;
 window.updateTeamName = updateTeamName;
 window.submitMatchResult = submitMatchResult;
 window.confirmMatchResult = confirmMatchResult;
@@ -73,6 +74,8 @@ window.cancelDraft = cancelDraft;
 window.saveRules = saveRules;
 window.submitTip = submitTip;
 window.placeBet = placeBet;
+window.openWrapped = openWrapped;
+window.closeWrapped = closeWrapped;
 // ============================================================================
 // 1. FIREBASE-KONFIGURATION — Verbindungsdaten zur Online-Datenbank
 // ============================================================================
@@ -1379,6 +1382,22 @@ function resetTeamDraft() {
   renderAll();
   alert('✅ Team-Auslosung wurde zurückgesetzt.');
 }
+// Setzt NUR das Wettsystem zurück (Wetten, Tipps, FAL-Coins-Kontostände) - alle
+// starten wieder bei 100 Coins. Teams, Gruppen, Spielplan, Ergebnisse und die
+// Spielerliste bleiben komplett unverändert.
+function resetBettingSystem() {
+  if (!hasElevated()) return;
+  if (!confirm('Wettsystem wirklich zurücksetzen? Alle Wetten, Tipps und FAL-Coins-Kontostände werden gelöscht (jeder startet wieder bei 100 Coins). Teams, Gruppen und Spielergebnisse bleiben unverändert.')) return;
+  bets = [];
+  tips = {};
+  tipsEvaluated = false;
+  userBalances = {};
+  groupMatches.forEach(m => { m.betsEvaluated = false; });
+  koMatches.forEach(m => { m.betsEvaluated = false; });
+  saveData();
+  renderAll();
+  alert('✅ Wettsystem wurde zurückgesetzt. Alle Spieler starten wieder mit 100 FAL-Coins.');
+}
 // Löscht nach Bestätigung das KOMPLETTE Turnier (Spieler, Teams, Ergebnisse, Coins, Wetten) - die "Nuklear-Option"
 function resetTournament() {
   if (!hasElevated()) return;
@@ -1723,8 +1742,18 @@ function renderDashboard() {
       </div>
     `;
   }
+  const wrappedTeaser = (isTournamentFinished() && myPlayerName) ? `
+    <div class="admin-card wrapped-teaser" style="grid-column: 1 / -1;">
+      <div>
+        <p style="font-weight:bold; font-size:1.05em; margin:0 0 2px 0;">🎁 Dein Turnier-Wrapped ist da!</p>
+        <p style="font-size:0.85em; opacity:0.85; margin:0;">Deine persönliche Bilanz aus diesem Turnier - Tore, bester Sieg, Coins & mehr.</p>
+      </div>
+      <button class="btn-primary" onclick="openWrapped()">Jetzt ansehen</button>
+    </div>
+  ` : '';
   container.innerHTML = `
     <div class="grid-container">
+      ${wrappedTeaser}
       ${renderLiveBetsTile()}
       <div class="admin-card stat-tile">
         <p class="stat-label">⚽ Torschützenkönig</p>
@@ -2127,6 +2156,124 @@ function evaluateBetsForMatch(matchId, isKO, winningTeamId) {
   const match = matchArray.find(m => m.id === matchId);
   if (match) match.betsEvaluated = true;
   saveData();
+}
+// ============================================================================
+// 12. TURNIER-WRAPPED — eine persönliche Rückblick-Karte pro Spieler nach dem
+//     Finale, im Stil von "Spotify Wrapped": eigene Tore, bestes Ergebnis,
+//     Coin-Bilanz und ein launiger Titel, der aus den Stats abgeleitet wird.
+//     Rein zum Spaß, nutzt aber ausschließlich Daten, die eh schon erfasst sind.
+// ============================================================================
+// Baut die "Spiel-Historie" eines einzelnen Spielers: jedes Hin-/Rückspiel-Bein,
+// bei dem er selbst gespielt hat, mit Gegner und Ergebnis aus SEINER Sicht.
+function calculatePlayerMatchLog(playerName) {
+  const log = [];
+  function processLeg(m, isHin, roundLabel) {
+    const s1 = isHin ? m.score1_h : m.score1_r;
+    const s2 = isHin ? m.score2_h : m.score2_r;
+    if (s1 === null || s1 === undefined || s2 === null || s2 === undefined) return;
+    const t1 = teams.find(t => t.id === m.t1Id);
+    const t2 = teams.find(t => t.id === m.t2Id);
+    if (!t1 || !t2) return;
+    const playerA = isHin ? t1.p1 : t1.p2;
+    const playerB = isHin ? (m.crossed ? t2.p2 : t2.p1) : (m.crossed ? t2.p1 : t2.p2);
+    if (playerA === playerName) {
+      log.push({ opponent: playerB, goalsFor: s1, goalsAgainst: s2, round: roundLabel });
+    } else if (playerB === playerName) {
+      log.push({ opponent: playerA, goalsFor: s2, goalsAgainst: s1, round: roundLabel });
+    }
+  }
+  groupMatches.forEach(m => {
+    processLeg(m, true, `${m.group} (Hinspiel)`);
+    processLeg(m, false, `${m.group} (Rückspiel)`);
+  });
+  koMatches.forEach(m => {
+    processLeg(m, true, `${m.round} (Hinspiel)`);
+    processLeg(m, false, `${m.round} (Rückspiel)`);
+  });
+  return log;
+}
+// Liefert das (nach Tordifferenz) beste und schlechteste Einzelergebnis eines Spielers
+function getBestAndWorstResult(playerName) {
+  const log = calculatePlayerMatchLog(playerName);
+  if (log.length === 0) return { best: null, worst: null };
+  const sorted = [...log].sort((a, b) => (b.goalsFor - b.goalsAgainst) - (a.goalsFor - a.goalsAgainst));
+  return { best: sorted[0], worst: sorted[sorted.length - 1] };
+}
+// Vergibt einen launigen "Wrapped"-Titel, indem die Stats mit allen anderen
+// Spielern verglichen werden (nach dem Vorbild von Spotify Wrapped)
+function getWrappedTitle(playerName) {
+  const allStats = calculatePlayerStats().filter(s => s.played > 0);
+  const me = allStats.find(s => s.name === playerName);
+  if (!me) return { emoji: '🎮', title: 'Turnier-Teilnehmer', text: 'Noch keine Spiele erfasst.' };
+  const topScorer = [...allStats].sort((a, b) => b.goals - a.goals)[0];
+  const bestWinrate = allStats.filter(s => s.played >= 2).sort((a, b) => (b.wins / b.played) - (a.wins / a.played))[0];
+  const bestDefense = allStats.filter(s => s.played >= 2).sort((a, b) => (a.conceded / a.played) - (b.conceded / b.played))[0];
+  const balanceEntries = Object.entries(userBalances);
+  const richest = balanceEntries.length ? [...balanceEntries].sort((a, b) => b[1] - a[1])[0][0] : null;
+  const poorest = balanceEntries.length ? [...balanceEntries].sort((a, b) => a[1] - b[1])[0][0] : null;
+
+  if (topScorer && topScorer.name === playerName && topScorer.goals > 0) {
+    return { emoji: '⚽', title: 'Tormaschine des Turniers', text: `${me.goals} Tore erzielt – niemand hat öfter getroffen!` };
+  }
+  if (bestWinrate && bestWinrate.name === playerName && bestWinrate.wins > 0) {
+    return { emoji: '👑', title: 'Seriensieger', text: `${me.wins} von ${me.played} Spielen gewonnen – beste Siegquote im ganzen Turnier!` };
+  }
+  if (bestDefense && bestDefense.name === playerName) {
+    return { emoji: '🛡️', title: 'Die Mauer', text: `Nur Ø ${(me.conceded / me.played).toFixed(1)} Gegentore pro Spiel – die beste Abwehr im Turnier!` };
+  }
+  if (richest === playerName && userBalances[playerName] > 100) {
+    return { emoji: '💰', title: 'Zocker-König', text: `${userBalances[playerName]} FAL-Coins auf dem Konto – am cleversten gewettet!` };
+  }
+  if (poorest === playerName && userBalances[playerName] < 100) {
+    return { emoji: '🎲', title: 'Va-Banque-Spieler', text: 'Nicht jede Wette ging auf – aber Mut zum Risiko zählt auch etwas!' };
+  }
+  if (me.goals === 0) {
+    return { emoji: '🐢', title: 'Spätzünder', text: 'Noch kein Tor erzielt – beim nächsten Turnier klappt’s bestimmt!' };
+  }
+  return { emoji: '🎮', title: 'Turnier-Teilnehmer', text: 'Mit vollem Einsatz von Anfang bis Ende dabei gewesen!' };
+}
+// Baut den Inhalt der Wrapped-Karte für den aktuell angemeldeten Spieler auf
+function renderWrappedCard() {
+  const container = document.getElementById('wrapped-content');
+  if (!container || !myPlayerName) return;
+  const stats = calculatePlayerStats().find(s => s.name === myPlayerName) || { goals: 0, conceded: 0, wins: 0, played: 0 };
+  const { best, worst } = getBestAndWorstResult(myPlayerName);
+  const wrapped = getWrappedTitle(myPlayerName);
+  const balance = getUserBalance(myPlayerName);
+  const myTip = tips[myPlayerName];
+  const tipTeam = myTip ? teams.find(t => t.id === myTip.teamId) : null;
+  const finale = koMatches.find(m => m.round === '🏆 FINALE' && m.confirmed);
+  const winningTeam = finale ? teams.find(t => t.id === (finale.score1 > finale.score2 ? finale.t1Id : finale.t2Id)) : null;
+  const tipHit = !!(myTip && winningTeam && myTip.teamId === winningTeam.id);
+  const worstIsLoss = worst && (worst.goalsFor - worst.goalsAgainst) < 0;
+
+  container.innerHTML = `
+    <div class="wrapped-title-block">
+      <div style="font-size:3em;">${wrapped.emoji}</div>
+      <h2 style="margin:6px 0 2px 0;">${wrapped.title}</h2>
+      <p style="opacity:0.9; font-size:0.9em;">${wrapped.text}</p>
+    </div>
+    <div class="wrapped-stats-grid">
+      <div class="wrapped-stat"><div class="wrapped-stat-value">${stats.goals}</div><div class="wrapped-stat-label">⚽ Tore</div></div>
+      <div class="wrapped-stat"><div class="wrapped-stat-value">${stats.conceded}</div><div class="wrapped-stat-label">🥅 Gegentore</div></div>
+      <div class="wrapped-stat"><div class="wrapped-stat-value">${stats.wins}/${stats.played}</div><div class="wrapped-stat-label">🏅 Siege</div></div>
+      <div class="wrapped-stat"><div class="wrapped-stat-value">${balance} 🪙</div><div class="wrapped-stat-label">Kontostand</div></div>
+    </div>
+    ${best ? `<div class="wrapped-highlight">🔥 Bestes Ergebnis: <strong>${best.goalsFor}:${best.goalsAgainst}</strong> gegen ${escapeHtml(best.opponent)}</div>` : ''}
+    ${worstIsLoss ? `<div class="wrapped-highlight">😅 Bitterste Niederlage: <strong>${worst.goalsFor}:${worst.goalsAgainst}</strong> gegen ${escapeHtml(worst.opponent)}</div>` : ''}
+    ${myTip ? `<div class="wrapped-highlight">🎯 Dein Tipp: <strong>${tipTeam ? escapeHtml(tipTeam.name) : '?'}</strong> ${winningTeam ? (tipHit ? '– ✅ Richtig getippt!' : '– ❌ Leider daneben') : '(Turnier läuft noch)'}</div>` : ''}
+  `;
+}
+// Öffnet/schließt die Wrapped-Karte
+function openWrapped() {
+  if (!myPlayerName) return;
+  renderWrappedCard();
+  const modal = document.getElementById('wrapped-modal');
+  if (modal) modal.style.display = 'flex';
+}
+function closeWrapped() {
+  const modal = document.getElementById('wrapped-modal');
+  if (modal) modal.style.display = 'none';
 }
 // Hilfsfunktion: Gibt Wappen-HTML + Vereinsnamen aus
 function renderClubNameWithBadge(clubName) {
