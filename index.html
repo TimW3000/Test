@@ -135,7 +135,7 @@
 
     <!-- GRUPPEN TAB -->
     <section id="tab-groups" class="tab-content">
-      <h2>Gruppenphase & Tabellen (3 Gruppen à 3 Teams)</h2>
+      <h2>Gruppenphase & Tabellen</h2>
       <div id="groups-container" class="grid-container"></div>
       <div id="third-place-container" style="margin-top: 25px;"></div>
     </section>
@@ -164,6 +164,7 @@
           <input type="text" id="new-player-name" placeholder="Spielername eingeben...">
           <button class="btn-primary" onclick="addPlayer()">Hinzufügen</button>
         </div>
+        <div id="test-player-container" style="margin-bottom: 15px;"></div>
         <div id="admin-player-list"></div>
       </div>
 
@@ -182,9 +183,9 @@
         <h3>Turnier-Steuerung</h3>
         <div style="display: flex; flex-wrap: wrap; gap: 10px;">
           <button class="btn-primary" style="background-color:#ffc800; color:#000;" onclick="startInteractiveDraft()">🎰 1. Teams & Clubs per Glücksrad auslosen</button>
-          <button class="btn-primary" onclick="drawGroups()">📊 2. Gruppen (3x3) & Spielplan erstellen</button>
-          <button class="btn-primary" onclick="drawKOPhase()">⚔️ 3. Viertelfinale auslosen (Inkl. Beste Dritte)</button>
-          <button class="btn-primary" onclick="drawSemifinals()">🥈 4. Halbfinale auslosen</button>
+          <button class="btn-primary" onclick="drawGroups()">📊 2. Gruppen auslosen (Anzahl wählbar) & Spielplan erstellen</button>
+          <button class="btn-primary" onclick="drawKOPhase()">⚔️ 3. KO-Phase auslosen (Viertel- oder direkt Halbfinale)</button>
+          <button class="btn-primary" onclick="drawSemifinals()">🥈 4. Halbfinale auslosen (nur bei 3/4 Gruppen)</button>
           <button class="btn-primary" onclick="drawFinals()">🏆 5. Finale & Spiel um Platz 3 erstellen</button>
           <button class="btn-danger" onclick="resetTournament()">🗑️ Turnier komplett zurücksetzen</button>
         </div>

@@ -1,4 +1,34 @@
-// Global verfügbar machen
+// ============================================================================
+//  FAL FIFA TURNIER — script.js
+// ============================================================================
+//  Diese Datei ist in nummerierte Abschnitte gegliedert. Zum schnellen
+//  Springen kannst du im Editor nach "// N." suchen (N = Abschnittsnummer).
+//
+//  1.   Firebase-Konfiguration      -> Verbindung zur Online-Datenbank
+//  2.   Zustand (globale Variablen) -> hier "lebt" der komplette Turnier-Stand
+//  3.   Rollen & Auth               -> An-/Abmelden, Rollenauswahl-Modal, Passwörter
+//  4.   Live-Sync via Firebase      -> lädt/speichert den Zustand für alle Geräte gleichzeitig
+//  5.   Profi-Clubs Verwaltung      -> Liste der Vereine fürs Glücksrad + Wappen
+//  6.   Live-Auslosungs-Show        -> das Glücksrad (Teams & Clubs auslosen)
+//  7.   Standard Admin Handlungen   -> Spieler hinzufügen/löschen, Test-Spieler, Sperren
+//  8.   Gruppen- & KO-Auslosung     -> Gruppenphase + Viertelfinale/Halbfinale/Finale
+//  9.   Team- & Match-Updates       -> Ergebnisse eintragen/bestätigen, Spiel starten
+//  10.  Render Panel & UI           -> baut die komplette Bildschirm-Anzeige zusammen
+//       10a. Home (Regeln, Tippspiel, Dashboard)
+//       10b. Tippspiel-Logik
+//       10c. Dashboard-Statistiken
+//  11.  Wett-System                 -> FAL-Coins, Wetten platzieren & auszahlen
+//
+//  Das Prinzip: ALLE Nutzer sehen denselben Zustand (players, teams, groups, ...),
+//  weil er live über Firebase synchronisiert wird (siehe Abschnitt 4). Ändert
+//  jemand etwas, ruft er saveData() auf -> das schreibt den Zustand in die
+//  Datenbank -> alle anderen Geräte bekommen automatisch das Update und rendern
+//  die Seite neu (renderAll()).
+// ============================================================================
+
+// Diese Funktionen werden aus HTML-Buttons per onclick="..." aufgerufen.
+// Da script.js als Modul-ähnliche Datei geladen wird, müssen sie hier explizit
+// am globalen window-Objekt hängen, sonst findet das HTML sie nicht.
 window.showExistingPlayers = showExistingPlayers;
 window.showNewPlayerInput = showNewPlayerInput;
 window.resetRoleSelection = resetRoleSelection;
@@ -9,6 +39,7 @@ window.registerNewPlayer = registerNewPlayer;
 window.confirmAdminPassword = confirmAdminPassword;
 window.showTab = showTab;
 window.addPlayer = addPlayer;
+window.addTestPlayers = addTestPlayers;
 window.removePlayer = removePlayer;
 window.toggleRef = toggleRef;
 window.setPlayerPassword = setPlayerPassword;
@@ -22,6 +53,7 @@ window.resetTournament = resetTournament;
 window.updateTeamName = updateTeamName;
 window.submitMatchResult = submitMatchResult;
 window.confirmMatchResult = confirmMatchResult;
+window.markMatchStarted = markMatchStarted;
 window.addClub = addClub;
 window.removeClub = removeClub;
 window.resetClubsToDefault = resetClubsToDefault;
@@ -34,7 +66,9 @@ window.cancelDraft = cancelDraft;
 window.saveRules = saveRules;
 window.submitTip = submitTip;
 window.placeBet = placeBet;
-// 1. Firebase Konfiguration
+// ============================================================================
+// 1. FIREBASE-KONFIGURATION — Verbindungsdaten zur Online-Datenbank
+// ============================================================================
 const firebaseConfig = {
   apiKey: "AIzaSyCWYRh1GonZYsOqxGXn1nWoUMWl7gamGoA",
   authDomain: "website-test-3800e.firebaseapp.com",
@@ -76,11 +110,15 @@ const KNOWN_CLUB_COLORS = {
   "Atletico": "#CE3524",
   "BVB": "#FDE100"
 };
-// 2. Zustand
+// ============================================================================
+// 2. ZUSTAND — globale Variablen, die den kompletten Turnier-Stand abbilden.
+//    Diese Werte werden über Firebase mit allen Geräten synchronisiert (Abschnitt 4).
+// ============================================================================
 let players = [];
 let availableClubs = [...DEFAULT_CLUBS];
 let clubLogos = {};     // { clubName: "https://...wappen.png" }
 let teams = [];
+let numGroups = 3;       // Wie viele Gruppen wurden zuletzt ausgelost? (2, 3 oder 4)
 let groups = [];
 let groupMatches = [];
 let koMatches = [];
@@ -95,13 +133,16 @@ let bets = [];          // { matchId, isKO, playerName, chosenTeamId, amount }
 // Status-Variablen für das Auslosungs-System (Duo-Draft) - UNVERÄNDERT
 let draftState = { active: false, currentStep: 0, tempP1: null, tempP2: null, remainingPlayers: [], remainingClubs: [], spinning: false, startTime: null, targetAngle: 0, duration: 4000, lastDrawnItem: null, pairs: [] };
 let animFrameId = null;
+// Sucht das Spieler-Objekt zu einem Namen (Groß-/Kleinschreibung egal)
 function getPlayerObj(name) {
   if (!name) return null;
   return players.find(p => p.name.toLowerCase() === name.trim().toLowerCase());
 }
+// true, wenn der aktuell angemeldete Spieler der Admin ("Tim") ist
 function isAdmin() {
   return myPlayerName && myPlayerName.trim().toLowerCase() === 'tim';
 }
+// true, wenn der aktuell angemeldete Spieler die Schiedsrichter-Rolle (Ref) hat
 function isRef() {
   const p = getPlayerObj(myPlayerName);
   return !!(p && p.isRef);
@@ -114,10 +155,12 @@ function hasElevated() {
 function canManageMatches() {
   return hasElevated();
 }
+// Liefert das Team, in dem der aktuell angemeldete Spieler selbst mitspielt
 function getMyTeam() {
   if (!myPlayerName) return null;
   return teams.find(t => t.p1 === myPlayerName || t.p2 === myPlayerName);
 }
+// true, sobald das Finale gespielt UND vom Admin/Ref bestätigt wurde
 function isTournamentFinished() {
   const finale = koMatches.find(m => m.round === '🏆 FINALE');
   return !!(finale && finale.confirmed);
@@ -128,6 +171,46 @@ function clubLogoImg(clubName, size) {
   if (!clubName || !clubLogos[clubName]) return '';
   return `<img src="${clubLogos[clubName]}" alt="${clubName}" style="height:${size}px; width:${size}px; object-fit:contain; vertical-align:middle; border-radius:3px; margin-right:5px; background:#fff;">`;
 }
+// Macht einen Text HTML-sicher (verhindert, dass z.B. ein Spieler- oder Club-Name als Code interpretiert wird)
+function escapeHtml(str) {
+  if (str === null || str === undefined) return '';
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+// Liefert die hinterlegte Wappen-Bild-URL eines Clubs, falls vorhanden (sonst leerer String)
+function getClubLogoUrl(clubName) {
+  return (clubName && clubLogos[clubName]) ? clubLogos[clubName] : '';
+}
+// Liefert eine feste Farbe für einen Club: bekannte Vereinsfarbe, sonst eine
+// aus der 18er-Palette abgeleitete Farbe, die für den gleichen Namen immer gleich bleibt.
+function getClubColor(clubName) {
+  if (!clubName) return null;
+  if (KNOWN_CLUB_COLORS[clubName]) return KNOWN_CLUB_COLORS[clubName];
+  let hash = 0;
+  for (let i = 0; i < clubName.length; i++) hash = (hash * 31 + clubName.charCodeAt(i)) >>> 0;
+  return COLOR_PALETTE_18[hash % COLOR_PALETTE_18.length];
+}
+// Bild-Cache fürs Glücksrad: lädt jedes Vereinswappen nur einmal und zeichnet
+// das Rad neu, sobald ein Bild fertig geladen ist (damit es sofort sichtbar wird).
+const clubLogoImageCache = {};
+function getClubLogoImageElement(clubName) {
+  const url = getClubLogoUrl(clubName);
+  if (!url) return null;
+  if (clubLogoImageCache[url]) return clubLogoImageCache[url];
+  const img = new Image();
+  img.crossOrigin = 'anonymous';
+  img.onload = () => {
+    if (draftState && draftState.active) drawWheelCanvas(draftState.targetAngle || 0);
+  };
+  img.src = url;
+  clubLogoImageCache[url] = img;
+  return img;
+}
+// Fragt per Prompt eine neue Wappen-Bild-URL für einen Club ab und speichert sie
 function setClubLogo(clubName) {
   if (!hasElevated()) return;
   const current = clubLogos[clubName] || '';
@@ -160,7 +243,10 @@ document.addEventListener('DOMContentLoaded', () => {
     enterAsSpectator();
   }
 });
-// 3. Rollen & Auth
+// ============================================================================
+// 3. ROLLEN & AUTH — Rollenauswahl-Modal, An-/Abmelden, Passwörter
+// ============================================================================
+// Blendet das Rollenauswahl-Modal aus und zeigt die App (als Zuschauer oder angemeldeter Spieler)
 function enterAsSpectator() {
   document.getElementById('role-selection-modal').style.display = 'none';
   document.getElementById('app-header').style.display = 'flex';
@@ -179,6 +265,7 @@ function enterAsSpectator() {
   if (adminBtn) adminBtn.style.display = hasElevated() ? 'inline-block' : 'none';
   showTab('home');
 }
+// Meldet den aktuellen Spieler ab und zeigt wieder die Rollenauswahl beim Start
 function switchUser() {
   localStorage.removeItem('fifa_my_player');
   myPlayerName = null;
@@ -188,6 +275,7 @@ function switchUser() {
   resetRoleSelection();
   document.getElementById('role-selection-modal').style.display = 'flex';
 }
+// Blendet im Rollenauswahl-Modal das Formular "Neuer Spieler" ein
 function showNewPlayerInput() {
   if (typeof registrationLocked !== 'undefined' && registrationLocked) {
     alert('Die Registrierung neuer Spieler wurde vom Admin gesperrt.');
@@ -204,6 +292,7 @@ function showNewPlayerInput() {
   if (adminSel) adminSel.style.display = 'none';
 }
 
+// Blendet im Rollenauswahl-Modal die Liste der bestehenden Spieler zur Auswahl ein
 function showExistingPlayers() {
   const container = document.getElementById('existing-players-list');
   if (container) {
@@ -228,6 +317,7 @@ function showExistingPlayers() {
   if (existSel) existSel.style.display = 'block';
   if (adminSel) adminSel.style.display = 'none';
 }
+// Setzt das Rollenauswahl-Modal auf die Start-Ansicht (die 3 Hauptbuttons) zurück
 function resetRoleSelection() {
   pendingAdminLogin = false;
   document.getElementById('role-options').style.display = 'block';
@@ -235,6 +325,7 @@ function resetRoleSelection() {
   document.getElementById('existing-players-select').style.display = 'none';
   document.getElementById('admin-password-select').style.display = 'none';
 }
+// Wird geklickt, wenn sich jemand als bestehender Spieler anmeldet (fragt ggf. Passwort ab)
 function selectMyPlayer(name) {
   const pObj = getPlayerObj(name);
   if (name.trim().toLowerCase() === 'tim') {
@@ -249,6 +340,7 @@ function selectMyPlayer(name) {
   localStorage.setItem('fifa_my_player', name);
   enterAsSpectator();
 }
+// Legt einen komplett neuen Spieler an und meldet ihn direkt als "mich" an
 function registerNewPlayer() {
   if (registrationLocked) {
     alert('Die Registrierung neuer Spieler wurde vom Admin gesperrt.');
@@ -268,6 +360,7 @@ function registerNewPlayer() {
   saveData();
   enterAsSpectator();
 }
+// Zeigt die Passwort-Abfrage im Modal an (für Admin-Login oder passwortgeschützte Spieler)
 function promptPassword(type, name, textPrompt) {
   pendingAdminLogin = { type, name };
   document.getElementById('role-options').style.display = 'none';
@@ -279,6 +372,7 @@ function promptPassword(type, name, textPrompt) {
   const pwdInput = document.getElementById('admin-password-input');
   if (pwdInput) pwdInput.value = '';
 }
+// Prüft das eingegebene Passwort (Admin oder Spieler) und meldet bei Erfolg an
 function confirmAdminPassword() {
   const pwdInput = document.getElementById('admin-password-input');
   const pwd = pwdInput ? pwdInput.value.trim() : '';
@@ -308,6 +402,7 @@ function confirmAdminPassword() {
     }
   }
 }
+// Wechselt den sichtbaren Tab (Home/Teams/Gruppen/Spiele/Admin) und rendert ihn neu
 function showTab(tabName) {
   document.querySelectorAll('.tab-btn').forEach(btn => btn.classList.remove('active'));
   document.querySelectorAll('.tab-content').forEach(content => content.classList.remove('active'));
@@ -318,7 +413,11 @@ function showTab(tabName) {
   if (tabName === 'matches') renderMatches();
   if (tabName === 'groups') renderGroups();
 }
-// 4. Live-Sync via Firebase
+// ============================================================================
+// 4. LIVE-SYNC VIA FIREBASE — hier läuft die "Magie" der Mehrgeräte-Synchronisation:
+//    Sobald sich IRGENDWO etwas in der Datenbank ändert, feuert dieser Listener
+//    bei ALLEN offenen Browsern/Handys und aktualisiert die komplette Anzeige.
+// ============================================================================
 db.ref('tournament').on('value', (snapshot) => {
   const data = snapshot.val() || {};
   let rawPlayers = data.players || [];
@@ -326,6 +425,7 @@ db.ref('tournament').on('value', (snapshot) => {
   availableClubs = data.availableClubs || [...DEFAULT_CLUBS];
   clubLogos = data.clubLogos || {};
   teams = data.teams || [];
+  numGroups = data.numGroups || 3;
   groups = data.groups || [];
   groupMatches = data.groupMatches || [];
   koMatches = data.koMatches || [];
@@ -351,12 +451,14 @@ db.ref('tournament').on('value', (snapshot) => {
   renderAll();
   handleLiveDraftUI();
 });
+// Schreibt den kompletten aktuellen Zustand in Firebase zurück (löst bei ALLEN Geräten ein Update aus)
 function saveData() {
   db.ref('tournament').set({
     players,
     availableClubs,
     clubLogos,
     teams,
+    numGroups,
     groups,
     groupMatches,
     koMatches,
@@ -369,7 +471,9 @@ function saveData() {
     bets
   });
 }
-// 5. Profi-Clubs Verwaltung
+// ============================================================================
+// 5. PROFI-CLUBS VERWALTUNG — Liste der Vereine, aus denen beim Glücksrad gezogen wird
+// ============================================================================
 function addClub() {
   if (!hasElevated()) return;
   const input = document.getElementById('new-club-name');
@@ -380,11 +484,13 @@ function addClub() {
   input.value = '';
   saveData();
 }
+// Entfernt einen Club aus der Liste der verfügbaren Profi-Vereine
 function removeClub(index) {
   if (!hasElevated()) return;
   availableClubs.splice(index, 1);
   saveData();
 }
+// Setzt die Club-Liste auf die Standard-Topteams (DEFAULT_CLUBS) zurück
 function resetClubsToDefault() {
   if (!hasElevated()) return;
   if (confirm('Verfügbare Clubs auf Standard-Topteams zurücksetzen?')) {
@@ -392,7 +498,11 @@ function resetClubsToDefault() {
     saveData();
   }
 }
-// 6. LIVE INTERAKTIVE AUSLOSUNG SHOW (3-Schritt System: P1 -> P2 -> Club) - UNVERÄNDERT
+// ============================================================================
+// 6. LIVE-AUSLOSUNGS-SHOW (Glücksrad) — 3-Schritt-System pro Team: Spieler 1 -> Spieler 2 -> Club.
+//    Läuft bei allen Zuschauern synchron mit, weil jeder Zwischenschritt per
+//    saveData() in Firebase landet (siehe draftState in Abschnitt 2).
+// ============================================================================
 function startInteractiveDraft() {
   if (!hasElevated()) return;
   if (players.length < 4 || players.length % 2 !== 0) {
@@ -427,6 +537,7 @@ function startInteractiveDraft() {
   }
 }
 
+// Zeigt/versteckt das Auslosungs-Modal je nach draftState und rendert den aktuellen Schritt
 function handleLiveDraftUI() {
   const modal = document.getElementById('draft-modal');
   if (!modal) return;
@@ -439,6 +550,7 @@ function handleLiveDraftUI() {
   renderDraftStep();
 }
 
+// Baut die Anzeige für den aktuellen Auslosungs-Schritt auf (Spieler 1 / Spieler 2 / Club)
 function renderDraftStep() {
   const stage = document.getElementById('draft-stage');
   if (!stage) return;
@@ -500,6 +612,7 @@ function renderDraftStep() {
   startWheelAnimationLoop();
 }
 
+// Startet die requestAnimationFrame-Schleife, die das Glücksrad dreht
 function startWheelAnimationLoop() {
   if (animFrameId) cancelAnimationFrame(animFrameId);
   function animate() {
@@ -525,6 +638,7 @@ function startWheelAnimationLoop() {
   animFrameId = requestAnimationFrame(animate);
 }
 
+// Zeichnet das Glücksrad (Segmente, Farben, Beschriftung, Wappen) auf das Canvas
 function drawWheelCanvas(angleOffset) {
   const canvas = document.getElementById('wheel-canvas');
   if (!canvas) return;
@@ -600,6 +714,7 @@ function drawWheelCanvas(angleOffset) {
   }
 }
 
+// Admin dreht das Rad: würfelt zufällig ein Element aus dem aktuellen Pool und startet die Dreh-Animation
 function spinWheel() {
   if (!hasElevated() || draftState.spinning) return;
   let currentPool = [];
@@ -649,6 +764,7 @@ function spinWheel() {
   }, 4100);
 }
 
+// Übernimmt das zuletzt gezogene Element (Spieler/Club) und schaltet zum nächsten Auslosungs-Schritt
 function nextDraftStep() {
   if (!hasElevated()) return;
   if (draftState.lastDrawnItem) {
@@ -676,6 +792,7 @@ function nextDraftStep() {
   renderDraftStep();
 }
 
+// Übernimmt die fertig gelosten Duos als offizielle Teams und beendet die Auslosungs-Show
 function finishDraft() {
   if (!hasElevated()) return;
   teams = [...draftState.pairs];
@@ -686,6 +803,7 @@ function finishDraft() {
   alert("🎉 Auslosung beendet! Die Teams wurden geladen.");
 }
 
+// Bricht die laufende Auslosung ab und setzt den Auslosungs-Zustand komplett zurück
 function cancelDraft() {
   if (!hasElevated()) return;
   if (confirm("Möchtest du die Auslosung wirklich abbrechen und zurücksetzen?")) {
@@ -702,7 +820,10 @@ function cancelDraft() {
     alert("Auslosung wurde zurückgesetzt!");
   }
 }
-// 7. Standard Admin Handlungen
+// ============================================================================
+// 7. STANDARD ADMIN HANDLUNGEN — Spieler hinzufügen/löschen, Test-Spieler,
+//    Ref-Rechte vergeben, Passwörter, Registrierungssperre
+// ============================================================================
 function addPlayer() {
   if (!hasElevated()) return;
   const input = document.getElementById('new-player-name');
@@ -718,11 +839,35 @@ function removePlayer(index) {
   players.splice(index, 1);
   saveData();
 }
+// Fügt automatisch mehrere Test-Spieler hinzu (z.B. "Test 1", "Test 2", ...).
+// Praktisch zum schnellen Durchtesten des Turniers mit vielen Teilnehmern.
+// Nur der Admin (nicht Ref) darf das, da dies eine reine Datenmenge erzeugt.
+function addTestPlayers() {
+  if (!isAdmin()) return;
+  const input = prompt('Wie viele Test-Spieler sollen automatisch hinzugefügt werden?', '4');
+  if (input === null) return; // Abbrechen gedrückt
+  const count = parseInt(input, 10);
+  if (isNaN(count) || count <= 0) return alert('Bitte eine gültige Zahl größer als 0 eingeben!');
+  if (count > 50) return alert('Maximal 50 Test-Spieler auf einmal, um Firebase nicht zu überlasten.');
+  let added = 0;
+  let n = 1;
+  while (added < count) {
+    const name = `Test ${n}`;
+    if (!getPlayerObj(name)) {
+      players.push({ name, isRef: false, password: null });
+      added++;
+    }
+    n++;
+  }
+  saveData();
+  alert(`✅ ${added} Test-Spieler wurden hinzugefügt.`);
+}
 function toggleRef(index) {
   if (!isAdmin()) return; // NUR Admin darf Ref-Rechte vergeben/entziehen
   players[index].isRef = !players[index].isRef;
   saveData();
 }
+// Setzt (oder ändert) das Passwort eines Spielers
 function setPlayerPassword(index) {
   if (!hasElevated()) return;
   const pwd = prompt(`Neues Passwort für ${players[index].name} eingeben:`);
@@ -732,6 +877,7 @@ function setPlayerPassword(index) {
     saveData();
   }
 }
+// Entfernt das Passwort eines Spielers wieder (Account ist danach offen)
 function removePlayerPassword(index) {
   if (!hasElevated()) return;
   if (confirm(`Passwort von ${players[index].name} wirklich löschen?`)) {
@@ -739,12 +885,17 @@ function removePlayerPassword(index) {
     saveData();
   }
 }
+// Sperrt/entsperrt die Neu-Registrierung, damit sich keine weiteren Spieler mehr anmelden können
 function toggleRegistrationLock() {
   if (!hasElevated()) return;
   registrationLocked = !registrationLocked;
   saveData();
 }
-// 8. Gruppen- & KO-Auslosung
+// ============================================================================
+// 8. GRUPPEN- & KO-AUSLOSUNG — Gruppenphase erstellen, dann je nach Gruppenanzahl
+//    (2/3/4, siehe drawGroups) automatisch passende KO-Phase: Viertelfinale,
+//    Halbfinale, Finale & Spiel um Platz 3.
+// ============================================================================
 function makeMatch(id, group, slot, t1Id, t2Id) {
   return {
     id, group, slot,
@@ -756,9 +907,11 @@ function makeMatch(id, group, slot, t1Id, t2Id) {
     score1: null, score2: null,
     played: false,
     confirmed: false,
-    betsEvaluated: false
+    betsEvaluated: false,
+    started: false // true = Admin/Ref hat das Spiel als "läuft" markiert -> keine Wetten mehr möglich
   };
 }
+// Erzeugt ein neues KO-Spiel-Objekt (Viertelfinale, Halbfinale, Finale, Spiel um Platz 3)
 function makeKOMatch(id, round, court, t1Id, t2Id) {
   return {
     id, round, court,
@@ -769,16 +922,29 @@ function makeKOMatch(id, round, court, t1Id, t2Id) {
     score1: null, score2: null,
     played: false,
     confirmed: false,
-    betsEvaluated: false
+    betsEvaluated: false,
+    started: false // true = Admin/Ref hat das Spiel als "läuft" markiert -> keine Wetten mehr möglich
   };
 }
+// Teilt die Teams zufällig auf die vom Admin gewählte Anzahl Gruppen (2/3/4) auf
+// und erstellt daraus direkt den kompletten Gruppen-Spielplan (Hin- und Rückspiele)
 function drawGroups() {
   if (!hasElevated()) return;
-  if (!teams || teams.length < 3) {
-    return alert(`Du benötigst mindestens 3 Teams (aktuell: ${teams ? teams.length : 0}).`);
+  if (!teams || teams.length < 4) {
+    return alert(`Du benötigst mindestens 4 Teams (aktuell: ${teams ? teams.length : 0}).`);
   }
-  if (confirm('Möchtest du die Teams jetzt zufällig auf 3 Gruppen verteilen und den Spielplan erstellen?')) {
-    const groupLetters = ['Gruppe A', 'Gruppe B', 'Gruppe C'];
+  // Admin gibt vor, in wie viele Gruppen aufgeteilt wird. Das bestimmt später
+  // automatisch, wie die KO-Phase abläuft (siehe drawKOPhase).
+  const input = prompt('Wie viele Gruppen sollen ausgelost werden? (2, 3 oder 4)', String(numGroups || 3));
+  if (input === null) return;
+  const n = parseInt(input, 10);
+  if (![2, 3, 4].includes(n)) return alert('Bitte 2, 3 oder 4 als Gruppenanzahl eingeben!');
+  if (teams.length < n * 2) {
+    return alert(`Für ${n} Gruppen benötigst du mindestens ${n * 2} Teams (aktuell: ${teams.length}), damit jede Gruppe mindestens 2 Teams hat.`);
+  }
+  if (confirm(`Möchtest du die Teams jetzt zufällig auf ${n} Gruppen verteilen und den Spielplan erstellen?`)) {
+    numGroups = n;
+    const groupLetters = ['Gruppe A', 'Gruppe B', 'Gruppe C', 'Gruppe D'].slice(0, n);
     const shuffledTeams = [...teams].sort(() => Math.random() - 0.5);
     groups = groupLetters.map(letter => ({ letter, teams: [] }));
     shuffledTeams.forEach((team, index) => {
@@ -816,19 +982,62 @@ function drawGroups() {
     saveData();
     renderAll();
     showTab('matches');
-    alert('🎉 3 Gruppen & der komplette Spielplan wurden erfolgreich erstellt!');
+    alert(`🎉 ${n} Gruppen & der komplette Spielplan wurden erfolgreich erstellt!`);
   }
 }
-// Quervergleich-fähige Tabellenberechnung (siehe Abschnitt 10)
+// KO-Phase auslosen. Das Verhalten passt sich automatisch an die Anzahl der
+// zuvor gewählten Gruppen an (siehe drawGroups):
+//  - 2 Gruppen  -> es gibt kein Viertelfinale, es geht DIREKT ins Halbfinale
+//                  (Gruppensieger gegen Gruppenzweiten der jeweils anderen Gruppe)
+//  - 3 Gruppen  -> bisheriges System: Viertelfinale mit den 2 besten Gruppendritten
+//  - 4 Gruppen  -> Viertelfinale mit den Top 2 jeder Gruppe (über Kreuz gepaart)
 function drawKOPhase() {
   if (!hasElevated()) return;
-  if (groups.length !== 3) {
-    return alert('Diese Funktion ist für den 3-Gruppen-Modus vorgesehen. Bitte zuerst Gruppen auslosen.');
+  if (!groups || groups.length < 2) {
+    return alert('Bitte zuerst die Gruppenphase auslosen.');
   }
   if (!groupMatches.every(m => m.played)) {
     return alert('Es müssen zuerst alle Gruppenspiele eingetragen sein!');
   }
   const standings = calculateGroupStandings();
+
+  // --- Fall A: 2 Gruppen -> direkt ins Halbfinale ---
+  if (numGroups === 2) {
+    const [gA, gB] = standings;
+    if (!gA.rankings[0] || !gA.rankings[1] || !gB.rankings[0] || !gB.rankings[1]) {
+      return alert('Es sind nicht genügend qualifizierte Teams vorhanden (mind. 2 pro Gruppe)!');
+    }
+    if (!confirm('Bei 2 Gruppen geht es direkt ins Halbfinale: 1. gegen 2. der jeweils anderen Gruppe. Jetzt auslosen?')) return;
+    koMatches = [];
+    koMatches.push(makeKOMatch(201, 'Halbfinale 1', 'Hauptplatz', gA.rankings[0].teamId, gB.rankings[1].teamId));
+    koMatches.push(makeKOMatch(202, 'Halbfinale 2', 'Nebenplatz', gB.rankings[0].teamId, gA.rankings[1].teamId));
+    saveData();
+    showTab('matches');
+    alert('🎉 Halbfinale wurde direkt ausgelost!');
+    return;
+  }
+
+  // --- Fall B: 4 Gruppen -> Viertelfinale mit Top 2 jeder Gruppe ---
+  if (numGroups === 4) {
+    const [gA, gB, gC, gD] = standings;
+    const allGroupsHaveTop2 = [gA, gB, gC, gD].every(g => g.rankings[0] && g.rankings[1]);
+    if (!allGroupsHaveTop2) {
+      return alert('Es sind nicht genügend qualifizierte Teams vorhanden (mind. 2 pro Gruppe)!');
+    }
+    if (!confirm('Viertelfinale auslosen? (Gruppensieger gegen Gruppenzweiten einer anderen Gruppe, über Kreuz)')) return;
+    koMatches = [];
+    let matchId = 101;
+    koMatches.push(makeKOMatch(matchId++, 'Viertelfinale', 'Hauptplatz', gA.rankings[0].teamId, gB.rankings[1].teamId));
+    koMatches.push(makeKOMatch(matchId++, 'Viertelfinale', 'Nebenplatz', gB.rankings[0].teamId, gA.rankings[1].teamId));
+    koMatches.push(makeKOMatch(matchId++, 'Viertelfinale', 'Hauptplatz', gC.rankings[0].teamId, gD.rankings[1].teamId));
+    koMatches.push(makeKOMatch(matchId++, 'Viertelfinale', 'Nebenplatz', gD.rankings[0].teamId, gC.rankings[1].teamId));
+    saveData();
+    showTab('matches');
+    alert('🎉 Viertelfinale wurde ausgelost!');
+    return;
+  }
+
+  // --- Fall C: 3 Gruppen (Standard-Modus mit Quervergleich der Gruppendritten) ---
   const winners = standings.map(g => ({ ...g.rankings[0], group: g.letter }));
   const runnerUps = standings.map(g => ({ ...g.rankings[1], group: g.letter }));
   const thirds = standings
@@ -866,8 +1075,13 @@ function drawKOPhase() {
   saveData();
   showTab('matches');
 }
+// Lost aus den 4 Viertelfinal-Siegern die zwei Halbfinal-Paarungen aus
+// (wird bei 2 Gruppen nicht gebraucht, da dort direkt in drawKOPhase() ausgelost wird)
 function drawSemifinals() {
   if (!hasElevated()) return;
+  if (numGroups === 2) {
+    return alert('Bei 2 Gruppen wird das Halbfinale bereits direkt in Schritt 3 (KO-Phase auslosen) erstellt – dieser Button wird dafür nicht gebraucht.');
+  }
   const qfMatches = koMatches.filter(m => m.round === 'Viertelfinale');
   if (qfMatches.length < 4) return alert('Es muss zuerst das Viertelfinale ausgelost werden!');
   const winners = [];
@@ -886,6 +1100,7 @@ function drawSemifinals() {
     showTab('matches');
   }
 }
+// Erstellt aus den beiden Halbfinal-Ergebnissen das Finale und das Spiel um Platz 3
 function drawFinals() {
   if (!hasElevated()) return;
   const hf1 = koMatches.find(m => m.round === 'Halbfinale 1');
@@ -902,11 +1117,13 @@ function drawFinals() {
     showTab('matches');
   }
 }
+// Löscht nach Bestätigung das komplette Turnier (Spieler, Teams, Ergebnisse, Coins, Wetten)
 function resetTournament() {
   if (!hasElevated()) return;
   if (confirm('Turnier wirklich zurücksetzen? Alle Teams, Spieler, Ergebnisse und Coins werden gelöscht!')) {
     players = [];
     teams = [];
+    numGroups = 3;
     groups = [];
     groupMatches = [];
     koMatches = [];
@@ -919,7 +1136,10 @@ function resetTournament() {
     saveData();
   }
 }
-// 9. Team- & Match-Updates
+// ============================================================================
+// 9. TEAM- & MATCH-UPDATES — Team-Namen ändern, Ergebnisse eintragen/bestätigen,
+//    Spiele als "gestartet" markieren (schließt automatisch die Wetten dafür)
+// ============================================================================
 function updateTeamName(teamId, newName) {
   const team = teams.find(t => t.id === teamId);
   if (!team) return;
@@ -932,6 +1152,7 @@ function updateTeamName(teamId, newName) {
     renderAll();
   }
 }
+// Liefert je nach Phase entweder die KO-Spiele- oder die Gruppen-Spiele-Liste
 function getMatchArray(isKO) { return isKO ? koMatches : groupMatches; }
 // Spieler tragen ihr eigenes Ergebnis ein -> "vorläufig". Admin/Ref bestätigt separat.
 function submitMatchResult(matchId, isKO) {
@@ -1010,7 +1231,23 @@ function confirmMatchResult(matchId, isKO) {
   }
   renderAll();
 }
-// 10. Render Panel & UI
+// Admin/Ref markiert ein Spiel als "gestartet". Ab diesem Zeitpunkt kann
+// niemand mehr auf dieses Spiel wetten (siehe placeBet & renderBettingSystem).
+function markMatchStarted(matchId, isKO) {
+  if (!hasElevated()) return;
+  const match = getMatchArray(isKO).find(m => m.id === matchId);
+  if (!match) return;
+  if (match.started) return;
+  if (!confirm('Spiel jetzt als gestartet markieren? Ab sofort kann niemand mehr darauf wetten.')) return;
+  match.started = true;
+  saveData();
+  renderAll();
+}
+// ============================================================================
+// 10. RENDER PANEL & UI — baut aus dem aktuellen Zustand (Abschnitt 2) die komplette
+//     sichtbare Seite zusammen. renderAll() ruft alle Einzel-Render-Funktionen auf
+//     und wird nach JEDER Datenänderung neu ausgeführt.
+// ============================================================================
 function renderAll() {
   renderHome();
   renderTeams();
@@ -1019,12 +1256,13 @@ function renderAll() {
   renderAdminPanel();
   renderBettingSystem();
 }
-// 10a. HOME: Regeln, Tippspiel, Dashboard
+// ---- 10a. HOME-TAB: Regeln, Tippspiel, Dashboard ----
 function renderHome() {
   renderRules();
   renderTipRound();
   renderDashboard();
 }
+// Zeigt die Turnierregeln (Admin/Ref sehen ein Bearbeitungsfeld, alle anderen nur den Text)
 function renderRules() {
   const container = document.getElementById('rules-content');
   if (!container) return;
@@ -1038,6 +1276,7 @@ function renderRules() {
     container.innerHTML = `<p class="rules-text">${rules}</p>`;
   }
 }
+// Speichert den vom Admin/Ref eingegebenen Regeltext
 function saveRules() {
   if (!hasElevated()) return;
   const textarea = document.getElementById('rules-textarea');
@@ -1045,7 +1284,7 @@ function saveRules() {
   rules = textarea.value.trim() || DEFAULT_RULES;
   saveData();
 }
-// 10b. TIPPSPIEL (mit FAL-Coins, Quote = Anzahl Teams : 1, einmalig & fix)
+// ---- 10b. TIPPSPIEL (mit FAL-Coins, Quote = Anzahl Teams : 1, einmalig & fix) ----
 function renderTipRound() {
   const container = document.getElementById('tip-content');
   if (!container) return;
@@ -1085,6 +1324,7 @@ function renderTipRound() {
     </div>
   `;
 }
+// Zeigt nach Turnierende, wie sich die Tipps aller Spieler auf die Teams verteilt haben
 function renderTipResultsBreakdown() {
   const totalTips = Object.keys(tips).length;
   const rows = teams.map(t => {
@@ -1099,6 +1339,7 @@ function renderTipResultsBreakdown() {
   }).join('');
   return `<div style="margin-top:12px;">${rows}<p style="font-size:0.8em; opacity:0.7;">${totalTips} von ${players.length} Spielern haben getippt.</p></div>`;
 }
+// Spieler gibt seinen einmaligen, festen Tipp auf den Turniersieger ab
 function submitTip() {
   if (!myPlayerName) return;
   if (tips[myPlayerName]) return alert('Du hast bereits getippt – das kann nicht mehr geändert werden.');
@@ -1115,6 +1356,7 @@ function submitTip() {
   tips[myPlayerName] = { teamId, amount };
   saveData();
 }
+// Zahlt nach Bestätigung des Finales allen richtig getippten Spielern ihren Gewinn aus
 function evaluateTips(winningTeamId) {
   if (tipsEvaluated) return;
   const odds = teams.length || 1;
@@ -1128,7 +1370,7 @@ function evaluateTips(winningTeamId) {
   tipsEvaluated = true;
   saveData();
 }
-// 10c. DASHBOARD (Einzelspieler-Statistiken)
+// ---- 10c. DASHBOARD (Einzelspieler-Statistiken) ----
 function calculatePlayerStats() {
   const stats = {};
   function ensure(name) {
@@ -1157,6 +1399,7 @@ function calculatePlayerStats() {
   });
   return Object.values(stats);
 }
+// Zeigt Live-Statistik-Kacheln: Torschützenkönig, beste Abwehr, höchste Siegquote, Fan-Liebling
 function renderDashboard() {
   const container = document.getElementById('dashboard-content');
   if (!container) return;
@@ -1198,6 +1441,7 @@ function renderDashboard() {
     </div>
   `;
 }
+// Zeigt alle gelosten Teams inkl. Vereinswappen und Mitgliedern im Teams-Tab
 function renderTeams() {
   const container = document.getElementById('teams-container');
   if (!container) return;
@@ -1254,6 +1498,7 @@ function calculateGroupStandings() {
     return { letter: g.letter, rankings };
   });
 }
+// Zeigt die Gruppentabellen an, inkl. Quervergleich der Gruppendritten (nur im 3-Gruppen-Modus)
 function renderGroups() {
   const container = document.getElementById('groups-container');
   if (!container) return;
@@ -1331,6 +1576,7 @@ function renderMatchBlock(m, isKO) {
   if (m.betsEvaluated) statusBadge = '<span class="status-badge status-confirmed">🔒 Bestätigt & Ausgezahlt</span>';
   else if (m.confirmed) statusBadge = '<span class="status-badge status-confirmed">✅ Bestätigt</span>';
   else if (m.played) statusBadge = '<span class="status-badge status-provisional">⏳ Vorläufig</span>';
+  else if (m.started) statusBadge = '<span class="status-badge" style="background:rgba(255,77,77,0.2); color:var(--fal-red); border:1px solid var(--fal-red);">🚦 Läuft (Wetten geschlossen)</span>';
   
   const prefix = `m_${m.id}_${isKO ? 'ko_' : ''}`;
   const courtColor = m.court === 'Hauptplatz' ? '#e74c3c' : '#2ecc71';
@@ -1378,11 +1624,12 @@ function renderMatchBlock(m, isKO) {
       <div style="display:flex; gap:8px; flex-wrap:wrap;">
         ${(canEdit && !locked) ? `<button class="btn-primary btn-sm" style="flex:1;" onclick="submitMatchResult(${m.id}, ${isKO})">💾 ${m.played ? 'Aktualisieren' : 'Ergebnis eintragen'}</button>` : ''}
         ${(hasElevated() && m.played && !m.confirmed) ? `<button class="btn-primary btn-sm" style="flex:1; background:#2ecc71; color:#fff;" onclick="confirmMatchResult(${m.id}, ${isKO})">✅ Bestätigen</button>` : ''}
+        ${(hasElevated() && !m.started && !m.played) ? `<button class="btn-secondary btn-sm" style="flex:1; border-color:var(--fal-red); color:var(--fal-red);" onclick="markMatchStarted(${m.id}, ${isKO})">🚦 Spiel gestartet (Wetten schließen)</button>` : ''}
       </div>
     </div>
   `;
 }
-}
+// Zeigt Gruppenspiele und KO-Spiele im Tab "Spiele"
 function renderMatches() {
   const groupContainer = document.getElementById('matches-list');
   const koContainer = document.getElementById('ko-matches-list');
@@ -1406,10 +1653,18 @@ function renderMatches() {
     }
   }
 }
+// Baut den kompletten Admin-Bereich auf: Spielerverwaltung, Test-Spieler-Button, Club-Liste, Registrierungssperre
 function renderAdminPanel() {
   const playerListEl = document.getElementById('admin-player-list');
   const clubListEl = document.getElementById('admin-club-list');
   const lockContainer = document.getElementById('registration-lock-container');
+  const testPlayerContainer = document.getElementById('test-player-container');
+  // Test-Spieler-Button nur für den echten Admin sichtbar (nicht für Refs)
+  if (testPlayerContainer) {
+    testPlayerContainer.innerHTML = isAdmin()
+      ? `<button class="btn-secondary btn-sm" onclick="addTestPlayers()">🧪 Test-Spieler automatisch hinzufügen</button>`
+      : '';
+  }
   if (lockContainer) {
     lockContainer.innerHTML = `
       <div style="display:flex; align-items:center; justify-content:space-between; background:rgba(0,0,0,0.2); padding:8px 12px; border-radius:8px; margin-bottom:12px;">
@@ -1452,9 +1707,12 @@ function renderAdminPanel() {
     `).join('');
   }
 }
-// ==========================================
-// 🎯 WETT-SYSTEM LOGIK & RENDERING (Ergebniswetten)
-// ==========================================
+// ============================================================================
+// 11. WETT-SYSTEM — FAL-Coins, Wetten auf Spielausgänge platzieren & auszahlen.
+//     Wetten sind nur möglich, solange ein Spiel weder gestartet (m.started)
+//     noch beendet (m.played) ist — siehe placeBet() und markMatchStarted().
+// ============================================================================
+// Liest den Coin-Kontostand eines Spielers aus (Startguthaben: 100 Coins)
 function getUserBalance(playerName) {
   if (!playerName) return 0;
   if (userBalances[playerName] === undefined) {
@@ -1462,6 +1720,7 @@ function getUserBalance(playerName) {
   }
   return userBalances[playerName];
 }
+// Zeigt Kontostand, offene Wett-Möglichkeiten (ohne gestartete Spiele) und die Highroller-Bestenliste
 function renderBettingSystem() {
   const balanceEl = document.getElementById('user-coin-balance');
   const matchesListEl = document.getElementById('betting-matches-list');
@@ -1474,7 +1733,7 @@ function renderBettingSystem() {
   const upcoming = [
     ...groupMatches.map(m => ({ ...m, isKO: false })),
     ...koMatches.map(m => ({ ...m, isKO: true }))
-  ].filter(m => !m.played && m.t1Id && m.t2Id).slice(0, 3);
+  ].filter(m => !m.played && !m.started && m.t1Id && m.t2Id).slice(0, 3);
 
   if (upcoming.length === 0) {
     matchesListEl.innerHTML = '<p style="opacity:0.7;">Aktuell keine anstehenden Spiele zum Wetten verfügbar.</p>';
@@ -1529,8 +1788,12 @@ function renderBettingSystem() {
     `).join('');
   }
 }
+// Spieler setzt Coins auf den Sieger eines Spiels (nur solange es nicht gestartet/beendet ist)
 function placeBet(matchId, isKO) {
   if (!myPlayerName) return alert('Bitte melde dich erst an, um zu wetten!');
+  const match = getMatchArray(isKO).find(m => m.id === matchId);
+  if (!match) return;
+  if (match.started || match.played) return alert('Wetten für dieses Spiel sind bereits geschlossen (Spiel wurde gestartet oder ist bereits beendet)!');
   const uid = `${isKO ? 'ko' : 'gr'}-${matchId}`;
   const teamSelect = document.getElementById(`bet-team-${uid}`);
   const amountInput = document.getElementById(`bet-amount-${uid}`);
@@ -1544,6 +1807,7 @@ function placeBet(matchId, isKO) {
   bets.push({ matchId, isKO, playerName: myPlayerName, chosenTeamId, amount });
   saveData();
 }
+// Zahlt nach Bestätigung eines Ergebnisses alle Wetten auf dieses Spiel aus (Quote 2:1)
 function evaluateBetsForMatch(matchId, isKO, winningTeamId) {
   const relatedBets = bets.filter(b => b.matchId === matchId && b.isKO === isKO);
   relatedBets.forEach(b => {
