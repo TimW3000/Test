@@ -118,13 +118,32 @@ const KNOWN_CLUB_COLORS = {
   "Atletico": "#CE3524",
   "BVB": "#FDE100"
 };
+// Standard-Wappen für die 12 Standard-Topteams (Wikipedia/Wikimedia Commons).
+// Damit muss der Admin die Wappen-URLs nicht mehr von Hand heraussuchen und
+// eintragen (siehe setClubLogo) - für diese Vereine sind sie schon hinterlegt.
+// Fügt der Admin einen eigenen Club hinzu, muss er dafür weiterhin selbst eine
+// Wappen-URL eintragen, da wir dafür keine feste Quelle kennen.
+const DEFAULT_CLUB_LOGOS = {
+  "Real Madrid": "https://upload.wikimedia.org/wikipedia/en/5/56/Real_Madrid_CF.svg",
+  "FC Bayern": "https://upload.wikimedia.org/wikipedia/commons/1/1b/FC_Bayern_M%C3%BCnchen_logo_%282017%29.svg",
+  "ManCity": "https://upload.wikimedia.org/wikipedia/en/e/eb/Manchester_City_FC_badge.svg",
+  "Arsenal": "https://upload.wikimedia.org/wikipedia/en/5/53/Arsenal_FC.svg",
+  "FC Barcelona": "https://upload.wikimedia.org/wikipedia/en/4/47/FC_Barcelona_%28crest%29.svg",
+  "PSG": "https://upload.wikimedia.org/wikipedia/en/a/a7/Paris_Saint-Germain_F.C..svg",
+  "Inter Mailand": "https://upload.wikimedia.org/wikipedia/commons/0/05/FC_Internazionale_Milano_2021.svg",
+  "Leverkusen": "https://upload.wikimedia.org/wikipedia/en/5/59/Bayer_04_Leverkusen_logo.svg",
+  "Liverpool": "https://upload.wikimedia.org/wikipedia/en/0/0c/Liverpool_FC.svg",
+  "ManU": "https://upload.wikimedia.org/wikipedia/en/7/7a/Manchester_United_FC_crest.svg",
+  "Atletico": "https://upload.wikimedia.org/wikipedia/en/f/f9/Atletico_Madrid_Logo_2024.svg",
+  "BVB": "https://upload.wikimedia.org/wikipedia/commons/6/67/Borussia_Dortmund_logo.svg"
+};
 // ============================================================================
 // 2. ZUSTAND — globale Variablen, die den kompletten Turnier-Stand abbilden.
 //    Diese Werte werden über Firebase mit allen Geräten synchronisiert (Abschnitt 4).
 // ============================================================================
 let players = [];
 let availableClubs = [...DEFAULT_CLUBS];
-let clubLogos = {};     // { clubName: "https://...wappen.png" }
+let clubLogos = { ...DEFAULT_CLUB_LOGOS };     // { clubName: "https://...wappen.png" }
 let teams = [];
 let numGroups = 3;       // Wie viele Gruppen wurden zuletzt ausgelost? (2, 3 oder 4)
 let groups = [];
@@ -505,7 +524,10 @@ db.ref('tournament').on('value', (snapshot) => {
   let rawPlayers = data.players || [];
   players = rawPlayers.map(p => typeof p === 'string' ? { name: p, isRef: false, password: null } : p);
   availableClubs = data.availableClubs || [...DEFAULT_CLUBS];
-  clubLogos = data.clubLogos || {};
+  // Nur beim allerersten Laden (noch nie gespeichert) mit den Standard-Wappen befüllen -
+  // danach gilt immer exakt das, was gespeichert wurde (auch wenn der Admin ein Wappen
+  // bewusst entfernt hat, siehe setClubLogo).
+  clubLogos = data.clubLogos || { ...DEFAULT_CLUB_LOGOS };
   teams = data.teams || [];
   numGroups = data.numGroups || 3;
   groups = data.groups || [];
@@ -606,8 +628,9 @@ function removeClub(index) {
 // Setzt die Club-Liste auf die Standard-Topteams (DEFAULT_CLUBS) zurück
 function resetClubsToDefault() {
   if (!hasElevated()) return;
-  if (confirm('Verfügbare Clubs auf Standard-Topteams zurücksetzen?')) {
+  if (confirm('Verfügbare Clubs auf Standard-Topteams zurücksetzen? (Stellt auch deren Standard-Wappen wieder her)')) {
     availableClubs = [...DEFAULT_CLUBS];
+    clubLogos = { ...clubLogos, ...DEFAULT_CLUB_LOGOS };
     saveData();
   }
 }
