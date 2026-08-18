@@ -1196,7 +1196,9 @@ function renderTeams() {
   container.innerHTML = teams.map(t => {
     const isMyTeam = (myPlayerName && (t.p1 === myPlayerName || t.p2 === myPlayerName));
     const canEditName = hasElevated() || isMyTeam;
-    const clubBadgeHtml = t.club ? `<div class="club-badge">${clubLogoImg(t.club, 18)}${t.club}</div>` : '';
+    // Hier wird das Wappen sauber gerendert:
+    const clubBadgeHtml = t.club ? `<div class="club-badge">${renderClubNameWithBadge(t.club)}</div>` : '';
+    
     return `
       <div class="admin-card ${isMyTeam ? 'highlight-me' : ''}">
         <div style="display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap;">
@@ -1311,15 +1313,18 @@ function renderMatchBlock(m, isKO) {
   const myTeam = getMyTeam();
   const canEdit = hasElevated() || (myTeam && (m.t1Id === myTeam.id || m.t2Id === myTeam.id));
   const locked = m.confirmed && !hasElevated();
+  
   let statusBadge = '<span class="status-badge status-open">❌ Offen</span>';
   if (m.betsEvaluated) statusBadge = '<span class="status-badge status-confirmed">🔒 Bestätigt & Ausgezahlt</span>';
   else if (m.confirmed) statusBadge = '<span class="status-badge status-confirmed">✅ Bestätigt</span>';
   else if (m.played) statusBadge = '<span class="status-badge status-provisional">⏳ Vorläufig</span>';
+  
   const prefix = `m_${m.id}_${isKO ? 'ko_' : ''}`;
   const courtColor = m.court === 'Hauptplatz' ? '#e74c3c' : '#2ecc71';
   const roundLabel = isKO ? m.round : `Runde ${m.slot || ''} • ${m.group}`;
   const hinLegColor = 'border-left: 5px solid #f1c40f; background: rgba(241, 196, 15, 0.1);';
   const rueckLegColor = 'border-left: 5px solid #3498db; background: rgba(52, 152, 219, 0.1);';
+  
   return `
     <div class="match-card" style="position:relative;">
       <div style="display:flex; justify-content: space-between; align-items:center; flex-wrap:wrap; gap:6px;">
@@ -1331,11 +1336,11 @@ function renderMatchBlock(m, isKO) {
       </div>
       <div style="margin: 6px 0;">
         <div style="font-size:1.05em; font-weight:bold;">
-          ${t1.name} <small style="opacity:0.8;">(${t1.p1} & ${t1.p2})</small> ${t1.club ? `<span style="color:#f1c40f;">[${t1.club}]</span>` : ''}
+          ${t1.name} <small style="opacity:0.8;">(${t1.p1} & ${t1.p2})</small> ${t1.club ? renderClubNameWithBadge(t1.club) : ''}
         </div>
         <div style="font-size:0.8em; opacity:0.6; margin:2px 0;">vs</div>
         <div style="font-size:1.05em; font-weight:bold;">
-          ${t2.name} <small style="opacity:0.8;">(${t2.p1} & ${t2.p2})</small> ${t2.club ? `<span style="color:#f1c40f;">[${t2.club}]</span>` : ''}
+          ${t2.name} <small style="opacity:0.8;">(${t2.p1} & ${t2.p2})</small> ${t2.club ? renderClubNameWithBadge(t2.club) : ''}
         </div>
       </div>
       <div style="display:flex; flex-direction:column; gap:8px;">
@@ -1363,6 +1368,7 @@ function renderMatchBlock(m, isKO) {
       </div>
     </div>
   `;
+}
 }
 function renderMatches() {
   const groupContainer = document.getElementById('matches-list');
@@ -1448,12 +1454,15 @@ function renderBettingSystem() {
   const matchesListEl = document.getElementById('betting-matches-list');
   const leaderboardEl = document.getElementById('betting-leaderboard');
   if (!balanceEl || !matchesListEl || !leaderboardEl) return;
+
   const currentBalance = myPlayerName ? getUserBalance(myPlayerName) : 0;
   balanceEl.innerText = currentBalance;
+
   const upcoming = [
     ...groupMatches.map(m => ({ ...m, isKO: false })),
     ...koMatches.map(m => ({ ...m, isKO: true }))
   ].filter(m => !m.played && m.t1Id && m.t2Id).slice(0, 3);
+
   if (upcoming.length === 0) {
     matchesListEl.innerHTML = '<p style="opacity:0.7;">Aktuell keine anstehenden Spiele zum Wetten verfügbar.</p>';
   } else {
@@ -1463,13 +1472,14 @@ function renderBettingSystem() {
       if (!t1 || !t2) return '';
       const myExistingBet = bets.find(b => b.matchId === m.id && b.isKO === m.isKO && b.playerName === myPlayerName);
       const uid = `${m.isKO ? 'ko' : 'gr'}-${m.id}`;
+
       return `
         <div style="background: rgba(255,255,255,0.05); padding: 12px; border-radius: 8px; margin-bottom: 10px; border: 1px solid rgba(255,255,255,0.1);">
           <div style="font-size: 0.85em; opacity: 0.8; margin-bottom: 5px;">${m.isKO ? m.round : m.group}</div>
           <div style="display: flex; justify-content: space-between; align-items: center; font-weight: bold; margin-bottom: 10px; flex-wrap:wrap; gap:6px;">
-            <span>${t1.name}${t1.club ? ' (' + t1.club + ')' : ''}</span>
+            <span>${t1.name} ${t1.club ? renderClubNameWithBadge(t1.club) : ''}</span>
             <span style="color: var(--fal-yellow);">VS</span>
-            <span>${t2.name}${t2.club ? ' (' + t2.club + ')' : ''}</span>
+            <span>${t2.name} ${t2.club ? renderClubNameWithBadge(t2.club) : ''}</span>
           </div>
           ${myExistingBet ? `
             <div style="text-align:center; font-size: 0.9em; color: var(--fal-yellow); background: rgba(0,0,0,0.2); padding: 5px; border-radius: 5px;">
@@ -1489,10 +1499,12 @@ function renderBettingSystem() {
       `;
     }).join('');
   }
+
   const sortedUsers = Object.keys(userBalances)
     .map(name => ({ name, balance: userBalances[name] }))
     .sort((a, b) => b.balance - a.balance)
     .slice(0, 5);
+
   if (sortedUsers.length === 0) {
     leaderboardEl.innerHTML = '<p style="font-size:0.85em; opacity:0.7;">Noch keine Konten aktiv.</p>';
   } else {
