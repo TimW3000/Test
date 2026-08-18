@@ -79,6 +79,7 @@ window.placeBet = placeBet;
 const firebaseConfig = {
   apiKey: "AIzaSyCWYRh1GonZYsOqxGXn1nWoUMWl7gamGoA",
   authDomain: "website-test-3800e.firebaseapp.com",
+  databaseURL: "https://website-test-3800e-default-rtdb.europe-west1.firebasedatabase.app",
   projectId: "website-test-3800e",
   storageBucket: "website-test-3800e.firebasestorage.app",
   messagingSenderId: "605126180642",
@@ -475,6 +476,21 @@ function showTab(tabName) {
 //    Sobald sich IRGENDWO etwas in der Datenbank ändert, feuert dieser Listener
 //    bei ALLEN offenen Browsern/Handys und aktualisiert die komplette Anzeige.
 // ============================================================================
+// Firebase-eigener Spezial-Pfad, der anzeigt, ob GERADE eine echte Verbindung zum
+// Server besteht. Steht die Anzeige oben rechts dauerhaft auf "Nicht verbunden",
+// kommen Änderungen NICHT beim Server an, selbst wenn die Seite selbst normal aussieht
+// (die Seite zeigt dann nur ihren eigenen Zwischenspeicher, siehe .catch() in saveData).
+db.ref('.info/connected').on('value', (snap) => {
+  const el = document.getElementById('connection-status-badge');
+  if (!el) return;
+  if (snap.val() === true) {
+    el.innerHTML = '🟢 Verbunden';
+    el.style.color = '#2ecc71';
+  } else {
+    el.innerHTML = '🔴 Nicht verbunden';
+    el.style.color = '#ff4d4d';
+  }
+});
 db.ref('tournament').on('value', (snapshot) => {
   const data = snapshot.val() || {};
   let rawPlayers = data.players || [];
