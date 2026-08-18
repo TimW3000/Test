@@ -194,6 +194,20 @@ function getClubColor(clubName) {
   for (let i = 0; i < clubName.length; i++) hash = (hash * 31 + clubName.charCodeAt(i)) >>> 0;
   return COLOR_PALETTE_18[hash % COLOR_PALETTE_18.length];
 }
+// Bestimmt eine gut lesbare Textfarbe (hell oder dunkel) für einen Hintergrund,
+// je nachdem wie hell dieser Hintergrund ist. Wird fürs Glücksrad gebraucht, damit
+// z.B. dunkelblauer Text auf Gelb nicht durch eine dicke Kontur "zuverschmiert" wird
+// und heller Text auf hellen Vereinsfarben (z.B. hellblaues ManCity) lesbar bleibt.
+function getReadableTextColor(bgColorHex) {
+  if (!bgColorHex || bgColorHex[0] !== '#') return '#ffffff';
+  const hex = bgColorHex.slice(1);
+  const full = hex.length === 3 ? hex.split('').map(c => c + c).join('') : hex;
+  const r = parseInt(full.substring(0, 2), 16);
+  const g = parseInt(full.substring(2, 4), 16);
+  const b = parseInt(full.substring(4, 6), 16);
+  const luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+  return luminance > 0.55 ? '#12202e' : '#ffffff';
+}
 // Bild-Cache fürs Glücksrad: lädt jedes Vereinswappen nur einmal und zeichnet
 // das Rad neu, sobald ein Bild fertig geladen ist (damit es sofort sichtbar wird).
 const clubLogoImageCache = {};
@@ -412,6 +426,7 @@ function showTab(tabName) {
   if (tab) tab.classList.add('active');
   if (tabName === 'matches') renderMatches();
   if (tabName === 'groups') renderGroups();
+  if (tabName === 'admin') renderAdminPanel();
 }
 // ============================================================================
 // 4. LIVE-SYNC VIA FIREBASE — hier läuft die "Magie" der Mehrgeräte-Synchronisation:
@@ -450,6 +465,10 @@ db.ref('tournament').on('value', (snapshot) => {
   }
   renderAll();
   handleLiveDraftUI();
+}, (error) => {
+  // Wird z.B. ausgelöst, wenn die Firebase-Datenbankregeln das Lesen verbieten
+  console.error('Firebase Lese-Fehler:', error);
+  alert('⚠️ Verbindung zur Datenbank fehlgeschlagen!\n\n' + error.message + '\n\nBitte die Firebase-Datenbankregeln prüfen.');
 });
 // Schreibt den kompletten aktuellen Zustand in Firebase zurück (löst bei ALLEN Geräten ein Update aus)
 function saveData() {
@@ -469,6 +488,12 @@ function saveData() {
     draftState,
     userBalances,
     bets
+  }).catch((error) => {
+    // Ohne diesen Catch-Block schlägt ein blockiertes Speichern (z.B. durch zu strenge
+    // Firebase-Regeln) KOMPLETT UNBEMERKT fehl -> genau das war vermutlich der Grund,
+    // warum "die Datenbank nicht speichert". Jetzt gibt es stattdessen eine klare Meldung.
+    console.error('Firebase Speicher-Fehler:', error);
+    alert('⚠️ Speichern fehlgeschlagen!\n\n' + error.message + '\n\nBitte die Firebase-Datenbankregeln prüfen (Firebase-Konsole -> Realtime Database -> Regeln).');
   });
 }
 // ============================================================================
@@ -661,21 +686,17 @@ function drawWheelCanvas(angleOffset) {
     const endAngle = startAngle + sliceAngle;
     const itemText = String(items[i]);
 
+    // Segment-Hintergrundfarbe einmal bestimmen (wird für Füllung UND Textfarbe gebraucht)
+    const segmentColor = isClubWheel
+      ? ((typeof getClubColor === 'function' && getClubColor(itemText)) ? getClubColor(itemText) : (i % 2 === 0 ? '#1b365d' : '#f1c40f'))
+      : ((i % 2 === 0) ? '#1b365d' : '#f1c40f');
+
     // 🎨 Farbfüllung Segmente
     ctx.beginPath();
     ctx.moveTo(centerX, centerY);
     ctx.arc(centerX, centerY, radius, startAngle, endAngle);
     ctx.closePath();
-
-    if (isClubWheel) {
-      // Vereinsfarbe aus getClubColor() oder Fallback
-      ctx.fillStyle = (typeof getClubColor === 'function' && getClubColor(itemText)) 
-        ? getClubColor(itemText) 
-        : (i % 2 === 0 ? '#1b365d' : '#f1c40f');
-    } else {
-      // Abwechselnd FAL-Blau und FAL-Gelb für Spieler
-      ctx.fillStyle = (i % 2 === 0) ? '#1b365d' : '#f1c40f';
-    }
+    ctx.fillStyle = segmentColor;
     ctx.fill();
 
     // 📐 Deutliche Segment-Trennlinien
@@ -690,16 +711,18 @@ function drawWheelCanvas(angleOffset) {
     ctx.textAlign = "right";
     ctx.textBaseline = "middle";
 
-    ctx.font = "bold 12px sans-serif";
-    
-    // Kontur/Schatten für maximale Lesbarkeit
-    ctx.strokeStyle = '#000000';
-    ctx.lineWidth = 3;
-    ctx.strokeText(itemText, radius - 35, 0);
+    ctx.font = "bold 13px -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif";
 
-    // Textfarbe anpassen (bei gelbem Hintergrund dunkler Text)
-    const isYellowBg = (!isClubWheel && i % 2 === 1);
-    ctx.fillStyle = isYellowBg ? '#1b365d' : '#ffffff';
+    // Textfarbe automatisch an die Helligkeit des Segment-Hintergrunds anpassen
+    // (z.B. dunkler Text auf hellem Gelb/Hellblau, heller Text auf dunklem Blau/Rot).
+    // Die Kontur ist dünn UND passend eingefärbt, damit z.B. ein "M" nicht zu einem
+    // schwarzen Klecks verschmiert (das Problem bei der alten, dicken schwarzen Kontur).
+    const textColor = getReadableTextColor(segmentColor);
+    const outlineColor = (textColor === '#ffffff') ? 'rgba(0,0,0,0.55)' : 'rgba(255,255,255,0.65)';
+    ctx.strokeStyle = outlineColor;
+    ctx.lineWidth = 1.5;
+    ctx.strokeText(itemText, radius - 35, 0);
+    ctx.fillStyle = textColor;
     ctx.fillText(itemText, radius - 35, 0);
 
     // 🖼️ Wappen rendern bei Vereinsrad
