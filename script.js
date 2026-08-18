@@ -37,13 +37,13 @@ window.placeBet = placeBet;
 
 // 1. Firebase Konfiguration
 const firebaseConfig = {
-  apiKey: "AIzaSyBh0yOA1ckPp3TFBJ-Yz932k9A2R1pkTSc",
-  authDomain: "fal-fifa-turnier.firebaseapp.com",
-  databaseURL: "https://fal-fifa-turnier-default-rtdb.europe-west1.firebasedatabase.app",
-  projectId: "fal-fifa-turnier",
-  storageBucket: "fal-fifa-turnier.firebasestorage.app",
-  messagingSenderId: "1095058810971",
-  appId: "1:1095058810971:web:2023d72275ed8c22e2b77e"
+  apiKey: "AIzaSyCWYRh1GonZYsOqxGXn1nWoUMWl7gamGoA",
+  authDomain: "website-test-3800e.firebaseapp.com",
+  projectId: "website-test-3800e",
+  storageBucket: "website-test-3800e.firebasestorage.app",
+  messagingSenderId: "605126180642",
+  appId: "1:605126180642:web:be0d85d1549f59617aaf7b",
+  measurementId: "G-9FHBBGE8F2"
 };
 
 if (!firebase.apps.length) {
