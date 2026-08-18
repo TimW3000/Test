@@ -12,13 +12,6 @@
 </head>
 <body>
 
-  <!-- Verbindungs-Anzeige: zeigt IMMER (auch über allen Modals) live an, ob die App
-       gerade wirklich mit dem Firebase-Server verbunden ist. Praktisch zur Fehlersuche,
-       vor allem auf Geräten ohne Zugriff auf die Browser-Konsole (z.B. iPad). -->
-  <div id="connection-status-badge" style="position:fixed; top:8px; right:8px; z-index:2000; font-size:0.75rem; padding:4px 10px; border-radius:6px; background:rgba(0,0,0,0.65); color:#ccc; font-weight:bold;">
-    ⏳ Verbinde...
-  </div>
-
   <!-- Startscreen / Rollenauswahl-Modal -->
 <div id="role-selection-modal" class="modal-overlay" style="display: flex;">
   <div class="modal-content">
@@ -77,6 +70,7 @@
     </div>
     <div id="user-badge-container">
       <span id="user-badge"></span>
+      <span id="connection-status-badge" class="connection-badge"></span>
       <span id="user-password-action"></span>
       <button class="btn-secondary btn-sm" id="btn-switch-user" style="margin-left: 10px;">Wechseln</button>
     </div>

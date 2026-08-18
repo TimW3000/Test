@@ -136,6 +136,7 @@ let tipsEvaluated = false;
 let registrationLocked = false;
 let myPlayerName = localStorage.getItem('fifa_my_player') || null;
 let pendingAdminLogin = false;
+let isFirebaseConnected = null; // null = noch unbekannt, true/false = Verbindungsstatus (siehe .info/connected weiter unten)
 let userBalances = {};  // { "Name": 100 }
 let bets = [];          // { matchId, isKO, playerName, chosenTeamId, amount }
 // Status-Variablen für das Auslosungs-System (Duo-Draft) - UNVERÄNDERT
@@ -304,6 +305,21 @@ function renderUserBadge() {
     userBadge.innerHTML = myPlayerName
       ? `Angemeldet als: <strong>${myPlayerName}</strong> ${roleTag}`
       : 'Modus: <strong>Zuschauer</strong>';
+  }
+  // Verbindungsstatus zu Firebase - nur für den Admin sichtbar (Fehlersuche-Werkzeug)
+  const connBadge = document.getElementById('connection-status-badge');
+  if (connBadge) {
+    if (!isAdmin() || isFirebaseConnected === null) {
+      connBadge.style.display = 'none';
+    } else if (isFirebaseConnected) {
+      connBadge.style.display = 'inline';
+      connBadge.textContent = '🟢 Verbunden';
+      connBadge.style.color = '#2ecc71';
+    } else {
+      connBadge.style.display = 'inline';
+      connBadge.textContent = '🔴 Nicht verbunden';
+      connBadge.style.color = '#ff4d4d';
+    }
   }
   const pwAction = document.getElementById('user-password-action');
   if (pwAction) {
@@ -481,15 +497,8 @@ function showTab(tabName) {
 // kommen Änderungen NICHT beim Server an, selbst wenn die Seite selbst normal aussieht
 // (die Seite zeigt dann nur ihren eigenen Zwischenspeicher, siehe .catch() in saveData).
 db.ref('.info/connected').on('value', (snap) => {
-  const el = document.getElementById('connection-status-badge');
-  if (!el) return;
-  if (snap.val() === true) {
-    el.innerHTML = '🟢 Verbunden';
-    el.style.color = '#2ecc71';
-  } else {
-    el.innerHTML = '🔴 Nicht verbunden';
-    el.style.color = '#ff4d4d';
-  }
+  isFirebaseConnected = (snap.val() === true);
+  renderUserBadge();
 });
 db.ref('tournament').on('value', (snapshot) => {
   const data = snapshot.val() || {};
