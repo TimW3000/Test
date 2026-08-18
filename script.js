@@ -413,6 +413,7 @@ function startInteractiveDraft() {
     handleLiveDraftUI();
   }
 }
+
 function handleLiveDraftUI() {
   const modal = document.getElementById('draft-modal');
   if (!modal) return;
@@ -424,6 +425,7 @@ function handleLiveDraftUI() {
   modal.style.display = 'flex';
   renderDraftStep();
 }
+
 function renderDraftStep() {
   const stage = document.getElementById('draft-stage');
   if (!stage) return;
@@ -484,6 +486,7 @@ function renderDraftStep() {
   `;
   startWheelAnimationLoop();
 }
+
 function startWheelAnimationLoop() {
   if (animFrameId) cancelAnimationFrame(animFrameId);
   function animate() {
@@ -508,46 +511,82 @@ function startWheelAnimationLoop() {
   }
   animFrameId = requestAnimationFrame(animate);
 }
+
 function drawWheelCanvas(angleOffset) {
   const canvas = document.getElementById('wheel-canvas');
   if (!canvas) return;
   const ctx = canvas.getContext('2d');
-  let items = [];
-  if (draftState.currentStep === 0 || draftState.currentStep === 1) {
-    items = draftState.remainingPlayers;
-  } else {
-    items = draftState.remainingClubs;
-  }
+  
+  const isClubWheel = (draftState.currentStep === 2);
+  let items = isClubWheel ? draftState.remainingClubs : draftState.remainingPlayers;
   const numItems = items ? items.length : 0;
-  if (numItems === 0) {
-    ctx.clearRect(0, 0, 260, 260);
-    return;
-  }
-  const sliceAngle = (2 * Math.PI) / numItems;
+  
   ctx.clearRect(0, 0, 260, 260);
-  const colors = ['#1e3e62', '#0b192c', '#132a4a', '#2a2a2a', '#10233d'];
+  if (numItems === 0) return;
+
+  const centerX = 130;
+  const centerY = 130;
+  const radius = 130;
+  const sliceAngle = (2 * Math.PI) / numItems;
+
   for (let i = 0; i < numItems; i++) {
     const startAngle = angleOffset + i * sliceAngle;
     const endAngle = startAngle + sliceAngle;
+    const itemText = String(items[i]);
+
+    // 🎨 Farbfüllung Segmente
     ctx.beginPath();
-    ctx.moveTo(130, 130);
-    ctx.arc(130, 130, 130, startAngle, endAngle);
-    ctx.fillStyle = colors[i % colors.length];
+    ctx.moveTo(centerX, centerY);
+    ctx.arc(centerX, centerY, radius, startAngle, endAngle);
+    ctx.closePath();
+
+    if (isClubWheel) {
+      // Vereinsfarbe aus getClubColor() oder Fallback
+      ctx.fillStyle = (typeof getClubColor === 'function' && getClubColor(itemText)) 
+        ? getClubColor(itemText) 
+        : (i % 2 === 0 ? '#1b365d' : '#f1c40f');
+    } else {
+      // Abwechselnd FAL-Blau und FAL-Gelb für Spieler
+      ctx.fillStyle = (i % 2 === 0) ? '#1b365d' : '#f1c40f';
+    }
     ctx.fill();
-    ctx.lineWidth = 1;
-    ctx.strokeStyle = 'rgba(255,200,0,0.3)';
+
+    // 📐 Deutliche Segment-Trennlinien
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = '#ffffff';
     ctx.stroke();
+
+    // 📝 Text & Wappen auf dem Rad
     ctx.save();
-    ctx.translate(130, 130);
+    ctx.translate(centerX, centerY);
     ctx.rotate(startAngle + sliceAngle / 2);
     ctx.textAlign = "right";
-    ctx.fillStyle = "#ffffff";
-    ctx.font = "bold 11px sans-serif";
-    const text = String(items[i]).substring(0, 12);
-    ctx.fillText(text, 120, 4);
+    ctx.textBaseline = "middle";
+
+    ctx.font = "bold 12px sans-serif";
+    
+    // Kontur/Schatten für maximale Lesbarkeit
+    ctx.strokeStyle = '#000000';
+    ctx.lineWidth = 3;
+    ctx.strokeText(itemText, radius - 35, 0);
+
+    // Textfarbe anpassen (bei gelbem Hintergrund dunkler Text)
+    const isYellowBg = (!isClubWheel && i % 2 === 1);
+    ctx.fillStyle = isYellowBg ? '#1b365d' : '#ffffff';
+    ctx.fillText(itemText, radius - 35, 0);
+
+    // 🖼️ Wappen rendern bei Vereinsrad
+    if (isClubWheel && typeof getClubLogoImageElement === 'function') {
+      const logoImg = getClubLogoImageElement(itemText);
+      if (logoImg && logoImg.complete && logoImg.naturalWidth !== 0) {
+        ctx.drawImage(logoImg, radius - 28, -10, 20, 20);
+      }
+    }
+
     ctx.restore();
   }
 }
+
 function spinWheel() {
   if (!hasElevated() || draftState.spinning) return;
   let currentPool = [];
@@ -596,6 +635,7 @@ function spinWheel() {
     }
   }, 4100);
 }
+
 function nextDraftStep() {
   if (!hasElevated()) return;
   if (draftState.lastDrawnItem) {
@@ -622,6 +662,7 @@ function nextDraftStep() {
   saveData();
   renderDraftStep();
 }
+
 function finishDraft() {
   if (!hasElevated()) return;
   teams = [...draftState.pairs];
@@ -631,6 +672,7 @@ function finishDraft() {
   renderAll();
   alert("🎉 Auslosung beendet! Die Teams wurden geladen.");
 }
+
 function cancelDraft() {
   if (!hasElevated()) return;
   if (confirm("Möchtest du die Auslosung wirklich abbrechen und zurücksetzen?")) {
