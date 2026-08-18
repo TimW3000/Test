@@ -97,6 +97,8 @@
     <section id="tab-home" class="tab-content active">
       <h2>🏠 Übersicht</h2>
 
+      <div id="my-overview-content"></div>
+
       <div class="admin-card">
         <h3 style="margin-top:0;">📜 Turnierregeln</h3>
         <div id="rules-content"></div>
@@ -199,6 +201,11 @@
           <button class="btn-primary" onclick="drawKOPhase()">⚔️ 3. KO-Phase auslosen (Viertel- oder direkt Halbfinale)</button>
           <button class="btn-primary" onclick="drawSemifinals()">🥈 4. Halbfinale auslosen (nur bei 3/4 Gruppen)</button>
           <button class="btn-primary" onclick="drawFinals()">🏆 5. Finale & Spiel um Platz 3 erstellen</button>
+        </div>
+        <div style="margin-top:14px; padding-top:12px; border-top:1px solid rgba(255,255,255,0.1); display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+          <label for="match-interval-input" style="font-size:0.9em;">⏱️ Zeitabstand zwischen Spiel-Slots (Minuten):</label>
+          <input type="number" id="match-interval-input" min="1" value="20" style="width:70px;">
+          <button class="btn-secondary btn-sm" onclick="updateMatchInterval()">Übernehmen</button>
         </div>
       </div>
 

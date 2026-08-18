@@ -48,6 +48,7 @@ window.requestOwnPassword = requestOwnPassword;
 window.confirmPendingPassword = confirmPendingPassword;
 window.rejectPendingPassword = rejectPendingPassword;
 window.toggleRegistrationLock = toggleRegistrationLock;
+window.updateMatchInterval = updateMatchInterval;
 window.drawGroups = drawGroups;
 window.drawKOPhase = drawKOPhase;
 window.drawSemifinals = drawSemifinals;
@@ -149,6 +150,7 @@ let availableClubs = [...DEFAULT_CLUBS];
 let clubLogos = { ...DEFAULT_CLUB_LOGOS };     // { clubName: "https://...wappen.png" }
 let teams = [];
 let numGroups = 3;       // Wie viele Gruppen wurden zuletzt ausgelost? (2, 3 oder 4)
+let matchIntervalMinutes = 20; // Zeitabstand zwischen zwei Spiel-Slots (Hauptplatz+Nebenplatz), admin-einstellbar
 let groups = [];
 let groupMatches = [];
 let koMatches = [];
@@ -533,6 +535,7 @@ db.ref('tournament').on('value', (snapshot) => {
   clubLogos = data.clubLogos || { ...DEFAULT_CLUB_LOGOS };
   teams = data.teams || [];
   numGroups = data.numGroups || 3;
+  matchIntervalMinutes = data.matchIntervalMinutes || 20;
   groups = data.groups || [];
   groupMatches = data.groupMatches || [];
   koMatches = data.koMatches || [];
@@ -591,6 +594,7 @@ function saveData() {
     clubLogos,
     teams,
     numGroups,
+    matchIntervalMinutes,
     groups,
     groupMatches,
     koMatches,
@@ -1099,6 +1103,20 @@ function toggleRegistrationLock() {
   registrationLocked = !registrationLocked;
   saveData();
 }
+// Ändert den Zeitabstand zwischen zwei Spiel-Slots (Hauptplatz+Nebenplatz) und
+// berechnet den Zeitplan aller noch nicht gestarteten/gespielten Spiele sofort neu
+function updateMatchInterval() {
+  if (!hasElevated()) return;
+  const input = document.getElementById('match-interval-input');
+  const val = input ? parseInt(input.value, 10) : NaN;
+  if (isNaN(val) || val <= 0) return alert('Bitte eine gültige Anzahl Minuten (größer als 0) eingeben!');
+  matchIntervalMinutes = val;
+  rescheduleWholeArray(groupMatches);
+  rescheduleWholeArray(koMatches);
+  saveData();
+  renderAll();
+  alert(`✅ Zeitabstand auf ${val} Minuten geändert – der Spielplan wurde entsprechend aktualisiert.`);
+}
 // ============================================================================
 // 8. GRUPPEN- & KO-AUSLOSUNG — Gruppenphase erstellen, dann je nach Gruppenanzahl
 //    (2/3/4, siehe drawGroups) automatisch passende KO-Phase: Viertelfinale,
@@ -1116,7 +1134,8 @@ function makeMatch(id, group, slot, t1Id, t2Id) {
     played: false,
     confirmed: false,
     betsEvaluated: false,
-    started: false // true = Admin/Ref hat das Spiel als "läuft" markiert -> keine Wetten mehr möglich
+    started: false, // true = Admin/Ref hat das Spiel als "läuft" markiert -> keine Wetten mehr möglich
+    scheduledTime: null // geplante Startzeit (Unix-Millisekunden), siehe assignScheduledTimes
   };
 }
 // Erzeugt ein neues KO-Spiel-Objekt (Viertelfinale, Halbfinale, Finale, Spiel um Platz 3)
@@ -1131,8 +1150,67 @@ function makeKOMatch(id, round, court, t1Id, t2Id) {
     played: false,
     confirmed: false,
     betsEvaluated: false,
-    started: false // true = Admin/Ref hat das Spiel als "läuft" markiert -> keine Wetten mehr möglich
+    started: false, // true = Admin/Ref hat das Spiel als "läuft" markiert -> keine Wetten mehr möglich
+    scheduledTime: null // geplante Startzeit (Unix-Millisekunden), siehe assignScheduledTimes
   };
+}
+// ---- ZEITPLAN-HELFER ----
+// Formatiert einen Unix-Zeitstempel als lesbare Uhrzeit (z.B. "18:20 Uhr")
+function formatMatchTime(ms) {
+  if (!ms) return '';
+  return new Date(ms).toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' }) + ' Uhr';
+}
+// Verteilt Startzeiten auf eine Liste NEU erstellter Spiele: je 2 direkt aufeinander-
+// folgende Spiele (Hauptplatz + Nebenplatz) bekommen dieselbe Zeit ("spielen zeitgleich"),
+// das nächste Paar ist matchIntervalMinutes später dran, usw. baseTime ist meist "jetzt"
+// (der Moment, in dem der Admin die Auslosung/Runde erstellt).
+function assignScheduledTimes(newMatches, baseTime) {
+  newMatches.forEach((m, idx) => {
+    m.scheduledTime = baseTime + Math.floor(idx / 2) * matchIntervalMinutes * 60000;
+  });
+}
+// Wird beim Starten eines Spiels aufgerufen: passt die geplanten Uhrzeiten aller NOCH
+// NICHT gestarteten/gespielten Spiele im selben Spielplan (Gruppen- oder KO-Phase) an,
+// ausgehend vom TATSÄCHLICHEN Startzeitpunkt des gerade gestarteten Spiels. So gleicht
+// sich der Zeitplan bei Verspätungen (oder wenn's mal schneller geht) automatisch an.
+function rescheduleFollowingMatches(matchArray, startedMatch) {
+  const idx = matchArray.indexOf(startedMatch);
+  if (idx === -1) return;
+  const startedPairIndex = Math.floor(idx / 2);
+  const anchorTime = startedMatch.scheduledTime;
+  matchArray.forEach((m, i) => {
+    if (m.started || m.played) return; // Vergangenheit/Laufendes nicht mehr anfassen
+    const pairIndex = Math.floor(i / 2);
+    if (pairIndex < startedPairIndex) return;
+    m.scheduledTime = anchorTime + (pairIndex - startedPairIndex) * matchIntervalMinutes * 60000;
+  });
+}
+// Wird aufgerufen, wenn der Admin den Zeitabstand (matchIntervalMinutes) ändert: berechnet
+// alle noch nicht gestarteten/gespielten Spiele im Array neu. Anker ist das zuletzt
+// gestartete Spiel (dessen Zeit ist ja Fakt), sonst die Zeit des allerersten Spiels.
+function rescheduleWholeArray(matchArray) {
+  if (!matchArray || matchArray.length === 0) return;
+  let anchorTime = null;
+  let anchorPairIndex = 0;
+  matchArray.forEach((m, i) => {
+    if ((m.started || m.played) && m.scheduledTime) {
+      const pairIndex = Math.floor(i / 2);
+      if (anchorTime === null || pairIndex > anchorPairIndex) {
+        anchorTime = m.scheduledTime;
+        anchorPairIndex = pairIndex;
+      }
+    }
+  });
+  if (anchorTime === null) {
+    anchorTime = matchArray[0].scheduledTime || Date.now();
+    anchorPairIndex = 0;
+  }
+  matchArray.forEach((m, i) => {
+    if (m.started || m.played) return;
+    const pairIndex = Math.floor(i / 2);
+    if (pairIndex < anchorPairIndex) return;
+    m.scheduledTime = anchorTime + (pairIndex - anchorPairIndex) * matchIntervalMinutes * 60000;
+  });
 }
 // Teilt die Teams zufällig auf die vom Admin gewählte Anzahl Gruppen (2/3/4) auf
 // und erstellt daraus direkt den kompletten Gruppen-Spielplan (Hin- und Rückspiele)
@@ -1186,6 +1264,7 @@ function drawGroups() {
       match.court = (idx % 2 === 1) ? 'Nebenplatz' : 'Hauptplatz';
       groupMatches.push(match);
     });
+    assignScheduledTimes(groupMatches, Date.now());
     koMatches = [];
     saveData();
     renderAll();
@@ -1219,6 +1298,7 @@ function drawKOPhase() {
     koMatches = [];
     koMatches.push(makeKOMatch(201, 'Halbfinale 1', 'Hauptplatz', gA.rankings[0].teamId, gB.rankings[1].teamId));
     koMatches.push(makeKOMatch(202, 'Halbfinale 2', 'Nebenplatz', gB.rankings[0].teamId, gA.rankings[1].teamId));
+    assignScheduledTimes(koMatches, Date.now());
     saveData();
     showTab('matches');
     alert('🎉 Halbfinale wurde direkt ausgelost!');
@@ -1239,6 +1319,7 @@ function drawKOPhase() {
     koMatches.push(makeKOMatch(matchId++, 'Viertelfinale', 'Nebenplatz', gB.rankings[0].teamId, gA.rankings[1].teamId));
     koMatches.push(makeKOMatch(matchId++, 'Viertelfinale', 'Hauptplatz', gC.rankings[0].teamId, gD.rankings[1].teamId));
     koMatches.push(makeKOMatch(matchId++, 'Viertelfinale', 'Nebenplatz', gD.rankings[0].teamId, gC.rankings[1].teamId));
+    assignScheduledTimes(koMatches, Date.now());
     saveData();
     showTab('matches');
     alert('🎉 Viertelfinale wurde ausgelost!');
@@ -1280,6 +1361,7 @@ function drawKOPhase() {
   pairsArr.forEach((p, i) => {
     koMatches.push(makeKOMatch(matchId++, 'Viertelfinale', (i % 2 === 0) ? 'Hauptplatz' : 'Nebenplatz', p.a.teamId, p.b.teamId));
   });
+  assignScheduledTimes(koMatches, Date.now());
   saveData();
   showTab('matches');
 }
@@ -1302,8 +1384,12 @@ function drawSemifinals() {
   if (winners.length < 4) return alert('Es müssen erst alle 4 Viertelfinal-Spiele eingetragen sein!');
   if (confirm('Halbfinale jetzt zufällig aus den 4 Siegern auslosen?')) {
     const shuffled = [...winners].sort(() => Math.random() - 0.5);
-    koMatches.push(makeKOMatch(201, 'Halbfinale 1', 'Hauptplatz', shuffled[0], shuffled[1]));
-    koMatches.push(makeKOMatch(202, 'Halbfinale 2', 'Nebenplatz', shuffled[2], shuffled[3]));
+    const newMatches = [
+      makeKOMatch(201, 'Halbfinale 1', 'Hauptplatz', shuffled[0], shuffled[1]),
+      makeKOMatch(202, 'Halbfinale 2', 'Nebenplatz', shuffled[2], shuffled[3])
+    ];
+    assignScheduledTimes(newMatches, Date.now()); // eigener Zeit-Anker, unabhängig vom Viertelfinale
+    koMatches.push(...newMatches);
     saveData();
     showTab('matches');
   }
@@ -1319,8 +1405,12 @@ function drawFinals() {
   const hf2Winner = hf2.score1 > hf2.score2 ? hf2.t1Id : hf2.t2Id;
   const hf2Loser  = hf2.score1 > hf2.score2 ? hf2.t2Id : hf2.t1Id;
   if (confirm('Finale & Spiel um Platz 3 jetzt erstellen?')) {
-    koMatches.push(makeKOMatch(301, '🥉 Spiel um Platz 3', 'Nebenplatz', hf1Loser, hf2Loser));
-    koMatches.push(makeKOMatch(302, '🏆 FINALE', 'Hauptplatz', hf1Winner, hf2Winner));
+    const newMatches = [
+      makeKOMatch(301, '🥉 Spiel um Platz 3', 'Nebenplatz', hf1Loser, hf2Loser),
+      makeKOMatch(302, '🏆 FINALE', 'Hauptplatz', hf1Winner, hf2Winner)
+    ];
+    assignScheduledTimes(newMatches, Date.now());
+    koMatches.push(...newMatches);
     saveData();
     showTab('matches');
   }
@@ -1516,11 +1606,14 @@ function confirmMatchResult(matchId, isKO) {
 // niemand mehr auf dieses Spiel wetten (siehe placeBet & renderBettingSystem).
 function markMatchStarted(matchId, isKO) {
   if (!hasElevated()) return;
-  const match = getMatchArray(isKO).find(m => m.id === matchId);
+  const matchArray = getMatchArray(isKO);
+  const match = matchArray.find(m => m.id === matchId);
   if (!match) return;
   if (match.started) return;
   if (!confirm('Spiel jetzt als gestartet markieren? Ab sofort kann niemand mehr darauf wetten.')) return;
   match.started = true;
+  match.scheduledTime = Date.now(); // tatsächlicher Startzeitpunkt statt geplanter Zeit
+  rescheduleFollowingMatches(matchArray, match); // gleicht den restlichen Zeitplan an (Verspätung/Vorsprung)
   saveData();
   renderAll();
 }
@@ -1540,9 +1633,65 @@ function renderAll() {
 }
 // ---- 10a. HOME-TAB: Regeln, Tippspiel, Dashboard ----
 function renderHome() {
+  renderMyOverview();
   renderRules();
   renderTipRound();
   renderDashboard();
+}
+// Findet heraus, welches konkrete Hin-/Rückspiel-"Bein" ein Spieler in einem Match
+// persönlich bestreitet (Team1.p1 spielt immer Hinspiel, Team1.p2 immer Rückspiel -
+// gegen wen genau aus Team2 hängt vom "crossed"-Flag ab, siehe renderMatchBlock).
+// Gibt null zurück, falls der Spieler in diesem Match gar nicht selbst spielt.
+function getMatchLegForPlayer(m, playerName) {
+  const t1 = teams.find(t => t.id === m.t1Id);
+  const t2 = teams.find(t => t.id === m.t2Id);
+  if (!t1 || !t2) return null;
+  const hinP1 = t1.p1, hinP2 = m.crossed ? t2.p2 : t2.p1;
+  const rueckP1 = t1.p2, rueckP2 = m.crossed ? t2.p1 : t2.p2;
+  if (playerName === hinP1) return { legName: 'Hinspiel', me: hinP1, opponent: hinP2 };
+  if (playerName === hinP2) return { legName: 'Hinspiel', me: hinP2, opponent: hinP1 };
+  if (playerName === rueckP1) return { legName: 'Rückspiel', me: rueckP1, opponent: rueckP2 };
+  if (playerName === rueckP2) return { legName: 'Rückspiel', me: rueckP2, opponent: rueckP1 };
+  return null;
+}
+// Sucht das nächste noch nicht gespielte Spiel des eigenen Teams (nach geplanter
+// Uhrzeit sortiert), inkl. welches Bein man selbst spielt und gegen wen
+function getMyNextMatchInfo() {
+  if (!myPlayerName) return null;
+  const myTeam = getMyTeam();
+  if (!myTeam) return null;
+  const upcoming = [
+    ...groupMatches.map(m => ({ ...m, isKO: false })),
+    ...koMatches.map(m => ({ ...m, isKO: true }))
+  ].filter(m => !m.played && m.t1Id && m.t2Id && (m.t1Id === myTeam.id || m.t2Id === myTeam.id));
+  if (upcoming.length === 0) return null;
+  upcoming.sort((a, b) => (a.scheduledTime || Infinity) - (b.scheduledTime || Infinity));
+  const match = upcoming[0];
+  const opponentTeam = teams.find(t => t.id === (match.t1Id === myTeam.id ? match.t2Id : match.t1Id));
+  return { match, leg: getMatchLegForPlayer(match, myPlayerName), opponentTeam, myTeam };
+}
+// Zeigt die persönliche "Wie sieht's bei mir aus?"-Übersicht ganz oben im Home-Tab:
+// eigenes Team + nächstes anstehendes Spiel mit Uhrzeit, Platz und persönlichem Gegner
+function renderMyOverview() {
+  const container = document.getElementById('my-overview-content');
+  if (!container) return;
+  if (!myPlayerName) { container.innerHTML = ''; return; }
+  const myTeam = getMyTeam();
+  if (!myTeam) { container.innerHTML = ''; return; }
+  const info = getMyNextMatchInfo();
+  container.innerHTML = `
+    <div class="admin-card" style="border-left: 4px solid var(--fal-yellow);">
+      <p style="margin:0 0 8px 0;">📍 Dein Team: <strong>${escapeHtml(myTeam.name)}</strong> ${myTeam.club ? renderClubNameWithBadge(myTeam.club) : ''}</p>
+      ${info ? `
+        <div style="background:rgba(0,0,0,0.2); border-radius:8px; padding:10px;">
+          <div style="font-size:0.85em; opacity:0.8;">${info.match.isKO ? info.match.round : info.match.group} • gegen ${escapeHtml(info.opponentTeam ? info.opponentTeam.name : '?')}</div>
+          <div style="font-weight:bold; margin-top:2px;">🕐 ${formatMatchTime(info.match.scheduledTime) || 'Zeit noch offen'} · ${escapeHtml(info.match.court || '')}</div>
+          ${info.leg ? `<div style="margin-top:4px; font-size:0.9em;">${info.leg.legName}: <strong>Du</strong> vs. <strong>${escapeHtml(info.leg.opponent)}</strong></div>` : ''}
+          ${info.match.started ? '<div style="margin-top:4px; font-size:0.85em; color:var(--fal-red);">🚦 Läuft bereits!</div>' : ''}
+        </div>
+      ` : '<p style="margin:0; opacity:0.75; font-size:0.9em;">Aktuell kein anstehendes Spiel für dich.</p>'}
+    </div>
+  `;
 }
 // Zeigt die Turnierregeln (Admin/Ref sehen ein Bearbeitungsfeld, alle anderen nur den Text)
 function renderRules() {
@@ -1911,15 +2060,17 @@ function renderMatchBlock(m, isKO) {
   const prefix = `m_${m.id}_${isKO ? 'ko_' : ''}`;
   const courtColor = m.court === 'Hauptplatz' ? '#e74c3c' : '#2ecc71';
   const roundLabel = isKO ? m.round : `Runde ${m.slot || ''} • ${m.group}`;
+  const timeLabel = m.scheduledTime ? `🕐 ${formatMatchTime(m.scheduledTime)}` : '';
   const hinLegColor = 'border-left: 5px solid #f1c40f; background: rgba(241, 196, 15, 0.1);';
   const rueckLegColor = 'border-left: 5px solid #3498db; background: rgba(52, 152, 219, 0.1);';
-  
+
   return `
     <div class="match-card" style="position:relative;">
       <div style="display:flex; justify-content: space-between; align-items:center; flex-wrap:wrap; gap:6px;">
         <span style="color:var(--fal-yellow); font-weight:bold;">${roundLabel}</span>
-        <div style="display:flex; gap:6px; align-items:center;">
+        <div style="display:flex; gap:6px; align-items:center; flex-wrap:wrap;">
           ${statusBadge}
+          ${timeLabel ? `<span class="court-badge" style="background:rgba(255,255,255,0.12); color:#fff;">${timeLabel}</span>` : ''}
           <span class="court-badge" style="background:${courtColor}; color:white;">${m.court || ''}</span>
         </div>
       </div>
@@ -1994,6 +2145,12 @@ function renderAdminPanel() {
     testPlayerContainer.innerHTML = isAdmin()
       ? `<button class="btn-secondary btn-sm" onclick="addTestPlayers()">🧪 Test-Spieler automatisch hinzufügen</button>`
       : '';
+  }
+  // Zeitabstand-Eingabefeld mit dem aktuellen Wert synchron halten - aber nicht, während
+  // der Admin gerade selbst darin tippt (sonst würde ein Live-Update seine Eingabe überschreiben)
+  const intervalInput = document.getElementById('match-interval-input');
+  if (intervalInput && document.activeElement !== intervalInput) {
+    intervalInput.value = matchIntervalMinutes;
   }
   if (lockContainer) {
     lockContainer.innerHTML = `
