@@ -119,6 +119,8 @@ window.removeFriend = removeFriend;
 window.acceptInvite = acceptInvite;
 window.dismissInvite = dismissInvite;
 window.inviteToTournament = inviteToTournament;
+window.openLeaderboard = openLeaderboard;
+window.closeLeaderboard = closeLeaderboard;
 // ============================================================================
 // 1. FIREBASE-KONFIGURATION — Verbindungsdaten zur Online-Datenbank
 // ============================================================================
@@ -1425,6 +1427,8 @@ function openProfile(name) {
   if (!myPlayerName) return;
   profileViewKey = name ? name.trim().toLowerCase() : null;
   renderProfile();
+  const myKey = myPlayerName.trim().toLowerCase();
+  renderProfileStatsSection(profileViewKey || myKey);
   document.getElementById('profile-modal').style.display = 'flex';
 }
 // Schließt den Profil-Screen wieder, zurück zur Turnierauswahl
@@ -1432,9 +1436,14 @@ function closeProfile() {
   document.getElementById('profile-modal').style.display = 'none';
   profileViewKey = null;
 }
-// Baut den Profil-Screen auf: eigenes Profil bearbeitbar, fremdes nur lesbar
+// Baut die "Identitätskarte" des Profil-Screens auf: Avatar/Name/Bio/Freunde/Spielersuche -
+// eigenes Profil bearbeitbar, fremdes nur lesbar. Läuft bei JEDEM Live-Update aus
+// globalPlayers neu (siehe attachGlobalPlayersListener), damit z.B. eine neu eingegangene
+// Freundschaftsanfrage sofort sichtbar wird - die Statistiken (renderProfileStatsSection)
+// sind bewusst ein SEPARATER Container, der davon unberührt bleibt (kein erneutes Nachladen
+// aller Turniere bei jeder Kleinigkeit).
 function renderProfile() {
-  const container = document.getElementById('profile-container');
+  const container = document.getElementById('profile-identity-container');
   if (!container || !myPlayerName) return;
   const myKey = myPlayerName.trim().toLowerCase();
   const viewingOwn = !profileViewKey || profileViewKey === myKey;
@@ -1660,6 +1669,324 @@ function inviteToTournament(targetKey) {
     invitedBy: myPlayerName,
     at: Date.now()
   }).catch((error) => alert('⚠️ Einladung fehlgeschlagen:\n' + error.message));
+}
+// ============================================================================
+// 4e. STATISTIK-ENGINE & RANGLISTE — gemeinsame Datengrundlage für Profil-Statistiken
+//     (Turnierhistorie, Rekordsieg/-niederlage, Angst-/Lieblingsgegner) UND die
+//     website-weite Elo-Rangliste samt Erfolgen/Badges (siehe openLeaderboard()).
+//     Läuft NICHT über einen dauerhaften Live-Listener, sondern lädt bei Bedarf (Profil/
+//     Rangliste öffnen) einmalig ALLE Turniere per .once('value') - das reicht für eine
+//     kleine Freundesgruppen-Website locker und hält den Rest der App schlank.
+// ============================================================================
+const ELO_BASE_RATING = 1000; // Start-Elo für jede Identität, bevor sie ein einziges bestätigtes Spiel hatte
+// Ordnet KO-Runden einen "Tiefe"-Rang zu, um pro Turnier die am weitesten erreichte Runde
+// zu bestimmen (Gruppenphase = 0, ohne eigenen Rundennamen).
+const KO_ROUND_DEPTH = { 'Viertelfinale': 1, 'Halbfinale 1': 2, 'Halbfinale 2': 2, '🥉 Spiel um Platz 3': 3, '🏆 FINALE': 4 };
+// Ordnet ein Match-Ergebnis ('win'/'loss'/'draw') der passenden Statistik-Eigenschaft zu -
+// "loss" pluralisiert unregelmäßig zu "losses" (nicht "losss"), deshalb keine reine
+// String-Verkettung wie bei win->wins / draw->draws.
+const OUTCOME_STAT_KEY = { win: 'wins', loss: 'losses', draw: 'draws' };
+// Baut eine flache, chronologisch sortierte Liste ALLER bestätigten Spiele über ALLE
+// übergebenen Turniere hinweg auf (Gruppenphase + KO). "allTournamentsData" ist der rohe
+// Inhalt von db.ref('tournaments') (einmalig geladen, siehe loadAllTournamentsData).
+function collectAllConfirmedMatches(allTournamentsData, tournamentsMeta) {
+  const flat = [];
+  Object.keys(allTournamentsData || {}).forEach((tid) => {
+    const t = allTournamentsData[tid];
+    if (!t || !t.teams) return;
+    const tName = (tournamentsMeta[tid] && tournamentsMeta[tid].name) || tid;
+    const tCreatedAt = (tournamentsMeta[tid] && tournamentsMeta[tid].createdAt) || 0;
+    const teamById = {};
+    t.teams.forEach(team => { teamById[team.id] = team; });
+    const all = [...(t.groupMatches || []), ...(t.koMatches || [])];
+    all.forEach(m => {
+      if (!m || !m.confirmed) return;
+      if (m.score1 === null || m.score1 === undefined || m.score2 === null || m.score2 === undefined) return;
+      const team1 = teamById[m.t1Id], team2 = teamById[m.t2Id];
+      if (!team1 || !team2 || !team1.p1 || !team1.p2 || !team2.p1 || !team2.p2) return;
+      flat.push({
+        tournamentId: tid, tournamentName: tName,
+        round: m.round || null, // null = Gruppenphase
+        team1: [team1.p1, team1.p2], team2: [team2.p1, team2.p2],
+        score1: m.score1, score2: m.score2,
+        time: m.scheduledTime || tCreatedAt
+      });
+    });
+  });
+  flat.sort((a, b) => (a.time || 0) - (b.time || 0));
+  return flat;
+}
+// Lädt einmalig ALLE Turniere komplett (nicht nur die Meta-Liste) für Statistikzwecke und
+// ruft callback(allTournamentsData) auf. Kein Live-Listener - wird bei jedem Öffnen von
+// Profil-Statistiken bzw. der Rangliste frisch angefragt, damit die Zahlen aktuell bleiben.
+function loadAllTournamentsData(callback) {
+  db.ref('tournaments').once('value').then((snap) => {
+    callback(snap.val() || {});
+  }).catch((error) => {
+    console.error('Statistik-Laden fehlgeschlagen:', error);
+    callback({});
+  });
+}
+// Berechnet aus der flachen Match-Liste die komplette Statistik EINES Spielers: Bilanz,
+// Torverhältnis, Rekordsieg/-niederlage, Angst-/Lieblingsgegner sowie eine Übersicht pro
+// Turnier (Partner, Bilanz, wie weit gekommen).
+function computePlayerStats(playerName, matches) {
+  const key = playerName.trim().toLowerCase();
+  const stats = {
+    totalMatches: 0, wins: 0, losses: 0, draws: 0,
+    goalsFor: 0, goalsAgainst: 0,
+    biggestWin: null, biggestLoss: null,
+    opponentTally: {}, // { gegnerKey: { name, wins, losses, draws } } - aus SICHT dieses Spielers
+    tournamentsMap: {}
+  };
+  matches.forEach(m => {
+    const inTeam1 = m.team1.some(p => p.toLowerCase() === key);
+    const inTeam2 = m.team2.some(p => p.toLowerCase() === key);
+    if (!inTeam1 && !inTeam2) return;
+    const myTeam = inTeam1 ? m.team1 : m.team2;
+    const oppTeam = inTeam1 ? m.team2 : m.team1;
+    const myScore = inTeam1 ? m.score1 : m.score2;
+    const oppScore = inTeam1 ? m.score2 : m.score1;
+    const partner = myTeam.find(p => p.toLowerCase() !== key) || myTeam[0];
+    const diff = myScore - oppScore;
+    // WICHTIG: "loss" pluralisiert unregelmäßig ("losses", nicht "losss") - deshalb über
+    // diese Zuordnung statt per outcome+'s' die richtige Statistik-Eigenschaft treffen.
+    const outcome = diff > 0 ? 'win' : (diff < 0 ? 'loss' : 'draw');
+    const outcomeKey = OUTCOME_STAT_KEY[outcome];
+
+    stats.totalMatches++;
+    stats.goalsFor += myScore;
+    stats.goalsAgainst += oppScore;
+    stats[outcomeKey]++;
+
+    const matchInfo = { tournamentName: m.tournamentName, opponents: oppTeam, partner, myScore, oppScore, diff, round: m.round };
+    if (outcome === 'win' && (!stats.biggestWin || diff > stats.biggestWin.diff)) stats.biggestWin = matchInfo;
+    if (outcome === 'loss' && (!stats.biggestLoss || diff < stats.biggestLoss.diff)) stats.biggestLoss = matchInfo;
+
+    oppTeam.forEach(oppName => {
+      const oKey = oppName.trim().toLowerCase();
+      if (!stats.opponentTally[oKey]) stats.opponentTally[oKey] = { name: oppName, wins: 0, losses: 0, draws: 0 };
+      stats.opponentTally[oKey][outcomeKey]++;
+    });
+
+    if (!stats.tournamentsMap[m.tournamentId]) {
+      stats.tournamentsMap[m.tournamentId] = {
+        tournamentName: m.tournamentName, partners: new Set(),
+        played: 0, wins: 0, losses: 0, draws: 0,
+        deepestRoundDepth: 0, deepestRound: null, reachedFinal: false, wonFinal: false,
+        playedThirdPlace: false, wonThirdPlace: false
+      };
+    }
+    const tEntry = stats.tournamentsMap[m.tournamentId];
+    tEntry.partners.add(partner);
+    tEntry.played++;
+    tEntry[outcomeKey]++;
+    if (m.round) {
+      const depth = KO_ROUND_DEPTH[m.round] || 0;
+      if (depth > tEntry.deepestRoundDepth) { tEntry.deepestRoundDepth = depth; tEntry.deepestRound = m.round; }
+      if (m.round === '🏆 FINALE') { tEntry.reachedFinal = true; tEntry.wonFinal = outcome === 'win'; }
+      if (m.round === '🥉 Spiel um Platz 3') { tEntry.playedThirdPlace = true; tEntry.wonThirdPlace = outcome === 'win'; }
+    }
+  });
+
+  // Nemesis: Gegner, der am häufigsten gegen diesen Spieler gewonnen hat (mind. 2 Begegnungen).
+  // Lieblingsgegner: Gegner, gegen den dieser Spieler am häufigsten gewonnen hat.
+  const opponents = Object.values(stats.opponentTally);
+  stats.nemesis = opponents.filter(o => o.losses >= 2)
+    .sort((a, b) => b.losses - a.losses || (a.wins - a.losses) - (b.wins - b.losses))[0] || null;
+  stats.favoriteVictim = opponents.filter(o => o.wins >= 2)
+    .sort((a, b) => b.wins - a.wins || (b.wins - b.losses) - (a.wins - a.losses))[0] || null;
+
+  stats.tournaments = Object.keys(stats.tournamentsMap).map(tid => {
+    const e = stats.tournamentsMap[tid];
+    let placement;
+    if (e.wonFinal) placement = '🏆 Turniersieger';
+    else if (e.reachedFinal) placement = '🥈 Finalist';
+    else if (e.playedThirdPlace) placement = e.wonThirdPlace ? '🥉 3. Platz' : '4. Platz';
+    else if (e.deepestRound && e.deepestRound.indexOf('Halbfinale') === 0) placement = 'Halbfinale erreicht';
+    else if (e.deepestRound === 'Viertelfinale') placement = 'Viertelfinale erreicht';
+    else placement = 'Gruppenphase';
+    return {
+      tournamentId: tid, tournamentName: e.tournamentName, partners: Array.from(e.partners),
+      played: e.played, wins: e.wins, losses: e.losses, draws: e.draws, placement
+    };
+  });
+
+  stats.winRate = stats.totalMatches > 0 ? Math.round((stats.wins / stats.totalMatches) * 100) : 0;
+  stats.goalDiff = stats.goalsFor - stats.goalsAgainst;
+  return stats;
+}
+// Spielt ALLE Spiele einer flachen, chronologisch sortierten Match-Liste durch und berechnet
+// daraus eine Elo-Wertung PRO SPIELER (Team-Elo = Mittelwert der beiden Partner, beide
+// bekommen danach dieselbe Änderung gutgeschrieben/abgezogen). Der K-Faktor sinkt mit
+// steigender Erfahrung (unsichere Anfangswertung schwankt stärker, etablierte weniger) -
+// dasselbe Prinzip wie bei echten Elo-Systemen (Schach, viele E-Sports-Ranglisten).
+function computeGlobalRatings(matches) {
+  const ratings = {};
+  function ensure(name) {
+    const key = name.trim().toLowerCase();
+    if (!ratings[key]) {
+      ratings[key] = { name, key, rating: ELO_BASE_RATING, games: 0, wins: 0, losses: 0, draws: 0, streak: 0, bestStreak: 0 };
+    }
+    return ratings[key];
+  }
+  function kFactor(p) { return p.games < 10 ? 40 : (p.games < 30 ? 24 : 16); }
+  matches.forEach(m => {
+    const a1 = ensure(m.team1[0]), a2 = ensure(m.team1[1]);
+    const b1 = ensure(m.team2[0]), b2 = ensure(m.team2[1]);
+    const teamARating = (a1.rating + a2.rating) / 2;
+    const teamBRating = (b1.rating + b2.rating) / 2;
+    const expectedA = 1 / (1 + Math.pow(10, (teamBRating - teamARating) / 400));
+    const scoreA = m.score1 > m.score2 ? 1 : (m.score1 < m.score2 ? 0 : 0.5);
+    const applyResult = (player, own, opp) => {
+      const delta = Math.round(kFactor(player) * (own - opp));
+      player.rating += delta;
+      player.games++;
+      if (own === 1) { player.wins++; player.streak = player.streak > 0 ? player.streak + 1 : 1; }
+      else if (own === 0) { player.losses++; player.streak = player.streak < 0 ? player.streak - 1 : -1; }
+      else { player.draws++; player.streak = 0; }
+      if (player.streak > player.bestStreak) player.bestStreak = player.streak;
+    };
+    [a1, a2].forEach(p => applyResult(p, scoreA, expectedA));
+    [b1, b2].forEach(p => applyResult(p, 1 - scoreA, 1 - expectedA));
+  });
+  return ratings;
+}
+// Leitet aus Statistik + Elo-Wertung eine kleine Auswahl an Erfolgs-Badges für EINEN
+// Spieler ab - rein anzeigend, ohne Einfluss auf irgendwelche Rechte.
+function computeAchievements(playerKey, stats, ratingEntry, allRatings) {
+  const badges = [];
+  const tournamentWins = stats.tournaments.filter(t => t.placement === '🏆 Turniersieger').length;
+  if (tournamentWins >= 1) badges.push({ icon: '🏆', label: tournamentWins === 1 ? 'Turniersieger' : `${tournamentWins}x Turniersieger` });
+  if (tournamentWins >= 3) badges.push({ icon: '👑', label: 'Serien-Champion' });
+  if (stats.totalMatches >= 50) badges.push({ icon: '⚔️', label: 'Gladiator (50+ Spiele)' });
+  if (ratingEntry && ratingEntry.bestStreak >= 5) badges.push({ icon: '🔥', label: `${ratingEntry.bestStreak}er-Siegesserie` });
+  if (stats.totalMatches >= 10 && stats.winRate >= 70) badges.push({ icon: '🎯', label: 'Scharfschütze (70%+ Siegquote)' });
+  if (stats.nemesis && stats.nemesis.losses >= 3) badges.push({ icon: '😈', label: `Angst vor ${stats.nemesis.name}` });
+  const sortedByRating = Object.keys(allRatings).sort((a, b) => allRatings[b].rating - allRatings[a].rating);
+  if (sortedByRating.length > 0 && sortedByRating[0] === playerKey && allRatings[playerKey].games > 0) {
+    badges.push({ icon: '🐐', label: 'Aktuell Nr. 1 der Rangliste' });
+  }
+  return badges;
+}
+// Lädt (asynchron) alle Turniere und rendert daraus den Statistik-Abschnitt EINES Profils -
+// bewusst getrennt von renderProfile(), damit Live-Updates der Identitätskarte (Bio,
+// Freunde) nicht jedes Mal alle Turniere neu nachladen müssen.
+function renderProfileStatsSection(key) {
+  const container = document.getElementById('profile-stats-container');
+  if (!container) return;
+  container.innerHTML = '<p class="empty-state">📊 Statistiken werden geladen...</p>';
+  loadAllTournamentsData((allData) => {
+    // Zwischenzeitlich könnte das Profil gewechselt oder geschlossen worden sein
+    const stillRelevant = document.getElementById('profile-modal').style.display !== 'none' &&
+      ((profileViewKey || (myPlayerName && myPlayerName.trim().toLowerCase())) === key);
+    if (!stillRelevant) return;
+    const matches = collectAllConfirmedMatches(allData, tournamentsList);
+    const stats = computePlayerStats(key, matches);
+    const ratings = computeGlobalRatings(matches);
+    const ratingEntry = ratings[key];
+    const badges = computeAchievements(key, stats, ratingEntry, ratings);
+    container.innerHTML = renderStatsHtml(stats, ratingEntry, ratings, badges);
+  });
+}
+// Baut das HTML für den Statistik-Abschnitt eines Profils auf
+function renderStatsHtml(stats, ratingEntry, allRatings, badges) {
+  if (stats.totalMatches === 0) {
+    return '<hr style="margin:16px 0; opacity:0.3;"><p class="empty-state">Noch keine bestätigten Spiele - hier stehen bald Statistiken.</p>';
+  }
+  const sortedByRating = Object.keys(allRatings).sort((a, b) => allRatings[b].rating - allRatings[a].rating);
+  const rank = ratingEntry ? sortedByRating.indexOf(ratingEntry.key) + 1 : null;
+
+  let html = '<hr style="margin:16px 0; opacity:0.3;">';
+  html += '<h4 style="margin-bottom:6px;">📊 Statistiken</h4>';
+
+  if (badges.length > 0) {
+    html += `<div style="display:flex; flex-wrap:wrap; gap:6px; margin-bottom:12px;">
+      ${badges.map(b => `<span title="${escapeHtml(b.label)}" style="background:var(--fal-blue-primary); border-radius:20px; padding:4px 10px; font-size:0.85em;">${b.icon} ${escapeHtml(b.label)}</span>`).join('')}
+    </div>`;
+  }
+
+  html += `
+    <div style="display:grid; grid-template-columns:1fr 1fr 1fr; gap:8px; text-align:center; margin-bottom:14px;">
+      <div style="background:var(--fal-blue-primary); border-radius:8px; padding:8px;">
+        <div style="font-size:1.3em; font-weight:bold; color:var(--fal-yellow);">${ratingEntry ? ratingEntry.rating : ELO_BASE_RATING}</div>
+        <div style="font-size:0.75em; opacity:0.75;">Elo${rank ? ` (Platz ${rank})` : ''}</div>
+      </div>
+      <div style="background:var(--fal-blue-primary); border-radius:8px; padding:8px;">
+        <div style="font-size:1.3em; font-weight:bold;">${stats.wins}-${stats.draws}-${stats.losses}</div>
+        <div style="font-size:0.75em; opacity:0.75;">Siege-Remis-Niederl.</div>
+      </div>
+      <div style="background:var(--fal-blue-primary); border-radius:8px; padding:8px;">
+        <div style="font-size:1.3em; font-weight:bold;">${stats.winRate}%</div>
+        <div style="font-size:0.75em; opacity:0.75;">Siegquote</div>
+      </div>
+    </div>
+    <p style="font-size:0.85em; opacity:0.8; margin-bottom:12px;">⚽ Tore: ${stats.goalsFor}:${stats.goalsAgainst} (${stats.goalDiff >= 0 ? '+' : ''}${stats.goalDiff})</p>
+  `;
+
+  if (stats.biggestWin) {
+    html += `<p style="font-size:0.85em; margin-bottom:4px;">🥇 <strong>Höchster Sieg:</strong> ${stats.biggestWin.myScore}:${stats.biggestWin.oppScore} gegen ${escapeHtml(stats.biggestWin.opponents.join(' & '))} <span style="opacity:0.7;">(${escapeHtml(stats.biggestWin.tournamentName)})</span></p>`;
+  }
+  if (stats.biggestLoss) {
+    html += `<p style="font-size:0.85em; margin-bottom:4px;">💀 <strong>Höchste Niederlage:</strong> ${stats.biggestLoss.myScore}:${stats.biggestLoss.oppScore} gegen ${escapeHtml(stats.biggestLoss.opponents.join(' & '))} <span style="opacity:0.7;">(${escapeHtml(stats.biggestLoss.tournamentName)})</span></p>`;
+  }
+  if (stats.nemesis) {
+    html += `<p style="font-size:0.85em; margin-bottom:4px;">😈 <strong>Angstgegner:</strong> ${escapeHtml(stats.nemesis.name)} (${stats.nemesis.wins}S-${stats.nemesis.losses}N gegen ihn/sie)</p>`;
+  }
+  if (stats.favoriteVictim) {
+    html += `<p style="font-size:0.85em; margin-bottom:12px;">🎯 <strong>Lieblingsgegner:</strong> ${escapeHtml(stats.favoriteVictim.name)} (${stats.favoriteVictim.wins}S-${stats.favoriteVictim.losses}N gegen ihn/sie)</p>`;
+  }
+
+  html += `<h4 style="margin:14px 0 6px;">🏆 Turnierhistorie (${stats.tournaments.length})</h4>`;
+  html += stats.tournaments.map(t => `
+    <div style="background:var(--fal-blue-primary); padding:8px 12px; border-radius:8px; margin-bottom:6px; font-size:0.85em;">
+      <strong>${escapeHtml(t.tournamentName)}</strong> - ${t.placement}<br>
+      <span style="opacity:0.75;">mit ${escapeHtml(t.partners.join(' & '))} · ${t.wins}S-${t.draws}R-${t.losses}N</span>
+    </div>
+  `).join('');
+
+  return html;
+}
+// Öffnet die website-weite Rangliste (Elo, über alle Turniere hinweg)
+function openLeaderboard() {
+  if (!myPlayerName) return;
+  document.getElementById('leaderboard-modal').style.display = 'flex';
+  document.getElementById('leaderboard-container').innerHTML = '<p class="empty-state">📊 Rangliste wird geladen...</p>';
+  loadAllTournamentsData((allData) => {
+    if (document.getElementById('leaderboard-modal').style.display === 'none') return;
+    const matches = collectAllConfirmedMatches(allData, tournamentsList);
+    const ratings = computeGlobalRatings(matches);
+    renderLeaderboard(ratings);
+  });
+}
+function closeLeaderboard() {
+  document.getElementById('leaderboard-modal').style.display = 'none';
+}
+// Baut die Ranglisten-Tabelle auf - Klick auf einen Namen öffnet dessen Profil (mit Statistiken)
+function renderLeaderboard(ratings) {
+  const container = document.getElementById('leaderboard-container');
+  if (!container) return;
+  const entries = Object.values(ratings).filter(r => r.games > 0).sort((a, b) => b.rating - a.rating);
+  if (entries.length === 0) {
+    container.innerHTML = '<h2 style="margin-top:0;">🏆 Rangliste</h2><p class="empty-state">Noch keine bestätigten Spiele über alle Turniere hinweg - die Rangliste füllt sich, sobald gespielt wurde.</p>';
+    return;
+  }
+  container.innerHTML = `
+    <h2 style="margin-top:0;">🏆 Rangliste</h2>
+    <p style="font-size:0.85em; opacity:0.8; margin-bottom:12px;">Elo-Wertung über ALLE Turniere hinweg - jeder Sieg/jede Niederlage zählt, unabhängig davon, mit wem man gerade gespielt hat.</p>
+    ${entries.map((r, i) => {
+      const medal = i === 0 ? '🥇' : (i === 1 ? '🥈' : (i === 2 ? '🥉' : `${i + 1}.`));
+      const streakLabel = r.streak >= 3 ? ` 🔥${r.streak}` : (r.streak <= -3 ? ` ❄️${Math.abs(r.streak)}` : '');
+      return `
+      <div style="display:flex; justify-content:space-between; align-items:center; background: var(--fal-blue-primary); padding: 8px 12px; border-radius: 8px; margin-bottom: 6px; cursor:pointer;" onclick="closeLeaderboard(); openProfile('${r.name.replace(/'/g, "\\'")}')">
+        <span><strong>${medal}</strong> ${escapeHtml(r.name)}${r.key === 'tim' ? ' 👑' : ''}${streakLabel}</span>
+        <span style="text-align:right;">
+          <strong style="color:var(--fal-yellow);">${r.rating}</strong>
+          <span style="font-size:0.8em; opacity:0.7;"> · ${r.wins}S-${r.draws}R-${r.losses}N</span>
+        </span>
+      </div>
+    `; }).join('')}
+  `;
 }
 // ============================================================================
 // 5. PROFI-CLUBS VERWALTUNG — Liste der Vereine, aus denen beim Glücksrad gezogen wird

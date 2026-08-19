@@ -75,7 +75,10 @@
       <img src="https://spvgg-fal.de/templates/yootheme/cache/dc/Logo-2017-web-dc30d58a.webp" alt="SpVgg FAL Wappen" class="modal-logo modal-logo-big">
       <h3>Turnier auswählen</h3>
       <p style="margin: -6px 0 10px 0;"><a href="#" style="color:var(--fal-yellow); font-size:0.85em; text-decoration:none;" onclick="switchUser(); return false;">‹ Anderer Spieler</a></p>
-      <button class="btn-secondary" style="width:100%; margin-bottom:12px;" onclick="openProfile()">👤 Mein Profil</button>
+      <div style="display:flex; gap:8px; margin-bottom:12px;">
+        <button class="btn-secondary" style="flex:1;" onclick="openProfile()">👤 Mein Profil</button>
+        <button class="btn-secondary" style="flex:1;" onclick="openLeaderboard()">🏆 Rangliste</button>
+      </div>
       <!-- Einladungen zu Turnieren, die man selbst noch nicht betreten hat (siehe renderInvites) -->
       <div id="invites-container"></div>
       <!-- Nur ein Knopf hier drauf, das eigentliche God-Panel ist ein eigener Screen
@@ -95,13 +98,25 @@
   </div>
 
   <!-- Profil-Screen: eigenes Profil bearbeitbar (Bio, Foto), fremde Profile nur ansehbar,
-       Freundschaften + Spielersuche - eigener Screen wie das God-Panel, siehe openProfile() -->
+       Freundschaften + Spielersuche - eigener Screen wie das God-Panel, siehe openProfile().
+       Zwei getrennte Unter-Container: "identity" (Name/Bio/Freunde, wird bei jedem
+       Live-Update aus globalPlayers neu gebaut) und "stats" (Turnierhistorie/Rekorde/Elo,
+       wird NUR beim Öffnen einmalig asynchron nachgeladen, siehe renderProfileStatsSection). -->
   <div id="profile-modal" class="modal-overlay" style="display: none;">
     <div class="modal-content" id="profile-modal-content" style="max-width: 480px; text-align: left;">
-      <div id="profile-container"></div>
+      <div id="profile-identity-container"></div>
+      <div id="profile-stats-container"></div>
     </div>
   </div>
   <input type="file" id="profile-pic-file-input" accept="image/*" style="display:none;" onchange="handleProfilePicFileSelected(event)">
+
+  <!-- Rangliste: website-weite Elo-Wertung über alle Turniere hinweg, siehe openLeaderboard() -->
+  <div id="leaderboard-modal" class="modal-overlay" style="display: none;">
+    <div class="modal-content" id="leaderboard-modal-content" style="max-width: 520px; text-align: left;">
+      <p style="margin: -6px 0 10px 0; text-align:center;"><a href="#" style="color:var(--fal-yellow); font-size:0.85em; text-decoration:none;" onclick="closeLeaderboard(); return false;">‹ Zurück zur Turnierauswahl</a></p>
+      <div id="leaderboard-container"></div>
+    </div>
+  </div>
 
   <!-- Admin-Passwort für ein NEUES Turnier festlegen (Schritt 2 der Turniererstellung) -->
   <div id="tournament-create-password-modal" class="modal-overlay" style="display: none;">
