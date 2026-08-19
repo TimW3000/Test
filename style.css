@@ -32,9 +32,16 @@ body {
   background: rgba(0, 0, 0, 0.88);
   display: flex;
   justify-content: center;
-  align-items: center;
+  /* flex-start statt center: bei Inhalten, die höher als der Bildschirm sind (z.B. das
+     God-Panel mit vielen Einträgen), würde "center" den oberen Teil abschneiden und
+     unerreichbar machen, weil zentrierter überlaufender Flex-Inhalt in manchen Browsern
+     nicht sauber nach oben scrollbar ist. Mit flex-start + overflow-y:auto ist IMMER
+     alles erreichbar, egal wie lang der Inhalt wird. */
+  align-items: flex-start;
+  overflow-y: auto;
   z-index: 1000;
-  padding: 15px;
+  padding: 30px 15px;
+  box-sizing: border-box;
 }
 
 .modal-content {

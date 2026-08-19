@@ -558,7 +558,7 @@ function registerGlobalIdentity() {
   if (!name) return alert('Bitte einen Namen eingeben!');
   if (globalPlayers[name.toLowerCase()]) return alert('Dieser Name ist schon vergeben - bitte über "Ich bin schon bekannt" auswählen.');
   if (name.toLowerCase() === 'tim') { promptGodPassword(name); return; }
-  if (globalSettings.lockNewIdentities) return alert('🔒 Der God hat das Anlegen neuer Identitäten aktuell gesperrt.');
+  if (globalSettings.lockNewIdentities) return alert('🔒 Das Anlegen neuer Spieler ist aktuell gesperrt.');
   finalizeGlobalIdentity(name);
 }
 // Klick auf eine bereits bekannte Identität in der Liste
@@ -990,7 +990,7 @@ function renderLandingPage() {
   const newTournamentSection = document.getElementById('new-tournament-section');
   if (newTournamentSection) {
     if (globalSettings.lockNewTournaments && !isGod()) {
-      newTournamentSection.innerHTML = '<p class="empty-state">🔒 Das Erstellen neuer Turniere wurde vom God gesperrt.</p>';
+      newTournamentSection.innerHTML = '<p class="empty-state">🔒 Das Erstellen neuer Turniere ist aktuell gesperrt.</p>';
     } else {
       newTournamentSection.innerHTML = `
         <input type="text" id="new-tournament-name" placeholder="Name für neues Turnier...">
@@ -1003,7 +1003,7 @@ function renderLandingPage() {
 // Schritt 1 der Turniererstellung: Name prüfen, dann Admin-Passwort-Modal für DIESES
 // Turnier zeigen (jedes Turnier bekommt sein eigenes, vom Ersteller gewähltes Passwort).
 function startCreateTournament() {
-  if (globalSettings.lockNewTournaments && !isGod()) return alert('🔒 Der God hat das Erstellen neuer Turniere aktuell gesperrt.');
+  if (globalSettings.lockNewTournaments && !isGod()) return alert('🔒 Das Erstellen neuer Turniere ist aktuell gesperrt.');
   const input = document.getElementById('new-tournament-name');
   const name = input ? input.value.trim() : '';
   if (!name) return alert('Bitte einen Namen für das neue Turnier eingeben!');
@@ -1216,14 +1216,30 @@ function renderGodPanel() {
           `).join('')}
         </div>
 
-        <h4 style="margin-bottom:6px;">👥 Alle Spieler (website-weit)</h4>
-        <div style="max-height:200px; overflow-y:auto; margin-bottom:16px;">
-          ${playerKeys.length === 0 ? '<p class="empty-state">Noch keine Identitäten bekannt.</p>' : playerKeys.map(key => `
-            <div style="display:flex; flex-wrap:wrap; justify-content:space-between; align-items:center; background: var(--fal-blue-primary); padding: 6px 12px; border-radius: 8px; margin-bottom: 6px; gap: 8px;">
-              <span style="font-size:0.9em;">${escapeHtml(globalPlayers[key].name || key)}${key === 'tim' ? ' 👑' : ''}</span>
-              ${key === 'tim' ? '' : `<button class="btn-danger btn-sm" title="Aus der Liste löschen" onclick="deleteGlobalPlayerAsGod('${key}')">🗑️</button>`}
+        <h4 style="margin-bottom:6px;">👥 Alle Spieler (website-weit, ${playerKeys.length})</h4>
+        <div style="max-height:260px; overflow-y:auto; margin-bottom:16px;">
+          ${playerKeys.length === 0 ? '<p class="empty-state">Noch keine Identitäten bekannt.</p>' : playerKeys.map(key => {
+            const name = globalPlayers[key].name || key;
+            // Sucht in ALLEN Turnieren nach einem Spieler-Eintrag mit diesem Namen, damit man
+            // hier auf einen Blick sieht, wo jemand überall mitspielt (und in welcher Rolle).
+            const memberships = [];
+            Object.keys(godOversightData).forEach((tid) => {
+              const t = godOversightData[tid];
+              const match = (t.players || []).find(p => p && p.name && p.name.toLowerCase() === name.toLowerCase());
+              if (match) {
+                const role = match.isTournamentOwner ? 'Admin' : (match.isRef ? 'Ref' : 'Spieler');
+                memberships.push(`${escapeHtml(t.name || tid)} (${role})`);
+              }
+            });
+            return `
+            <div style="background: var(--fal-blue-primary); padding: 6px 12px; border-radius: 8px; margin-bottom: 6px;">
+              <div style="display:flex; flex-wrap:wrap; justify-content:space-between; align-items:center; gap:8px;">
+                <span style="font-size:0.9em;">${escapeHtml(name)}${key === 'tim' ? ' 👑' : ''}</span>
+                ${key === 'tim' ? '' : `<button class="btn-danger btn-sm" title="Aus der Liste löschen" onclick="deleteGlobalPlayerAsGod('${key}')">🗑️</button>`}
+              </div>
+              ${memberships.length ? `<div style="font-size:0.78em; opacity:0.7; margin-top:3px;">${memberships.join(' · ')}</div>` : '<div style="font-size:0.78em; opacity:0.55; margin-top:3px;">In keinem Turnier registriert</div>'}
             </div>
-          `).join('')}
+          `; }).join('')}
         </div>
 
         <h4 style="margin-bottom:6px;">🔒 Website-weite Sperren</h4>
@@ -1288,7 +1304,7 @@ function toggleGlobalLock(key) {
 // diesem Namen ggf. einfach neu registrieren, falls "Neue Identitäten sperren" aus ist.
 function deleteGlobalPlayerAsGod(key) {
   if (!isGod()) return;
-  if (key === 'tim') return alert('Der God kann sich nicht selbst aus der Liste löschen.');
+  if (key === 'tim') return alert('Du kannst dich nicht selbst aus der Liste löschen.');
   const name = (globalPlayers[key] && globalPlayers[key].name) || key;
   if (!confirm(`Identität "${name}" wirklich aus der Liste löschen?`)) return;
   db.ref('globalPlayers/' + key).remove().catch((error) => alert('⚠️ Löschen fehlgeschlagen:\n' + error.message));
@@ -3051,7 +3067,7 @@ function renderAdminPanel() {
               <button class="btn-primary btn-sm" style="background:#2ecc71; color:#fff;" onclick="confirmPendingPassword(${index})">✅ PW-Wunsch bestätigen</button>
               <button class="btn-danger btn-sm" onclick="rejectPendingPassword(${index})">❌ Ablehnen</button>
             ` : ''}
-            ${p.pendingPassword && !isGod() ? '<span style="font-size:0.8em; opacity:0.75; align-self:center;">⏳ Wartet auf den God</span>' : ''}
+            ${p.pendingPassword && !isGod() ? '<span style="font-size:0.8em; opacity:0.75; align-self:center;">⏳ Wartet auf Bestätigung</span>' : ''}
             ${isAdmin() ? `<button class="btn-secondary btn-sm" onclick="renamePlayer(${index})">✏️ Umbenennen</button>` : ''}
             ${isAdmin() ? `<button class="${isRefBtnClass} btn-sm" onclick="toggleRef(${index})">${p.isRef ? '🟨 Ref (Aktiv)' : 'Ref vergeben'}</button>` : ''}
             ${isGod() ? (hasPW
