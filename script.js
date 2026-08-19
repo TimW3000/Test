@@ -52,6 +52,7 @@ window.requestOwnPassword = requestOwnPassword;
 window.confirmPendingPassword = confirmPendingPassword;
 window.rejectPendingPassword = rejectPendingPassword;
 window.toggleRegistrationLock = toggleRegistrationLock;
+window.toggleTournamentMode = toggleTournamentMode;
 window.updateMatchInterval = updateMatchInterval;
 window.drawGroups = drawGroups;
 window.drawKOPhase = drawKOPhase;
@@ -91,6 +92,11 @@ window.closeWrapped = closeWrapped;
 window.setCoinAnimation = setCoinAnimation;
 window.toggleHeaderDetails = toggleHeaderDetails;
 window.enterTournament = enterTournament;
+window.openFormatWizard = openFormatWizard;
+window.closeFormatWizard = closeFormatWizard;
+window.analyzeFormatWizardText = analyzeFormatWizardText;
+window.renderFormatWizardStep1 = renderFormatWizardStep1;
+window.confirmFormatWizardPreview = confirmFormatWizardPreview;
 window.startCreateTournament = startCreateTournament;
 window.cancelCreateTournament = cancelCreateTournament;
 window.confirmCreateTournament = confirmCreateTournament;
@@ -195,6 +201,11 @@ let players = [];
 let availableClubs = [...DEFAULT_CLUBS];
 let clubLogos = { ...DEFAULT_CLUB_LOGOS };     // { clubName: "https://...wappen.png" }
 let teams = [];
+// 'duo' (Standard, 2 Spieler pro Team teilen sich einen Club) oder 'solo' (jeder Spieler
+// bekommt seinen EIGENEN Club, kein Partner) - wird beim Turniererstellen festgelegt (siehe
+// parseTournamentFormatText/openFormatWizard), vor der Auslosung im Admin-Panel noch änderbar.
+let tournamentMode = 'duo';
+let plannedPlayerCount = null; // rein informative Ziel-Spieleranzahl aus der Freitext-Beschreibung, siehe openFormatWizard()
 let numGroups = 3;       // Wie viele Gruppen wurden zuletzt ausgelost? (2, 3 oder 4)
 let matchIntervalMinutes = 20; // Zeitabstand zwischen zwei Spiel-Slots (Hauptplatz+Nebenplatz), admin-einstellbar
 // Admin-"Cheat"-Vorauswahl fürs Glücksrad: [{ p1, p2, club }]. Legt fest, welche
@@ -887,6 +898,8 @@ function resetLocalStateToDefaults() {
   availableClubs = [...DEFAULT_CLUBS];
   clubLogos = { ...DEFAULT_CLUB_LOGOS };
   teams = [];
+  tournamentMode = 'duo';
+  plannedPlayerCount = null;
   numGroups = 3;
   matchIntervalMinutes = 20;
   draftCheats = [];
@@ -922,6 +935,8 @@ function attachTournamentListener() {
     // bewusst entfernt hat, siehe setClubLogo).
     clubLogos = data.clubLogos || { ...DEFAULT_CLUB_LOGOS };
     teams = data.teams || [];
+    tournamentMode = data.tournamentMode || 'duo';
+    plannedPlayerCount = data.plannedPlayerCount || null;
     numGroups = data.numGroups || 3;
     matchIntervalMinutes = data.matchIntervalMinutes || 20;
     draftCheats = data.draftCheats || [];
@@ -975,6 +990,8 @@ function saveData() {
     availableClubs,
     clubLogos,
     teams,
+    tournamentMode,
+    plannedPlayerCount,
     numGroups,
     matchIntervalMinutes,
     draftCheats,
@@ -1050,8 +1067,13 @@ function renderLandingPage() {
       newTournamentSection.innerHTML = '<p class="empty-state">🔒 Das Erstellen neuer Turniere ist aktuell gesperrt.</p>';
     } else {
       newTournamentSection.innerHTML = `
-        <input type="text" id="new-tournament-name" placeholder="Name für neues Turnier...">
-        <button class="btn-primary" onclick="startCreateTournament()">+ Neu</button>
+        <div style="width:100%;">
+          <div style="display:flex; gap:8px; margin-bottom:8px;">
+            <input type="text" id="new-tournament-name" placeholder="Name für neues Turnier..." style="flex:1;">
+            <button class="btn-primary" onclick="startCreateTournament()">+ Neu</button>
+          </div>
+          <button class="btn-secondary" style="width:100%;" onclick="openFormatWizard()">🧙 Turnier per Beschreibung anlegen</button>
+        </div>
       `;
     }
   }
@@ -1088,6 +1110,162 @@ function openGodPanel() {
 // Schließt den God-Panel-Screen wieder, zurück zur Turnierauswahl
 function closeGodPanel() {
   document.getElementById('god-panel-modal').style.display = 'none';
+}
+// ============================================================================
+// 4b-i. TURNIER-FORMAT-ASSISTENT — Freitext-Beschreibung ("18 Spieler in 4 Gruppen
+//     losen") wird lokal (OHNE externe KI/API, komplett kostenlos) in ein Turnierformat
+//     übersetzt: Ziel-Spieleranzahl, Gruppenanzahl, Duo- oder Solo-Modus. Das Ergebnis wird
+//     IMMER erst als editierbare Vorschau gezeigt, bevor irgendetwas angelegt wird - falls
+//     die Erkennung mal danebenliegt, lässt sich das direkt korrigieren.
+// ============================================================================
+let pendingNewTournamentFormat = null; // { mode, numGroups, playerCount } - von confirmFormatWizardPreview() bis finalizeCreateTournament()
+let wizardTournamentName = '';         // Zwischenspeicher für den im Wizard eingegebenen Namen
+const GERMAN_NUMBER_WORDS = { 'zwei': 2, 'drei': 3, 'vier': 4, 'fünf': 5, 'sechs': 6, 'sieben': 7, 'acht': 8, 'neun': 9, 'zehn': 10, 'elf': 11, 'zwölf': 12 };
+// Sucht die erste Zahl (Ziffern oder ausgeschriebenes deutsches Zahlwort bis zwölf), die
+// unmittelbar vor einem der übergebenen Wörter steht - toleriert dabei ein optionales
+// "<Zahl>er"-Größenwort dazwischen (z.B. "4 4er Gruppen" -> 4, nicht die zweite 4).
+function extractNumberBefore(text, words) {
+  const wordPattern = words.join('|');
+  const digitMatch = text.match(new RegExp('(\\d+)\\s+(?:\\d+er\\s+)?(?:' + wordPattern + ')', 'i'));
+  if (digitMatch) return parseInt(digitMatch[1], 10);
+  const wordNumPattern = Object.keys(GERMAN_NUMBER_WORDS).join('|');
+  const wordMatch = text.match(new RegExp('(' + wordNumPattern + ')\\s+(?:' + wordPattern + ')', 'i'));
+  if (wordMatch) return GERMAN_NUMBER_WORDS[wordMatch[1].toLowerCase()];
+  return null;
+}
+// Analysiert eine deutsche Freitext-Beschreibung eines Turnierformats. Rein lokale
+// Muster-Erkennung (Regex), keine externe KI/API nötig - dafür kostenlos, sofort und
+// funktioniert offline. Deckt die gängigen Formulierungen ab ("X Spieler", "in Y Gruppen",
+// "jeder bekommt einen Verein" usw.), aber nicht jede denkbare Formulierung - deshalb wird
+// das Ergebnis in renderFormatWizardPreview() immer noch mal zum Bestätigen/Korrigieren gezeigt.
+function parseTournamentFormatText(text) {
+  const notes = [];
+  const playerCount = extractNumberBefore(text, ['spieler', 'leute', 'personen', 'teilnehmer']);
+  if (playerCount) notes.push(`Spieleranzahl erkannt: ${playerCount}`);
+  else notes.push('Spieleranzahl nicht erkannt - trag sie unten selbst ein (nur zur eigenen Orientierung).');
+
+  let numGroups = extractNumberBefore(text, ['gruppen', 'töpfe', 'pots']);
+  if (numGroups && ![2, 3, 4].includes(numGroups)) {
+    notes.push(`${numGroups} Gruppen erkannt, aber unterstützt werden aktuell nur 2, 3 oder 4 - bitte unten auswählen.`);
+    numGroups = null;
+  } else if (numGroups) {
+    notes.push(`Gruppenanzahl erkannt: ${numGroups}`);
+  }
+
+  // Solo/Einzel-Hinweise: "jeder bekommt einen Verein", "Einzelturnier", "keine 2er-Teams" usw.
+  const soloPatterns = [
+    /jeder\s+(spieler\s+)?(bekommt|kriegt|erh(ä|ae)lt)[^.]{0,30}?(club|verein)/i,
+    /\beinzel(turnier|modus|spiel)?\b/i,
+    /kein(e)?\s+(2er[- ]?)?teams?/i,
+    /ohne\s+partner/i,
+    /jeder\s+(spieler\s+)?(f(ü|ue)r sich|allein(e)?|solo)/i
+  ];
+  const mode = soloPatterns.some(re => re.test(text)) ? 'solo' : 'duo';
+  notes.push(mode === 'solo'
+    ? '👤 Einzel-Modus erkannt: jeder Spieler bekommt seinen eigenen Verein (kein Partner).'
+    : '👬 Standard-Modus: 2er-Teams, die sich einen Verein teilen.');
+
+  // Rein informative Notiz zu ungleichen Gruppengrößen ("4 bzw 5", "4 oder 5") - wird nicht
+  // gesondert gespeichert, weil die bestehende Auslosung Restspieler ohnehin automatisch
+  // gleichmäßig auf die Gruppen verteilt (siehe drawGroups()).
+  const unevenMatch = text.match(/(\d+)\s*(?:bzw\.?|oder|-)\s*(\d+)\s*(?:er)?\s*(pro\s+gruppe|spieler|teams?)?/i);
+  if (unevenMatch) notes.push(`Hinweis: unterschiedliche Gruppengrößen (${unevenMatch[1]}/${unevenMatch[2]}) werden bei der Auslosung automatisch möglichst gleichmäßig verteilt.`);
+
+  return { playerCount, numGroups, mode, notes };
+}
+// Öffnet den Format-Assistenten (Schritt 1: Name + optionale Freitext-Beschreibung)
+function openFormatWizard() {
+  if (globalSettings.lockNewTournaments && !isGod()) return alert('🔒 Das Erstellen neuer Turniere ist aktuell gesperrt.');
+  renderFormatWizardStep1();
+  document.getElementById('format-wizard-modal').style.display = 'flex';
+}
+function closeFormatWizard() {
+  document.getElementById('format-wizard-modal').style.display = 'none';
+}
+function renderFormatWizardStep1() {
+  const container = document.getElementById('format-wizard-container');
+  if (!container) return;
+  const nameInput = document.getElementById('new-tournament-name');
+  container.innerHTML = `
+    <h3 style="margin-top:0;">🧙 Neues Turnier per Beschreibung</h3>
+    <p style="font-size:0.85em; opacity:0.8; margin-bottom:4px;">Name für das Turnier:</p>
+    <input type="text" id="wizard-tournament-name" placeholder="z.B. Sommer-Cup 2026" value="${escapeHtml((nameInput && nameInput.value) || '')}" style="width:100%; box-sizing:border-box; padding:8px; margin-bottom:12px;">
+    <p style="font-size:0.85em; opacity:0.8; margin-bottom:4px;">
+      Beschreibe optional in eigenen Worten, wie das Turnier ablaufen soll, z.B.:<br>
+      <em>"Ich habe 18 Spieler und will die in 4 Gruppen à 4 bzw. 5 losen"</em><br>
+      <em>"20 Spieler auf 2 Gruppen aufteilen"</em><br>
+      <em>"16 Spieler, jeder bekommt einen Verein zugelost, dann 4er-Gruppen"</em>
+    </p>
+    <textarea id="wizard-format-text" rows="4" placeholder="Turnierformat beschreiben (optional)..." style="width:100%; box-sizing:border-box; padding:8px; margin-bottom:12px;"></textarea>
+    <div style="display:flex; gap:8px;">
+      <button class="btn-secondary" style="flex:1;" onclick="closeFormatWizard()">Abbrechen</button>
+      <button class="btn-primary" style="flex:1;" onclick="analyzeFormatWizardText()">Weiter</button>
+    </div>
+  `;
+}
+// Liest Name + Beschreibungstext, analysiert (falls vorhanden) und zeigt die Vorschau -
+// ohne Text wird mit den Standard-Einstellungen (Duo-Modus, Gruppenanzahl später) fortgefahren.
+function analyzeFormatWizardText() {
+  const nameInput = document.getElementById('wizard-tournament-name');
+  const name = nameInput ? nameInput.value.trim() : '';
+  if (!name) return alert('Bitte einen Namen für das Turnier eingeben!');
+  wizardTournamentName = name;
+  const textInput = document.getElementById('wizard-format-text');
+  const text = textInput ? textInput.value.trim() : '';
+  if (!text) { proceedFromFormatWizard({ mode: 'duo', numGroups: null, playerCount: null }); return; }
+  renderFormatWizardPreview(parseTournamentFormatText(text));
+}
+// Zeigt die editierbare Vorschau des erkannten Formats (Schritt 2)
+function renderFormatWizardPreview(parsed) {
+  const container = document.getElementById('format-wizard-container');
+  if (!container) return;
+  container.innerHTML = `
+    <h3 style="margin-top:0;">🧙 Verstanden?</h3>
+    <p style="font-size:0.85em; opacity:0.8; margin-bottom:8px;">So habe ich deine Beschreibung interpretiert - prüfe kurz, ob das passt, und korrigiere bei Bedarf:</p>
+    <div style="font-size:0.8em; opacity:0.75; margin-bottom:12px; background:rgba(0,0,0,0.2); padding:8px; border-radius:8px;">${parsed.notes.map(n => `• ${escapeHtml(n)}`).join('<br>')}</div>
+    <label style="display:block; font-size:0.85em; margin-bottom:4px;">Erwartete Spieleranzahl (nur zur eigenen Orientierung):</label>
+    <input type="number" id="wizard-player-count" min="1" value="${parsed.playerCount || ''}" placeholder="unbekannt" style="width:100%; box-sizing:border-box; padding:8px; margin-bottom:10px;">
+    <label style="display:block; font-size:0.85em; margin-bottom:4px;">Modus:</label>
+    <div style="display:flex; gap:10px; margin-bottom:10px;">
+      <label style="flex:1; display:flex; align-items:center; gap:6px; background:rgba(0,0,0,0.2); padding:8px; border-radius:8px; cursor:pointer;">
+        <input type="radio" name="wizard-mode" value="duo" ${parsed.mode === 'duo' ? 'checked' : ''}> 👬 2er-Teams
+      </label>
+      <label style="flex:1; display:flex; align-items:center; gap:6px; background:rgba(0,0,0,0.2); padding:8px; border-radius:8px; cursor:pointer;">
+        <input type="radio" name="wizard-mode" value="solo" ${parsed.mode === 'solo' ? 'checked' : ''}> 🧍 Einzel
+      </label>
+    </div>
+    <label style="display:block; font-size:0.85em; margin-bottom:4px;">Gruppenanzahl:</label>
+    <select id="wizard-num-groups" style="width:100%; padding:8px; margin-bottom:14px;">
+      <option value="">Später beim Auslosen festlegen</option>
+      <option value="2" ${parsed.numGroups === 2 ? 'selected' : ''}>2 Gruppen</option>
+      <option value="3" ${parsed.numGroups === 3 ? 'selected' : ''}>3 Gruppen</option>
+      <option value="4" ${parsed.numGroups === 4 ? 'selected' : ''}>4 Gruppen</option>
+    </select>
+    <div style="display:flex; gap:8px;">
+      <button class="btn-secondary" style="flex:1;" onclick="renderFormatWizardStep1()">‹ Zurück</button>
+      <button class="btn-primary" style="flex:1;" onclick="confirmFormatWizardPreview()">Turnier erstellen</button>
+    </div>
+  `;
+}
+function confirmFormatWizardPreview() {
+  const playerCountInput = document.getElementById('wizard-player-count');
+  const numGroupsSelect = document.getElementById('wizard-num-groups');
+  const modeInput = document.querySelector('input[name="wizard-mode"]:checked');
+  proceedFromFormatWizard({
+    mode: modeInput ? modeInput.value : 'duo',
+    numGroups: numGroupsSelect && numGroupsSelect.value ? parseInt(numGroupsSelect.value, 10) : null,
+    playerCount: playerCountInput && playerCountInput.value ? parseInt(playerCountInput.value, 10) : null
+  });
+}
+// Übernimmt das (ggf. von Hand korrigierte) Format und übergibt an den bestehenden
+// Namens-/Passwort-Ablauf (startCreateTournament -> ... -> finalizeCreateTournament), der
+// dafür unverändert weiterläuft - das Format wird nur zwischengespeichert (siehe oben).
+function proceedFromFormatWizard(format) {
+  closeFormatWizard();
+  pendingNewTournamentFormat = format;
+  const nameInput = document.getElementById('new-tournament-name');
+  if (nameInput) nameInput.value = wizardTournamentName;
+  startCreateTournament();
 }
 // Schritt 1 der Turniererstellung: Name prüfen. Hat die eigene Identität schon ein
 // (identitätsweites) Passwort, ist man damit automatisch auch Admin jedes selbst erstellten
@@ -1163,9 +1341,16 @@ function finalizeCreateTournament(joinPwd) {
   newRef.set({ name, createdAt: Date.now(), createdBy: myPlayerName }).catch((error) => {
     alert('⚠️ Turnier konnte nicht erstellt werden:\n' + error.message);
   });
+  // Format-Wizard-Ergebnis übernehmen (siehe openFormatWizard) - optional, wird beim
+  // einfachen "+ Neu"-Weg ohne Beschreibung einfach übersprungen (dann gelten die Standards).
+  const format = pendingNewTournamentFormat || {};
+  pendingNewTournamentFormat = null;
   db.ref('tournaments/' + id).set({
     players: [{ name: myPlayerName, isRef: false, isTournamentOwner: true }],
-    joinPassword: joinPwd
+    joinPassword: joinPwd,
+    tournamentMode: format.mode === 'solo' ? 'solo' : 'duo',
+    numGroups: format.numGroups || 3,
+    plannedPlayerCount: format.playerCount || null
   }).catch((error) => {
     alert('⚠️ Turnier konnte nicht erstellt werden:\n' + error.message);
   });
@@ -1726,11 +1911,13 @@ function collectAllConfirmedMatches(allTournamentsData, tournamentsMeta) {
       if (!m || !m.confirmed) return;
       if (m.score1 === null || m.score1 === undefined || m.score2 === null || m.score2 === undefined) return;
       const team1 = teamById[m.t1Id], team2 = teamById[m.t2Id];
-      if (!team1 || !team2 || !team1.p1 || !team1.p2 || !team2.p1 || !team2.p2) return;
+      // p2 fehlt bei Solo-Teams (Einzel-Modus, ein Spieler pro Team) ganz normal - nur
+      // team1/team2 selbst UND jeweils p1 müssen vorhanden sein.
+      if (!team1 || !team2 || !team1.p1 || !team2.p1) return;
       flat.push({
         tournamentId: tid, tournamentName: tName,
         round: m.round || null, // null = Gruppenphase
-        team1: [team1.p1, team1.p2], team2: [team2.p1, team2.p2],
+        team1: [team1.p1, team1.p2].filter(Boolean), team2: [team2.p1, team2.p2].filter(Boolean),
         score1: m.score1, score2: m.score2,
         time: m.scheduledTime || tCreatedAt
       });
@@ -1770,7 +1957,9 @@ function computePlayerStats(playerName, matches) {
     const oppTeam = inTeam1 ? m.team2 : m.team1;
     const myScore = inTeam1 ? m.score1 : m.score2;
     const oppScore = inTeam1 ? m.score2 : m.score1;
-    const partner = myTeam.find(p => p.toLowerCase() !== key) || myTeam[0];
+    // Solo-Teams (Einzel-Modus) haben keinen Partner - myTeam enthält dann nur den einen
+    // Spieler selbst, .find() liefert also korrekt nichts.
+    const partner = myTeam.find(p => p.toLowerCase() !== key) || null;
     const diff = myScore - oppScore;
     // WICHTIG: "loss" pluralisiert unregelmäßig ("losses", nicht "losss") - deshalb über
     // diese Zuordnung statt per outcome+'s' die richtige Statistik-Eigenschaft treffen.
@@ -1801,7 +1990,7 @@ function computePlayerStats(playerName, matches) {
       };
     }
     const tEntry = stats.tournamentsMap[m.tournamentId];
-    tEntry.partners.add(partner);
+    if (partner) tEntry.partners.add(partner);
     tEntry.played++;
     tEntry[outcomeKey]++;
     if (m.round) {
@@ -1840,10 +2029,12 @@ function computePlayerStats(playerName, matches) {
   return stats;
 }
 // Spielt ALLE Spiele einer flachen, chronologisch sortierten Match-Liste durch und berechnet
-// daraus eine Elo-Wertung PRO SPIELER (Team-Elo = Mittelwert der beiden Partner, beide
-// bekommen danach dieselbe Änderung gutgeschrieben/abgezogen). Der K-Faktor sinkt mit
-// steigender Erfahrung (unsichere Anfangswertung schwankt stärker, etablierte weniger) -
-// dasselbe Prinzip wie bei echten Elo-Systemen (Schach, viele E-Sports-Ranglisten).
+// daraus eine Elo-Wertung PRO SPIELER (Team-Elo = Mittelwert der Team-Mitglieder, die dann
+// alle dieselbe Änderung gutgeschrieben/abgezogen bekommen). Funktioniert für 2er-Teams
+// (Duo-Modus) GENAUSO wie für Solo-Teams (Einzel-Modus, ein Spieler = ein Team - dann ist
+// die "Team-Wertung" einfach die eigene). Der K-Faktor sinkt mit steigender Erfahrung
+// (unsichere Anfangswertung schwankt stärker, etablierte weniger) - dasselbe Prinzip wie bei
+// echten Elo-Systemen (Schach, viele E-Sports-Ranglisten).
 function computeGlobalRatings(matches) {
   const ratings = {};
   function ensure(name) {
@@ -1855,10 +2046,11 @@ function computeGlobalRatings(matches) {
   }
   function kFactor(p) { return p.games < 10 ? 40 : (p.games < 30 ? 24 : 16); }
   matches.forEach(m => {
-    const a1 = ensure(m.team1[0]), a2 = ensure(m.team1[1]);
-    const b1 = ensure(m.team2[0]), b2 = ensure(m.team2[1]);
-    const teamARating = (a1.rating + a2.rating) / 2;
-    const teamBRating = (b1.rating + b2.rating) / 2;
+    const teamA = m.team1.map(ensure);
+    const teamB = m.team2.map(ensure);
+    if (teamA.length === 0 || teamB.length === 0) return;
+    const teamARating = teamA.reduce((sum, p) => sum + p.rating, 0) / teamA.length;
+    const teamBRating = teamB.reduce((sum, p) => sum + p.rating, 0) / teamB.length;
     const expectedA = 1 / (1 + Math.pow(10, (teamBRating - teamARating) / 400));
     const scoreA = m.score1 > m.score2 ? 1 : (m.score1 < m.score2 ? 0 : 0.5);
     const applyResult = (player, own, opp) => {
@@ -1870,8 +2062,8 @@ function computeGlobalRatings(matches) {
       else { player.draws++; player.streak = 0; }
       if (player.streak > player.bestStreak) player.bestStreak = player.streak;
     };
-    [a1, a2].forEach(p => applyResult(p, scoreA, expectedA));
-    [b1, b2].forEach(p => applyResult(p, 1 - scoreA, 1 - expectedA));
+    teamA.forEach(p => applyResult(p, scoreA, expectedA));
+    teamB.forEach(p => applyResult(p, 1 - scoreA, 1 - expectedA));
   });
   return ratings;
 }
@@ -1964,7 +2156,7 @@ function renderStatsHtml(stats, ratingEntry, allRatings, badges) {
   html += stats.tournaments.map(t => `
     <div style="background:var(--fal-blue-primary); padding:8px 12px; border-radius:8px; margin-bottom:6px; font-size:0.85em;">
       <strong>${escapeHtml(t.tournamentName)}</strong> - ${t.placement}<br>
-      <span style="opacity:0.75;">mit ${escapeHtml(t.partners.join(' & '))} · ${t.wins}S-${t.draws}R-${t.losses}N</span>
+      <span style="opacity:0.75;">${t.partners.length ? `mit ${escapeHtml(t.partners.join(' & '))} · ` : ''}${t.wins}S-${t.draws}R-${t.losses}N</span>
     </div>
   `).join('');
 
@@ -2044,15 +2236,16 @@ function resetClubsToDefault() {
 // das ist bewusst geheim und soll nicht jeder mit erweiterten Rechten nutzen können.
 function addDraftCheat() {
   if (!isGod()) return;
+  const solo = tournamentMode === 'solo';
   const p1Sel = document.getElementById('cheat-p1-select');
-  const p2Sel = document.getElementById('cheat-p2-select');
+  const p2Sel = solo ? null : document.getElementById('cheat-p2-select');
   const clubSel = document.getElementById('cheat-club-select');
   const p1 = p1Sel ? p1Sel.value : '';
   const p2 = p2Sel ? p2Sel.value : '';
   const club = clubSel ? clubSel.value : '';
   if (!p1) return alert('Bitte mindestens einen Spieler auswählen!');
   if (p2 && p2 === p1) return alert('Bitte zwei unterschiedliche Spieler auswählen (oder den 2. auf "egal" lassen)!');
-  if (!p2 && !club) return alert('Ohne festgelegten Partner brauchst du mindestens einen festgelegten Verein, sonst bewirkt die Vorgabe nichts!');
+  if (!p2 && !club) return alert(solo ? 'Bitte einen Verein festlegen, sonst bewirkt die Vorgabe nichts!' : 'Ohne festgelegten Partner brauchst du mindestens einen festgelegten Verein, sonst bewirkt die Vorgabe nichts!');
   draftCheats.push({ p1, p2: p2 || null, club: club || null });
   saveData();
   renderAll();
@@ -2071,6 +2264,7 @@ function renderDraftCheatPanel() {
   const container = document.getElementById('draft-cheat-container');
   if (!container) return;
   if (!isGod() || teams.length > 0) { container.innerHTML = ''; return; }
+  const solo = tournamentMode === 'solo';
   const usedNames = new Set();
   draftCheats.forEach(c => { usedNames.add(c.p1); if (c.p2) usedNames.add(c.p2); });
   const availablePlayers = players.filter(p => !usedNames.has(p.name));
@@ -2079,7 +2273,7 @@ function renderDraftCheatPanel() {
   const clubOptions = '<option value="">(Verein zufällig)</option>' + availableClubs.map(c => `<option value="${escapeHtml(c)}">${escapeHtml(c)}</option>`).join('');
   const list = draftCheats.length ? draftCheats.map((c, i) => `
     <div style="display:flex; justify-content:space-between; align-items:center; background:rgba(0,0,0,0.25); padding:6px 10px; border-radius:6px; margin-bottom:4px; font-size:0.85em;">
-      <span><strong>${escapeHtml(c.p1)}</strong>${c.p2 ? ` &amp; <strong>${escapeHtml(c.p2)}</strong>` : ' (Partner egal)'}${c.club ? ` → ${escapeHtml(c.club)}` : ' (Verein zufällig)'}</span>
+      <span><strong>${escapeHtml(c.p1)}</strong>${!solo ? (c.p2 ? ` &amp; <strong>${escapeHtml(c.p2)}</strong>` : ' (Partner egal)') : ''}${c.club ? ` → ${escapeHtml(c.club)}` : ' (Verein zufällig)'}</span>
       <span style="cursor:pointer; color:#ff4d4d; font-weight:bold;" onclick="removeDraftCheat(${i})">×</span>
     </div>
   `).join('') : '<p style="font-size:0.85em; opacity:0.7; margin:0 0 8px 0;">Noch keine Vorgaben - alles bleibt komplett zufällig.</p>';
@@ -2087,12 +2281,14 @@ function renderDraftCheatPanel() {
   container.innerHTML = `
     <div style="margin-top:14px; padding-top:12px; border-top:1px solid rgba(255,255,255,0.1);">
       <p style="font-size:0.9em; font-weight:bold; margin:0 0 4px 0;">⚙️ Auslosungs-Voreinstellungen (optional)</p>
-      <p style="font-size:0.8em; opacity:0.75; margin:0 0 8px 0;">Hier kannst du vor der Auslosung festlegen, welcher Spieler mit wem zusammen ins Team soll und/oder welchen Verein er bekommt. Den Partner kannst du auch offen lassen ("egal") und nur den Verein festlegen. Ohne Vorgabe bleibt alles zufällig.</p>
+      <p style="font-size:0.8em; opacity:0.75; margin:0 0 8px 0;">${solo
+        ? 'Hier kannst du vor der Auslosung festlegen, welcher Spieler welchen Verein bekommt. Ohne Vorgabe bleibt alles zufällig.'
+        : 'Hier kannst du vor der Auslosung festlegen, welcher Spieler mit wem zusammen ins Team soll und/oder welchen Verein er bekommt. Den Partner kannst du auch offen lassen ("egal") und nur den Verein festlegen. Ohne Vorgabe bleibt alles zufällig.'}</p>
       ${list}
       ${availablePlayers.length >= 1 ? `
         <div style="display:flex; gap:6px; flex-wrap:wrap; margin-top:4px;">
           <select id="cheat-p1-select">${playerOptions}</select>
-          <select id="cheat-p2-select">${partnerOptions}</select>
+          ${solo ? '' : `<select id="cheat-p2-select">${partnerOptions}</select>`}
           <select id="cheat-club-select">${clubOptions}</select>
           <button class="btn-secondary btn-sm" onclick="addDraftCheat()">+ Hinzufügen</button>
         </div>
@@ -2157,19 +2353,51 @@ function simulateTeamDraw(playerNames, clubNames) {
   }
   return resultTeams;
 }
+// Simuliert die Auslosung im EINZEL-Modus: jeder Spieler bekommt seinen eigenen Verein,
+// kein Partner. Respektiert Club-Vorgaben (p2 spielt dabei keine Rolle) genauso
+// reserviert-bewusst wie simulateTeamDraw() - siehe getPendingDraftCheats.
+function simulateSoloDraw(playerNames, clubNames) {
+  const remainingPlayers = [...playerNames].sort(() => Math.random() - 0.5);
+  const remainingClubs = [...clubNames];
+  const resultTeams = [];
+  while (remainingPlayers.length > 0) {
+    const p1 = remainingPlayers.shift();
+    // Verein: erst schauen, ob eine Vorgabe für diesen Spieler existiert, sonst zufällig
+    // (reserviert-bewusst - schützt Vereine, die für noch ausstehende Vorgaben gebraucht werden)
+    const clubCheat = draftCheats.find(c => c.p1 === p1 && c.club);
+    let clubIndex = clubCheat ? remainingClubs.indexOf(clubCheat.club) : -1;
+    if (clubIndex === -1) {
+      const reservedClubs = new Set();
+      getPendingDraftCheats(remainingPlayers).forEach(c => { if (c.club) reservedClubs.add(c.club); });
+      clubIndex = pickRandomIndexAvoidingReserved(remainingClubs, reservedClubs);
+    }
+    const club = remainingClubs.splice(clubIndex, 1)[0];
+    resultTeams.push({ id: resultTeams.length + 1, name: `Team ${resultTeams.length + 1}`, p1, p2: null, club });
+  }
+  return resultTeams;
+}
 // ============================================================================
 // 6. LIVE-AUSLOSUNGS-SHOW (Glücksrad) — 3-Schritt-System pro Team: Spieler 1 -> Spieler 2 -> Club.
 //    Läuft bei allen Zuschauern synchron mit, weil jeder Zwischenschritt per
 //    saveData() in Firebase landet (siehe draftState in Abschnitt 2).
 // ============================================================================
+// Prüft vor der Auslosung, ob genug Spieler/Vereine für den aktuellen Turniermodus vorhanden
+// sind. Gibt bei Problemen eine passende Fehlermeldung zurück, sonst null.
+function checkDrawPrerequisites() {
+  const solo = tournamentMode === 'solo';
+  if (solo) {
+    if (players.length < 2) return `Du benötigst mindestens 2 Spieler (aktuell: ${players.length}).`;
+    if (availableClubs.length < players.length) return `Du hast zu wenige Profi-Clubs in der Liste! Mindestens ${players.length} benötigt (jeder Spieler bekommt seinen eigenen).`;
+  } else {
+    if (players.length < 4 || players.length % 2 !== 0) return `Du benötigst eine gerade und ausreichend hohe Anzahl an Spielern (aktuell: ${players.length}).`;
+    if (availableClubs.length < (players.length / 2)) return `Du hast zu wenige Profi-Clubs in der Liste! Mindestens ${players.length / 2} benötigt.`;
+  }
+  return null;
+}
 function startInteractiveDraft() {
   if (!hasElevated()) return;
-  if (players.length < 4 || players.length % 2 !== 0) {
-    return alert(`Du benötigst eine gerade und ausreichend hohe Anzahl an Spielern (aktuell: ${players.length}).`);
-  }
-  if (availableClubs.length < (players.length / 2)) {
-    return alert(`Du hast zu wenige Profi-Clubs in der Liste! Mindestens ${players.length / 2} benötigt.`);
-  }
+  const problem = checkDrawPrerequisites();
+  if (problem) return alert(problem);
   if (confirm('Soll die Auslosungs-Show jetzt LIVE gestartet werden?')) {
     teams = [];
     groups = [];
@@ -2179,7 +2407,8 @@ function startInteractiveDraft() {
     tipsEvaluated = false;
     draftState = {
       active: true,
-      currentStep: 0, // 0: P1, 1: P2, 2: Club
+      mode: tournamentMode === 'solo' ? 'solo' : 'duo', // im draftState mitgeführt, damit ALLE (auch Zuschauer) denselben Ablauf sehen
+      currentStep: 0, // Duo: 0=P1, 1=P2, 2=Club — Solo: 0=Spieler, 1=Club
       tempP1: null,
       tempP2: null,
       remainingPlayers: [...players.map(p => p.name)],
@@ -2197,17 +2426,16 @@ function startInteractiveDraft() {
 }
 // Lost Teams & Clubs SOFORT ohne die Glücksrad-Show/Animation aus - praktisch zum
 // schnellen Testen, wenn man nicht jedes Mal die vollen Dreh-Animationen abwarten will.
-// Nutzt exakt dieselben Regeln wie die Live-Show (zufällige 2er-Duos + zufälliger Club).
+// Nutzt exakt dieselben Regeln wie die Live-Show (im Duo-Modus 2er-Teams, im Solo-Modus
+// je Spieler ein eigener Verein - siehe simulateTeamDraw/simulateSoloDraw).
 function quickDrawTeams() {
   if (!hasElevated()) return;
-  if (players.length < 4 || players.length % 2 !== 0) {
-    return alert(`Du benötigst eine gerade und ausreichend hohe Anzahl an Spielern (aktuell: ${players.length}).`);
-  }
-  if (availableClubs.length < (players.length / 2)) {
-    return alert(`Du hast zu wenige Profi-Clubs in der Liste! Mindestens ${players.length / 2} benötigt.`);
-  }
+  const problem = checkDrawPrerequisites();
+  if (problem) return alert(problem);
   if (!confirm('Teams & Clubs SOFORT ohne Glücksrad-Show auslosen?')) return;
-  teams = simulateTeamDraw(players.map(p => p.name), availableClubs);
+  teams = tournamentMode === 'solo'
+    ? simulateSoloDraw(players.map(p => p.name), availableClubs)
+    : simulateTeamDraw(players.map(p => p.name), availableClubs);
   groups = [];
   groupMatches = [];
   koMatches = [];
@@ -2237,12 +2465,14 @@ function handleLiveDraftUI() {
 function renderDraftStep() {
   const stage = document.getElementById('draft-stage');
   if (!stage) return;
+  const solo = draftState.mode === 'solo';
+  const clubStep = solo ? 1 : 2;
   const noPlayersLeft = !draftState.remainingPlayers || draftState.remainingPlayers.length === 0;
   const noDuoPending = !draftState.tempP1 && !draftState.tempP2 && !draftState.lastDrawnItem;
   if (noPlayersLeft && noDuoPending) {
     stage.innerHTML = `
       <h3 style="color:#4CAF50; margin-bottom: 10px;">🎉 Alle Teams & Clubs wurden gelost! 🎉</h3>
-      <p>Die Duos und ihre Profi-Vereine stehen fest.</p>
+      <p>${solo ? 'Jeder Spieler hat seinen Profi-Verein.' : 'Die Duos und ihre Profi-Vereine stehen fest.'}</p>
       ${hasElevated() ? `
         <button class="btn-primary role-btn" style="margin-top:15px;" onclick="finishDraft()">
           💾 Teams speichern & Auslosung beenden
@@ -2253,15 +2483,22 @@ function renderDraftStep() {
   }
   const currentTeamNum = (draftState.pairs ? draftState.pairs.length : teams.length) + 1;
   let stepText = '';
-  if (draftState.currentStep === 0) stepText = '🎰 Step 1: Lose <strong>Spieler 1</strong>';
-  else if (draftState.currentStep === 1) stepText = `🎰 Step 2: Lose <strong>Spieler 2</strong> (Partner für ${draftState.tempP1})`;
-  else if (draftState.currentStep === 2) stepText = `🎰 Step 3: Lose <strong>Club</strong> für Duo ${draftState.tempP1} & ${draftState.tempP2}`;
+  if (solo) {
+    if (draftState.currentStep === 0) stepText = '🎰 Lose <strong>Spieler</strong>';
+    else if (draftState.currentStep === clubStep) stepText = `🎰 Lose <strong>Verein</strong> für ${draftState.tempP1}`;
+  } else {
+    if (draftState.currentStep === 0) stepText = '🎰 Step 1: Lose <strong>Spieler 1</strong>';
+    else if (draftState.currentStep === 1) stepText = `🎰 Step 2: Lose <strong>Spieler 2</strong> (Partner für ${draftState.tempP1})`;
+    else if (draftState.currentStep === clubStep) stepText = `🎰 Step 3: Lose <strong>Club</strong> für Duo ${draftState.tempP1} & ${draftState.tempP2}`;
+  }
   stage.innerHTML = `
     <p style="font-size:0.9em; opacity:0.8;">Erstelle Team ${currentTeamNum}</p>
     <h3 style="margin:5px 0; color:var(--fal-yellow);">${stepText}</h3>
     <div style="background:rgba(0,0,0,0.3); padding:10px; border-radius:8px; margin: 10px 0;">
-      <small style="opacity:0.7;">Aktuelles Status-Duo:</small><br>
-      <strong>${draftState.tempP1 ? draftState.tempP1 : '???'}</strong> & <strong>${draftState.tempP2 ? draftState.tempP2 : '???'}</strong>
+      <small style="opacity:0.7;">${solo ? 'Aktueller Spieler:' : 'Aktuelles Status-Duo:'}</small><br>
+      ${solo
+        ? `<strong>${draftState.tempP1 ? draftState.tempP1 : '???'}</strong>`
+        : `<strong>${draftState.tempP1 ? draftState.tempP1 : '???'}</strong> & <strong>${draftState.tempP2 ? draftState.tempP2 : '???'}</strong>`}
     </div>
     <div class="wheel-container" style="position:relative; width:260px; margin:0 auto;">
       <div class="wheel-pointer" style="position:absolute; top:-10px; left:50%; transform:translateX(-50%); width:0; height:0; border-left:10px solid transparent; border-right:10px solid transparent; border-top:15px solid red; z-index:10;"></div>
@@ -2327,7 +2564,7 @@ function drawWheelCanvas(angleOffset) {
   if (!canvas) return;
   const ctx = canvas.getContext('2d');
   
-  const isClubWheel = (draftState.currentStep === 2);
+  const isClubWheel = (draftState.currentStep === (draftState.mode === 'solo' ? 1 : 2));
   let items = isClubWheel ? draftState.remainingClubs : draftState.remainingPlayers;
   const numItems = items ? items.length : 0;
   
@@ -2398,43 +2635,41 @@ function drawWheelCanvas(angleOffset) {
 // Admin dreht das Rad: würfelt zufällig ein Element aus dem aktuellen Pool und startet die Dreh-Animation
 function spinWheel() {
   if (!hasElevated() || draftState.spinning) return;
-  let currentPool = [];
-  if (draftState.currentStep === 0 || draftState.currentStep === 1) {
-    currentPool = draftState.remainingPlayers;
-  } else if (draftState.currentStep === 2) {
-    currentPool = draftState.remainingClubs;
-  }
+  const solo = draftState.mode === 'solo';
+  const clubStep = solo ? 1 : 2;
+  let currentPool = (draftState.currentStep === clubStep) ? draftState.remainingClubs : draftState.remainingPlayers;
   if (!currentPool || currentPool.length === 0) {
     return alert("Keine Elemente mehr zum Auslosen im aktuellen Pool!");
   }
-  // Voreinstellungen prüfen: Spieler 1 bleibt IMMER ehrlich zufällig (schließlich muss
-  // irgendwer als erstes gezogen werden) - erst bei Spieler 2 (dem Partner) und beim
-  // Verein wird geschaut, ob dafür eine Vorgabe hinterlegt ist. Eine Vorgabe kann einen
-  // festen Partner haben ODER den Partner offen lassen ("egal") und nur den Verein
-  // festlegen. Das Rad dreht sich optisch trotzdem ganz normal, landet aber gezielt
-  // auf dem passenden Feld.
+  // Voreinstellungen prüfen: der erste Spieler bleibt IMMER ehrlich zufällig (schließlich muss
+  // irgendwer als erstes gezogen werden) - erst beim Verein (Solo) bzw. beim Partner UND Verein
+  // (Duo) wird geschaut, ob dafür eine Vorgabe hinterlegt ist. Eine Duo-Vorgabe kann einen
+  // festen Partner haben ODER den Partner offen lassen ("egal") und nur den Verein festlegen.
+  // Das Rad dreht sich optisch trotzdem ganz normal, landet aber gezielt auf dem passenden Feld.
   let targetIndex = null;
-  if (draftState.currentStep === 1 && draftState.tempP1) {
-    // Nur Vorgaben mit festem Partner sind hier relevant (Partner "egal" wirkt erst beim Verein)
+  if (draftState.currentStep === clubStep && draftState.tempP1) {
+    const cheat = solo
+      ? draftCheats.find(c => c.club && c.p1 === draftState.tempP1)
+      : (draftState.tempP2 ? draftCheats.find(c => {
+          if (!c.club) return false;
+          if (c.p2) {
+            // Vorgabe mit festem Partner: muss exakt zu diesem Duo passen
+            return (c.p1 === draftState.tempP1 && c.p2 === draftState.tempP2) ||
+                   (c.p1 === draftState.tempP2 && c.p2 === draftState.tempP1);
+          }
+          // Vorgabe ohne festen Partner: reicht, wenn der eine festgelegte Spieler dabei ist
+          return c.p1 === draftState.tempP1 || c.p1 === draftState.tempP2;
+        }) : null);
+    if (cheat) {
+      const idx = currentPool.indexOf(cheat.club);
+      if (idx !== -1) targetIndex = idx;
+    }
+  } else if (!solo && draftState.currentStep === 1 && draftState.tempP1) {
+    // Nur Duo: Nur Vorgaben mit festem Partner sind hier relevant (Partner "egal" wirkt erst beim Verein)
     const cheat = draftCheats.find(c => c.p2 && (c.p1 === draftState.tempP1 || c.p2 === draftState.tempP1));
     if (cheat) {
       const partner = cheat.p1 === draftState.tempP1 ? cheat.p2 : cheat.p1;
       const idx = currentPool.indexOf(partner);
-      if (idx !== -1) targetIndex = idx;
-    }
-  } else if (draftState.currentStep === 2 && draftState.tempP1 && draftState.tempP2) {
-    const cheat = draftCheats.find(c => {
-      if (!c.club) return false;
-      if (c.p2) {
-        // Vorgabe mit festem Partner: muss exakt zu diesem Duo passen
-        return (c.p1 === draftState.tempP1 && c.p2 === draftState.tempP2) ||
-               (c.p1 === draftState.tempP2 && c.p2 === draftState.tempP1);
-      }
-      // Vorgabe ohne festen Partner: reicht, wenn der eine festgelegte Spieler dabei ist
-      return c.p1 === draftState.tempP1 || c.p1 === draftState.tempP2;
-    });
-    if (cheat) {
-      const idx = currentPool.indexOf(cheat.club);
       if (idx !== -1) targetIndex = idx;
     }
   }
@@ -2445,9 +2680,9 @@ function spinWheel() {
     // in einer früheren Runde für ein fremdes Team weggezogen werden, bevor der eigentliche
     // Spieler überhaupt an der Reihe war (der gemeldete Bug).
     const reserved = new Set();
-    if (draftState.currentStep === 1) {
+    if (!solo && draftState.currentStep === 1) {
       getPendingDraftCheats(draftState.remainingPlayers).forEach(c => { if (c.p2) { reserved.add(c.p1); reserved.add(c.p2); } });
-    } else if (draftState.currentStep === 2) {
+    } else if (draftState.currentStep === clubStep) {
       getPendingDraftCheats(draftState.remainingPlayers).forEach(c => { if (c.club) reserved.add(c.club); });
     }
     targetIndex = reserved.size > 0 ? pickRandomIndexAvoidingReserved(currentPool, reserved) : Math.floor(Math.random() * currentPool.length);
@@ -2470,18 +2705,18 @@ function spinWheel() {
       draftState.lastDrawnItem = targetItem;
       if (draftState.currentStep === 0) {
         draftState.tempP1 = targetItem;
-      } else if (draftState.currentStep === 1) {
-        draftState.tempP2 = targetItem;
-      } else if (draftState.currentStep === 2) {
+      } else if (draftState.currentStep === clubStep) {
         if (!draftState.pairs) draftState.pairs = [];
-        const newTeam = {
+        draftState.pairs.push({
           id: draftState.pairs.length + 1,
           name: `Team ${draftState.pairs.length + 1}`,
           p1: draftState.tempP1,
-          p2: draftState.tempP2,
+          p2: solo ? null : draftState.tempP2,
           club: targetItem
-        };
-        draftState.pairs.push(newTeam);
+        });
+      } else {
+        // Nur Duo: currentStep === 1 (Partner-Ziehung)
+        draftState.tempP2 = targetItem;
       }
       saveData();
       renderDraftStep();
@@ -2492,21 +2727,19 @@ function spinWheel() {
 // Übernimmt das zuletzt gezogene Element (Spieler/Club) und schaltet zum nächsten Auslosungs-Schritt
 function nextDraftStep() {
   if (!hasElevated()) return;
+  const solo = draftState.mode === 'solo';
+  const clubStep = solo ? 1 : 2;
   if (draftState.lastDrawnItem) {
-    if (draftState.currentStep === 0) {
-      const idx = draftState.remainingPlayers.indexOf(draftState.lastDrawnItem);
-      if (idx !== -1) draftState.remainingPlayers.splice(idx, 1);
-      draftState.currentStep = 1;
-    } else if (draftState.currentStep === 1) {
-      const idx = draftState.remainingPlayers.indexOf(draftState.lastDrawnItem);
-      if (idx !== -1) draftState.remainingPlayers.splice(idx, 1);
-      draftState.currentStep = 2;
-    } else if (draftState.currentStep === 2) {
+    if (draftState.currentStep === clubStep) {
       const idx = draftState.remainingClubs.indexOf(draftState.lastDrawnItem);
       if (idx !== -1) draftState.remainingClubs.splice(idx, 1);
       draftState.tempP1 = null;
       draftState.tempP2 = null;
       draftState.currentStep = 0;
+    } else {
+      const idx = draftState.remainingPlayers.indexOf(draftState.lastDrawnItem);
+      if (idx !== -1) draftState.remainingPlayers.splice(idx, 1);
+      draftState.currentStep = draftState.currentStep + 1;
     }
   }
   draftState.lastDrawnItem = null;
@@ -2664,6 +2897,15 @@ function toggleRegistrationLock() {
   registrationLocked = !registrationLocked;
   saveData();
 }
+// Wechselt zwischen Duo- (2er-Teams) und Solo-Modus (1 Spieler pro Verein) - nur solange
+// noch keine Teams gelost wurden (siehe teams.length===0-Check in renderAdminPanel).
+function toggleTournamentMode() {
+  if (!hasElevated()) return;
+  if (teams.length > 0) return alert('Der Modus kann nach der Auslosung nicht mehr geändert werden!');
+  tournamentMode = tournamentMode === 'solo' ? 'duo' : 'solo';
+  saveData();
+  renderAll();
+}
 // Setzt/ändert das optionale Beitritts-Passwort für dieses Turnier nachträglich (nicht nur
 // bei der Erstellung) - wer noch NICHT Spieler hier ist, braucht es dann zum Beitreten.
 function setTournamentJoinPassword() {
@@ -2706,7 +2948,8 @@ function makeMatch(id, group, slot, t1Id, t2Id) {
     id, group, slot,
     court: null,
     t1Id, t2Id,
-    crossed: Math.random() < 0.5, // zufällig: 1v1 oder über Kreuz (1v2 / 2v1)
+    // Solo-Modus hat keine Teampartner zum Über-Kreuz-Losen -> immer false.
+    crossed: tournamentMode === 'solo' ? false : Math.random() < 0.5, // zufällig: 1v1 oder über Kreuz (1v2 / 2v1)
     score1_h: null, score2_h: null,
     score1_r: null, score2_r: null,
     score1: null, score2: null,
@@ -2722,7 +2965,7 @@ function makeKOMatch(id, round, court, t1Id, t2Id) {
   return {
     id, round, court,
     t1Id, t2Id,
-    crossed: Math.random() < 0.5,
+    crossed: tournamentMode === 'solo' ? false : Math.random() < 0.5,
     score1_h: null, score2_h: null,
     score1_r: null, score2_r: null,
     score1: null, score2: null,
@@ -3119,12 +3362,39 @@ function submitMatchResult(matchId, isKO) {
     alert('Dieses Ergebnis wurde bereits vom Admin bestätigt und ist gesperrt!');
     return;
   }
+  const solo = tournamentMode === 'solo';
   const h1El = document.getElementById(`m_${matchId}_${isKO ? 'ko_' : ''}h1`);
   const h2El = document.getElementById(`m_${matchId}_${isKO ? 'ko_' : ''}h2`);
-  const r1El = document.getElementById(`m_${matchId}_${isKO ? 'ko_' : ''}r1`);
-  const r2El = document.getElementById(`m_${matchId}_${isKO ? 'ko_' : ''}r2`);
   const h1 = h1El ? h1El.value : '';
   const h2 = h2El ? h2El.value : '';
+  // Solo-Modus: nur EIN Ergebnis-Feldpaar (kein Hin-/Rückspiel, jeder Spieler spielt selbst).
+  if (solo) {
+    if (h1 === '' || h2 === '') {
+      if (hasElevated()) {
+        match.score1_h = null; match.score2_h = null;
+        match.score1 = null; match.score2 = null;
+        match.played = false;
+        saveData();
+        renderAll();
+      } else {
+        alert('Bitte beide Ergebnis-Felder ausfüllen!');
+      }
+      return;
+    }
+    const s1 = parseInt(h1, 10), s2 = parseInt(h2, 10);
+    if (isKO && s1 === s2) {
+      return alert('In der KO-Phase muss es einen Sieger geben!');
+    }
+    match.score1_h = s1; match.score2_h = s2;
+    match.score1 = s1; match.score2 = s2;
+    match.played = true;
+    saveData();
+    renderAll();
+    alert(match.confirmed ? '✅ Ergebnis korrigiert (Tabelle aktualisiert).' : '✅ Ergebnis vorläufig gespeichert. Ein Admin/Ref muss es noch bestätigen.');
+    return;
+  }
+  const r1El = document.getElementById(`m_${matchId}_${isKO ? 'ko_' : ''}r1`);
+  const r2El = document.getElementById(`m_${matchId}_${isKO ? 'ko_' : ''}r2`);
   const r1 = r1El ? r1El.value : '';
   const r2 = r2El ? r2El.value : '';
   if (h1 === '' || h2 === '' || r1 === '' || r2 === '') {
@@ -3172,7 +3442,8 @@ function confirmMatchResult(matchId, isKO) {
       const winnerTeam = teams.find(t => t.id === winningTeamId);
       if (winnerTeam) {
         setTimeout(() => {
-          alert(`🎉 🏆 DIE SIEGER DES FAL FIFA TURNIERS SIND: 🏆 🎉\n\n🥇 ${winnerTeam.p1} & ${winnerTeam.p2} (${winnerTeam.name} - ${winnerTeam.club || ''}) 🥇\n\nHerzlichen Glückwunsch! 👏🥳`);
+          const winnerNames = tournamentMode === 'solo' ? winnerTeam.p1 : `${winnerTeam.p1} & ${winnerTeam.p2}`;
+          alert(`🎉 🏆 DIE SIEGER DES FAL FIFA TURNIERS SIND: 🏆 🎉\n\n🥇 ${winnerNames} (${winnerTeam.name} - ${winnerTeam.club || ''}) 🥇\n\nHerzlichen Glückwunsch! 👏🥳`);
         }, 300);
       }
     }
@@ -3225,10 +3496,11 @@ function getMatchLegForPlayer(m, playerName) {
   const t1 = teams.find(t => t.id === m.t1Id);
   const t2 = teams.find(t => t.id === m.t2Id);
   if (!t1 || !t2) return null;
+  const solo = tournamentMode === 'solo';
   const hinP1 = t1.p1, hinP2 = m.crossed ? t2.p2 : t2.p1;
   const rueckP1 = t1.p2, rueckP2 = m.crossed ? t2.p1 : t2.p2;
-  if (playerName === hinP1) return { legName: 'Hinspiel', me: hinP1, opponent: hinP2 };
-  if (playerName === hinP2) return { legName: 'Hinspiel', me: hinP2, opponent: hinP1 };
+  if (playerName === hinP1) return { legName: solo ? null : 'Hinspiel', me: hinP1, opponent: hinP2 };
+  if (playerName === hinP2) return { legName: solo ? null : 'Hinspiel', me: hinP2, opponent: hinP1 };
   if (playerName === rueckP1) return { legName: 'Rückspiel', me: rueckP1, opponent: rueckP2 };
   if (playerName === rueckP2) return { legName: 'Rückspiel', me: rueckP2, opponent: rueckP1 };
   return null;
@@ -3265,7 +3537,7 @@ function renderMyOverview() {
         <div style="background:rgba(0,0,0,0.2); border-radius:8px; padding:10px;">
           <div style="font-size:0.85em; opacity:0.8;">${info.match.isKO ? info.match.round : info.match.group} • gegen ${escapeHtml(info.opponentTeam ? info.opponentTeam.name : '?')}</div>
           <div style="font-weight:bold; margin-top:2px;">🕐 ${formatMatchTime(info.match.scheduledTime) || 'Zeit noch offen'} · ${escapeHtml(info.match.court || '')}</div>
-          ${info.leg ? `<div style="margin-top:4px; font-size:0.9em;">${info.leg.legName}: <strong>Du</strong> vs. <strong>${escapeHtml(info.leg.opponent)}</strong></div>` : ''}
+          ${info.leg ? `<div style="margin-top:4px; font-size:0.9em;">${info.leg.legName ? escapeHtml(info.leg.legName) + ': ' : ''}<strong>Du</strong> vs. <strong>${escapeHtml(info.leg.opponent)}</strong></div>` : ''}
           ${info.match.started ? '<div style="margin-top:4px; font-size:0.85em; color:var(--fal-red);">🚦 Läuft bereits!</div>' : ''}
         </div>
       ` : '<p style="margin:0; opacity:0.75; font-size:0.9em;">Aktuell kein anstehendes Spiel für dich.</p>'}
@@ -3528,7 +3800,7 @@ function renderTeams() {
           ${crestHtml}
         </div>
         ${isMyTeam ? '<div style="color:var(--fal-yellow); font-size:0.85em; font-weight:bold; margin-top:4px;">⭐ (Dein Team)</div>' : ''}
-        <p style="margin-top: 8px; margin-bottom:0;">Mitglieder: <strong>${t.p1}</strong> & <strong>${t.p2}</strong></p>
+        <p style="margin-top: 8px; margin-bottom:0;">${t.p2 ? `Mitglieder: <strong>${t.p1}</strong> & <strong>${t.p2}</strong>` : `Spieler: <strong>${t.p1}</strong>`}</p>
         ${canEditPhoto ? `
           <div style="margin-top:8px; padding-top:8px; border-top:1px solid rgba(255,255,255,0.08); display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
             <button class="btn-secondary btn-sm" onclick="triggerTeamPhotoUpload(${t.id})">📷 ${t.photo ? 'Neues Team-Foto' : 'Team-Foto hochladen'}</button>
@@ -3640,6 +3912,7 @@ function renderGroups() {
 function renderMatchBlock(m, isKO) {
   const t1 = teams.find(t => t.id === m.t1Id) || { name: 'Team ?', p1: 'P1', p2: 'P2', club: '' };
   const t2 = teams.find(t => t.id === m.t2Id) || { name: 'Team ?', p1: 'P1', p2: 'P2', club: '' };
+  const solo = tournamentMode === 'solo';
   const hinP2 = m.crossed ? t2.p2 : t2.p1;
   const rueckP2 = m.crossed ? t2.p1 : t2.p2;
   const myTeam = getMyTeam();
@@ -3671,14 +3944,24 @@ function renderMatchBlock(m, isKO) {
       </div>
       <div style="margin: 6px 0;">
         <div style="font-size:1.05em; font-weight:bold;">
-          ${teamCrestImg(t1, 22)}${t1.name} <small style="opacity:0.8;">(${t1.p1} & ${t1.p2})</small>
+          ${teamCrestImg(t1, 22)}${t1.name} <small style="opacity:0.8;">(${t1.p1}${solo ? '' : ` & ${t1.p2}`})</small>
         </div>
         <div style="font-size:0.8em; opacity:0.6; margin:2px 0;">vs</div>
         <div style="font-size:1.05em; font-weight:bold;">
-          ${teamCrestImg(t2, 22)}${t2.name} <small style="opacity:0.8;">(${t2.p1} & ${t2.p2})</small>
+          ${teamCrestImg(t2, 22)}${t2.name} <small style="opacity:0.8;">(${t2.p1}${solo ? '' : ` & ${t2.p2}`})</small>
         </div>
       </div>
       <div style="display:flex; flex-direction:column; gap:8px;">
+        ${solo ? `
+        <div style="padding:8px; border-radius:5px; ${hinLegColor}; display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:6px;">
+          <span style="font-size:0.85em;"><strong>Ergebnis:</strong> ${t1.p1} vs. ${t2.p1}</span>
+          <div style="display:flex; gap:5px; align-items:center;">
+            <input type="number" id="${prefix}h1" min="0" max="20" style="width:40px; text-align:center;" ${(!canEdit || locked) ? 'disabled' : ''} value="${m.score1_h !== null && m.score1_h !== undefined ? m.score1_h : ''}">
+            :
+            <input type="number" id="${prefix}h2" min="0" max="20" style="width:40px; text-align:center;" ${(!canEdit || locked) ? 'disabled' : ''} value="${m.score2_h !== null && m.score2_h !== undefined ? m.score2_h : ''}">
+          </div>
+        </div>
+        ` : `
         <div style="padding:8px; border-radius:5px; ${hinLegColor}; display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:6px;">
           <span style="font-size:0.85em;">🟡 <strong>Hinspiel:</strong> ${t1.p1} vs. ${hinP2}</span>
           <div style="display:flex; gap:5px; align-items:center;">
@@ -3695,8 +3978,9 @@ function renderMatchBlock(m, isKO) {
             <input type="number" id="${prefix}r2" min="0" max="20" style="width:40px; text-align:center;" ${(!canEdit || locked) ? 'disabled' : ''} value="${m.score2_r !== null && m.score2_r !== undefined ? m.score2_r : ''}">
           </div>
         </div>
+        `}
       </div>
-      ${m.played ? `<div style="text-align:center; font-size:0.85em; color:var(--fal-yellow);">Gesamt: <strong>${m.score1} : ${m.score2}</strong></div>` : ''}
+      ${(m.played && !solo) ? `<div style="text-align:center; font-size:0.85em; color:var(--fal-yellow);">Gesamt: <strong>${m.score1} : ${m.score2}</strong></div>` : ''}
       <div style="display:flex; gap:8px; flex-wrap:wrap;">
         ${(canEdit && !locked) ? `<button class="btn-primary btn-sm" style="flex:1;" onclick="submitMatchResult(${m.id}, ${isKO})">💾 ${m.played ? 'Aktualisieren' : 'Ergebnis eintragen'}</button>` : ''}
         ${(hasElevated() && m.played && !m.confirmed) ? `<button class="btn-primary btn-sm" style="flex:1; background:#2ecc71; color:#fff;" onclick="confirmMatchResult(${m.id}, ${isKO})">✅ Bestätigen</button>` : ''}
@@ -3755,6 +4039,12 @@ function renderAdminPanel() {
   if (coinAnimPreview) coinAnimPreview.innerHTML = coinIcon(18);
   if (lockContainer) {
     lockContainer.innerHTML = `
+      ${teams.length === 0 ? `
+      <div style="display:flex; align-items:center; justify-content:space-between; background:rgba(0,0,0,0.2); padding:8px 12px; border-radius:8px; margin-bottom:8px; flex-wrap:wrap; gap:8px;">
+        <span style="font-size:0.9em;">${tournamentMode === 'solo' ? '👤 Einzel-Modus (jeder Spieler bekommt seinen eigenen Verein)' : '👬 Duo-Modus (2er-Teams teilen sich einen Verein)'}</span>
+        <button class="btn-secondary btn-sm" onclick="toggleTournamentMode()">Umschalten</button>
+      </div>` : ''}
+      ${plannedPlayerCount ? `<p style="font-size:0.85em; opacity:0.75; margin:0 0 8px 0;">🎯 Geplant: ${plannedPlayerCount} Spieler (aktuell ${players.length})</p>` : ''}
       <div style="display:flex; align-items:center; justify-content:space-between; background:rgba(0,0,0,0.2); padding:8px 12px; border-radius:8px; margin-bottom:8px; flex-wrap:wrap; gap:8px;">
         <span style="font-size:0.9em;">${registrationLocked ? '🔒 Registrierung gesperrt' : '🔓 Registrierung offen'}</span>
         <button class="btn-secondary btn-sm" onclick="toggleRegistrationLock()">${registrationLocked ? 'Entsperren' : 'Sperren'}</button>
@@ -3956,12 +4246,13 @@ function calculatePlayerMatchLog(playerName) {
       log.push({ opponent: playerA, goalsFor: s2, goalsAgainst: s1, round: roundLabel });
     }
   }
+  const solo = tournamentMode === 'solo';
   groupMatches.forEach(m => {
-    processLeg(m, true, `${m.group} (Hinspiel)`);
+    processLeg(m, true, solo ? m.group : `${m.group} (Hinspiel)`);
     processLeg(m, false, `${m.group} (Rückspiel)`);
   });
   koMatches.forEach(m => {
-    processLeg(m, true, `${m.round} (Hinspiel)`);
+    processLeg(m, true, solo ? m.round : `${m.round} (Hinspiel)`);
     processLeg(m, false, `${m.round} (Rückspiel)`);
   });
   return log;
