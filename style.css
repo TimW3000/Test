@@ -74,6 +74,15 @@ body {
 }
 
 /* Header & Nav */
+/* Header + Nav zusammen sind die "ganz obere Leiste" - klebt komplett am oberen
+   Bildschirmrand, nicht nur das Home/Teams/...-Menü darunter. */
+#app-topbar {
+  position: sticky;
+  top: 0;
+  z-index: 100;
+  width: 100%;
+}
+
 header {
   background-color: var(--fal-blue-primary);
   padding: 12px 15px;
@@ -95,7 +104,9 @@ header {
   display: flex;
   align-items: center;
   gap: 10px;
+  min-width: 0;
 }
+#header-brand > div { min-width: 0; }
 
 #header-logo {
   height: 40px;
@@ -116,6 +127,9 @@ header h1 {
   color: var(--fal-white);
   opacity: 0.85;
   margin-top: 1px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* Aufklapp-Icon oben rechts im Header: 2 parallele weiße Striche */
@@ -168,9 +182,6 @@ nav {
   display: flex;
   background-color: #081220;
   border-bottom: 1px solid var(--fal-blue-primary);
-  position: sticky;
-  top: 0;
-  z-index: 100;
 }
 
 .tab-btn {
@@ -462,18 +473,17 @@ th { color: var(--fal-yellow); font-size: 0.8rem; text-transform: uppercase; }
 
 /* ============================================================================
    FAL-COIN — eigenes Münz-Design in den Vereinsfarben (statt generischem 🪙-Emoji).
-   Reines CSS (kein Bild nötig): goldener Verlauf + blauer Ring + eingeprägtes "F",
-   dazu wählbare Bewegung (still/spin/bounce/pulse), siehe setCoinAnimation() +
-   coinIcon() in script.js.
+   Goldener Münz-Verlauf + blauer Ring, mit unserem Vereinswappen in der Mitte statt
+   eines Buchstabens, dazu wählbare Bewegung (still/spin/bounce/pulse/party/fireworks),
+   siehe setCoinAnimation() + coinIcon() in script.js.
    ============================================================================ */
 .fal-coin {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
+  display: inline-block;
   border-radius: 50%;
   vertical-align: middle;
   flex-shrink: 0;
   background:
+    url('https://spvgg-fal.de/templates/yootheme/cache/dc/Logo-2017-web-dc30d58a.webp') center / 62% no-repeat,
     radial-gradient(circle at 32% 28%, #fff6cc 0%, var(--fal-yellow) 45%, #a8790a 100%);
   border: 2px solid var(--fal-blue-primary);
   box-shadow:
@@ -482,19 +492,12 @@ th { color: var(--fal-yellow); font-size: 0.8rem; text-transform: uppercase; }
     0 2px 3px rgba(0, 0, 0, 0.45);
   position: relative;
 }
-.fal-coin::after {
-  content: 'F';
-  font-weight: 900;
-  font-family: Georgia, 'Times New Roman', serif;
-  color: var(--fal-blue-primary);
-  text-shadow: 0 1px 0 rgba(255, 255, 255, 0.35);
-  line-height: 1;
-}
 
+/* Sauberer, voller Umlauf (Z-Achse) statt der alten "Stauch"-Optik beim Y-Achsen-Trick -
+   sieht mit dem Wappen drauf viel sauberer aus als eine simulierte 3D-Kippbewegung. */
 @keyframes fal-coin-spin {
-  0%   { transform: rotateY(0deg) scaleX(1); }
-  50%  { transform: rotateY(180deg) scaleX(0.15); filter: brightness(1.3); }
-  100% { transform: rotateY(360deg) scaleX(1); }
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
 }
 @keyframes fal-coin-bounce {
   0%, 100% { transform: translateY(0); }
@@ -510,6 +513,58 @@ th { color: var(--fal-yellow); font-size: 0.8rem; text-transform: uppercase; }
     box-shadow: inset 0 0 0 1.5px rgba(255,255,255,0.55), inset 0 -2px 3px rgba(0,0,0,0.35), 0 0 10px 3px rgba(255, 200, 0, 0.75);
   }
 }
-.fal-coin-anim-spin   { animation: fal-coin-spin 1.8s linear infinite; }
+.fal-coin-anim-spin   { animation: fal-coin-spin 1.4s linear infinite; }
 .fal-coin-anim-bounce { animation: fal-coin-bounce 0.9s ease-in-out infinite; }
 .fal-coin-anim-pulse  { animation: fal-coin-pulse 1.3s ease-in-out infinite; }
+
+/* "Party-Modus": Drehen + Hüpfen + Farbwechsel + pulsierender Leuchtring GLEICHZEITIG -
+   deutlich mehr los als bei den einfachen Animationen oben. */
+@keyframes fal-coin-party {
+  0%   { transform: translateY(0) rotate(0deg) scale(1); filter: hue-rotate(0deg) brightness(1); }
+  25%  { transform: translateY(-7px) rotate(90deg) scale(1.1); filter: hue-rotate(50deg) brightness(1.2); }
+  50%  { transform: translateY(0) rotate(180deg) scale(1); filter: hue-rotate(0deg) brightness(1); }
+  75%  { transform: translateY(-7px) rotate(270deg) scale(1.1); filter: hue-rotate(-50deg) brightness(1.2); }
+  100% { transform: translateY(0) rotate(360deg) scale(1); filter: hue-rotate(0deg) brightness(1); }
+}
+@keyframes fal-coin-party-ring {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(255,200,0,0.7), 0 0 0 0 rgba(255,80,80,0.5); }
+  50%      { box-shadow: 0 0 0 7px rgba(255,200,0,0), 0 0 0 14px rgba(255,80,80,0); }
+}
+.fal-coin-anim-party { animation: fal-coin-party 1.6s ease-in-out infinite; }
+.fal-coin-anim-party::before {
+  content: '';
+  position: absolute;
+  inset: -3px;
+  border-radius: 50%;
+  animation: fal-coin-party-ring 1.6s ease-out infinite;
+  pointer-events: none;
+}
+
+/* "Feuerwerk": elastisches Auf-und-Ab-Skalieren mit Wackeln, umkreist von einem
+   rotierenden Glitzer-Ring (conic-gradient) - noch auffälliger als Party-Modus. */
+@keyframes fal-coin-fireworks-scale {
+  0%, 100% { transform: scale(1) rotate(0deg); }
+  30%      { transform: scale(1.4) rotate(18deg); }
+  50%      { transform: scale(0.88) rotate(-14deg); }
+  70%      { transform: scale(1.22) rotate(10deg); }
+  85%      { transform: scale(0.96) rotate(-4deg); }
+}
+@keyframes fal-coin-fireworks-sparkle {
+  0%   { transform: rotate(0deg); opacity: 1; }
+  50%  { opacity: 0.4; }
+  100% { transform: rotate(360deg); opacity: 1; }
+}
+.fal-coin-anim-fireworks { animation: fal-coin-fireworks-scale 1.1s cubic-bezier(0.36,0.07,0.19,0.97) infinite; }
+.fal-coin-anim-fireworks::before {
+  content: '';
+  position: absolute;
+  inset: -7px;
+  border-radius: 50%;
+  background: conic-gradient(from 0deg,
+    transparent 0deg, #fff 8deg, transparent 18deg, transparent 85deg,
+    #ffdc73 95deg, transparent 105deg, transparent 175deg,
+    #fff 185deg, transparent 195deg, transparent 265deg,
+    #ffdc73 275deg, transparent 285deg, transparent 355deg);
+  animation: fal-coin-fireworks-sparkle 0.8s linear infinite;
+  pointer-events: none;
+}
