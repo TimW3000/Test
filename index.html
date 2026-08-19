@@ -185,6 +185,8 @@
         <div class="header-cell" id="user-password-action"></div>
         <div class="header-cell"><button class="btn-secondary btn-sm" id="btn-switch-user" onclick="switchUser()">Wechseln</button></div>
         <div class="header-cell"><button class="btn-secondary btn-sm" onclick="goToLandingPage()">🔄 Turnier wechseln</button></div>
+        <!-- Nur sichtbar, wenn die eigene Identität aktuell Spieler in DIESEM Turnier ist (siehe renderUserBadge) -->
+        <div class="header-cell" id="leave-tournament-cell" style="display:none;"><button class="btn-danger btn-sm" onclick="leaveTournament()">🚪 Turnier verlassen</button></div>
       </div>
     </header>
 

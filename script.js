@@ -38,13 +38,13 @@ window.confirmGodPassword = confirmGodPassword;
 window.switchUser = switchUser;
 window.joinCurrentTournamentAsPlayer = joinCurrentTournamentAsPlayer;
 window.spectateCurrentTournament = spectateCurrentTournament;
+window.leaveTournament = leaveTournament;
 window.confirmTournamentPassword = confirmTournamentPassword;
 window.showTab = showTab;
 window.addPlayer = addPlayer;
 window.addTestPlayers = addTestPlayers;
 window.removePlayer = removePlayer;
 window.toggleRef = toggleRef;
-window.renamePlayer = renamePlayer;
 window.setPlayerPassword = setPlayerPassword;
 window.removePlayerPassword = removePlayerPassword;
 window.requestOwnPassword = requestOwnPassword;
@@ -691,6 +691,9 @@ function renderUserBadge() {
       pwAction.innerHTML = `<button class="btn-secondary btn-sm" style="margin-left: 10px;" onclick="requestOwnPassword()">🔑 Passwort vorschlagen</button>`;
     }
   }
+  // "Turnier verlassen" nur anzeigen, wenn man hier gerade wirklich Spieler ist (nicht nur Zuschauer)
+  const leaveCell = document.getElementById('leave-tournament-cell');
+  if (leaveCell) leaveCell.style.display = getPlayerObj(myPlayerName) ? 'flex' : 'none';
 }
 // Entscheidet beim (erneuten) Betreten eines Turniers automatisch, ob man direkt angemeldet
 // wird, noch ein Passwort eingeben muss, oder erst entscheiden muss, ob man beitritt oder nur
@@ -750,6 +753,23 @@ function confirmJoinPasswordAndJoin() {
 // Schaut sich das Turnier nur an, ohne selbst Spieler zu werden
 function spectateCurrentTournament() {
   enterAsSpectator();
+}
+// Meldet die eigene Identität als Spieler aus DIESEM Turnier ab (der Platz/Team/Wetten/Tipp
+// gehen dabei verloren, wie auch wenn ein Admin einen Spieler entfernt) und geht zurück zur
+// Turnierauswahl. Die globale Identität selbst bleibt unangetastet - man bleibt auf der
+// Website "man selbst" und kann jederzeit erneut beitreten.
+function leaveTournament() {
+  const p = getPlayerObj(myPlayerName);
+  if (!p) return;
+  const warning = p.isTournamentOwner
+    ? 'Du bist Ersteller/Admin dieses Turniers! Verlässt du es, hat hier (außer dem God) niemand mehr Admin-Rechte. Wirklich als Spieler austreten?'
+    : 'Turnier wirklich als Spieler verlassen? Dein Team-Platz, deine Wetten und dein Tipp gehen dabei verloren.';
+  if (!confirm(warning)) return;
+  const idx = players.findIndex(pl => pl.name.toLowerCase() === myPlayerName.trim().toLowerCase());
+  if (idx === -1) return;
+  players.splice(idx, 1);
+  saveData();
+  goToLandingPage();
 }
 // Zeigt die Passwort-Abfrage fürs (Wieder-)Betreten eines Turniers, in dem die eigene
 // Identität schon ein passwortgeschütztes Spieler-Konto hat
@@ -1343,54 +1363,6 @@ function deleteGlobalPlayerAsGod(key) {
   if (!confirm(`Identität "${name}" wirklich aus der Liste löschen?`)) return;
   db.ref('globalPlayers/' + key).remove().catch((error) => alert('⚠️ Löschen fehlgeschlagen:\n' + error.message));
 }
-// Benennt einen Spieler in DIESEM Turnier um - God darf das in JEDEM Turnier, ein normaler
-// Turnier-Admin nur in seinem eigenen (siehe isAdmin()). Ändert nur den Anzeigenamen in
-// diesem einen Turnier - meldet sich der umbenannte Spieler danach woanders erneut an,
-// muss er sich ggf. neu zuordnen/beitreten. AUSNAHME: Benennt sich der Admin SELBST um,
-// wird auch seine eigene (globale) Identität mit umbenannt, damit seine aktuelle Sitzung
-// nicht mitten in der Bearbeitung abbricht (siehe renamingMyself weiter unten).
-function renamePlayer(index) {
-  if (!isAdmin()) return;
-  const p = players[index];
-  if (!p) return;
-  const newName = prompt(`Neuer Name für "${p.name}" (nur in diesem Turnier):`, p.name);
-  if (newName === null) return;
-  const trimmed = newName.trim();
-  if (!trimmed) return alert('Name darf nicht leer sein.');
-  if (players.some((pl, i) => i !== index && pl.name.toLowerCase() === trimmed.toLowerCase())) {
-    return alert('Dieser Name wird in diesem Turnier bereits verwendet.');
-  }
-  const oldName = p.name;
-  p.name = trimmed;
-  // Team- und Wett-Zuordnungen laufen über den Namen -> überall mit umziehen, sonst
-  // verliert der Spieler sein Team, seine Wetten, seinen Kontostand und seinen Tipp.
-  teams.forEach(t => {
-    if (t.p1 === oldName) t.p1 = trimmed;
-    if (t.p2 === oldName) t.p2 = trimmed;
-  });
-  bets.forEach(b => { if (b.playerName === oldName) b.playerName = trimmed; });
-  if (tips[oldName]) { tips[trimmed] = tips[oldName]; delete tips[oldName]; }
-  if (userBalances[oldName] !== undefined) { userBalances[trimmed] = userBalances[oldName]; delete userBalances[oldName]; }
-  // Benennt sich der Admin gerade SELBST um, muss die eigene (globale) Sitzung mit
-  // umgezogen werden - sonst hält ihn attachTournamentListener beim nächsten Sync
-  // fälschlich für "aus dem Turnier entfernt" (siehe myPlayerWasPresent-Check).
-  const renamingMyself = myPlayerName && myPlayerName.trim().toLowerCase() === oldName.trim().toLowerCase();
-  if (renamingMyself) {
-    const oldPwvKey = myPlayerPwvStorageKey();
-    const oldPwv = localStorage.getItem(oldPwvKey);
-    myPlayerName = trimmed;
-    localStorage.setItem('fifa_global_name', trimmed);
-    if (oldPwv !== null) { localStorage.setItem(myPlayerPwvStorageKey(), oldPwv); localStorage.removeItem(oldPwvKey); }
-    if (!globalPlayers[trimmed.toLowerCase()]) {
-      db.ref('globalPlayers/' + trimmed.toLowerCase()).set({ name: trimmed, createdAt: Date.now() });
-    }
-  }
-  saveData();
-  renderAll();
-  alert(renamingMyself
-    ? `✅ Du heißt in diesem Turnier jetzt "${trimmed}".`
-    : `✅ "${oldName}" heißt in diesem Turnier jetzt "${trimmed}". Falls ${oldName} gerade angemeldet war, muss er sich unter dem neuen Namen neu zuordnen.`);
-}
 // ============================================================================
 // 5. PROFI-CLUBS VERWALTUNG — Liste der Vereine, aus denen beim Glücksrad gezogen wird
 // ============================================================================
@@ -1480,6 +1452,63 @@ function renderDraftCheatPanel() {
     </div>
   `;
 }
+// Liefert alle Voreinstellungen, die noch NICHT eingelöst wurden - deren Spieler also
+// (laut übergebener Restliste) noch nicht in ein Team gelost wurden. Wird gebraucht, damit
+// ihr Wunsch-Partner/-Verein bei ZUFÄLLIGEN Ziehungen für ANDERE, unbeteiligte Teams
+// geschützt bleibt. Sonst könnte der Wunsch-Partner oder -Verein schon in einer früheren
+// Runde für ein völlig fremdes Team weggezogen werden, bevor der eigentliche Spieler
+// überhaupt an der Reihe war - genau das war der gemeldete Bug.
+function getPendingDraftCheats(remainingPlayerNames) {
+  return draftCheats.filter(c =>
+    remainingPlayerNames.includes(c.p1) && (!c.p2 || remainingPlayerNames.includes(c.p2))
+  );
+}
+// Zieht zufällig einen Index aus "pool", vermeidet dabei aber nach Möglichkeit Einträge,
+// die in "reserved" stehen (siehe getPendingDraftCheats). Bleiben dadurch KEINE Kandidaten
+// mehr übrig (z.B. weil ausnahmsweise nur noch reservierte Einträge da sind), wird trotzdem
+// aus dem vollen Pool gezogen - irgendwer/irgendwas muss ja an der Reihe sein.
+function pickRandomIndexAvoidingReserved(pool, reserved) {
+  const free = [];
+  pool.forEach((item, i) => { if (!reserved.has(item)) free.push(i); });
+  const candidates = free.length > 0 ? free : pool.map((_, i) => i);
+  return candidates[Math.floor(Math.random() * candidates.length)];
+}
+// Simuliert die komplette Team-Auslosung "im Kopf" (ohne Glücksrad-Show/Animation) nach
+// exakt denselben Regeln wie die Live-Show inkl. Voreinstellungen - für quickDrawTeams().
+function simulateTeamDraw(playerNames, clubNames) {
+  const remainingPlayers = [...playerNames];
+  const remainingClubs = [...clubNames];
+  const resultTeams = [];
+  while (remainingPlayers.length >= 2) {
+    // Spieler 1 bleibt ehrlich zufällig (identisch zur Live-Show)
+    const p1Index = Math.floor(Math.random() * remainingPlayers.length);
+    const p1 = remainingPlayers.splice(p1Index, 1)[0];
+    // Partner: erst schauen, ob eine Vorgabe für p1 existiert, sonst zufällig (reserviert-bewusst)
+    const partnerCheat = draftCheats.find(c => c.p2 && (c.p1 === p1 || c.p2 === p1));
+    let p2Index = partnerCheat ? remainingPlayers.indexOf(partnerCheat.p1 === p1 ? partnerCheat.p2 : partnerCheat.p1) : -1;
+    if (p2Index === -1) {
+      const reservedPlayers = new Set();
+      getPendingDraftCheats(remainingPlayers).forEach(c => { if (c.p2) { reservedPlayers.add(c.p1); reservedPlayers.add(c.p2); } });
+      p2Index = pickRandomIndexAvoidingReserved(remainingPlayers, reservedPlayers);
+    }
+    const p2 = remainingPlayers.splice(p2Index, 1)[0];
+    // Verein: erst schauen, ob eine Vorgabe für dieses Duo existiert, sonst zufällig (reserviert-bewusst)
+    const clubCheat = draftCheats.find(c => {
+      if (!c.club) return false;
+      if (c.p2) return (c.p1 === p1 && c.p2 === p2) || (c.p1 === p2 && c.p2 === p1);
+      return c.p1 === p1 || c.p1 === p2;
+    });
+    let clubIndex = clubCheat ? remainingClubs.indexOf(clubCheat.club) : -1;
+    if (clubIndex === -1) {
+      const reservedClubs = new Set();
+      getPendingDraftCheats(remainingPlayers).forEach(c => { if (c.club) reservedClubs.add(c.club); });
+      clubIndex = pickRandomIndexAvoidingReserved(remainingClubs, reservedClubs);
+    }
+    const club = remainingClubs.splice(clubIndex, 1)[0];
+    resultTeams.push({ id: resultTeams.length + 1, name: `Team ${resultTeams.length + 1}`, p1, p2, club });
+  }
+  return resultTeams;
+}
 // ============================================================================
 // 6. LIVE-AUSLOSUNGS-SHOW (Glücksrad) — 3-Schritt-System pro Team: Spieler 1 -> Spieler 2 -> Club.
 //    Läuft bei allen Zuschauern synchron mit, weil jeder Zwischenschritt per
@@ -1530,23 +1559,12 @@ function quickDrawTeams() {
     return alert(`Du hast zu wenige Profi-Clubs in der Liste! Mindestens ${players.length / 2} benötigt.`);
   }
   if (!confirm('Teams & Clubs SOFORT ohne Glücksrad-Show auslosen?')) return;
-  const shuffledPlayers = [...players.map(p => p.name)].sort(() => Math.random() - 0.5);
-  const shuffledClubs = [...availableClubs].sort(() => Math.random() - 0.5);
-  teams = [];
+  teams = simulateTeamDraw(players.map(p => p.name), availableClubs);
   groups = [];
   groupMatches = [];
   koMatches = [];
   tips = {};
   tipsEvaluated = false;
-  for (let i = 0; i < shuffledPlayers.length; i += 2) {
-    teams.push({
-      id: teams.length + 1,
-      name: `Team ${teams.length + 1}`,
-      p1: shuffledPlayers[i],
-      p2: shuffledPlayers[i + 1],
-      club: shuffledClubs[teams.length]
-    });
-  }
   draftState = { active: false, currentStep: 0, tempP1: null, tempP2: null, remainingPlayers: [], remainingClubs: [], spinning: false, startTime: null, targetAngle: 0, duration: 4000, lastDrawnItem: null, pairs: [] };
   saveData();
   showTab('teams');
@@ -1773,7 +1791,18 @@ function spinWheel() {
     }
   }
   if (targetIndex === null) {
-    targetIndex = Math.floor(Math.random() * currentPool.length);
+    // Rein zufällige Ziehung - aber NICHT blind: Spieler/Vereine, die für eine andere,
+    // noch nicht eingelöste Voreinstellung reserviert sind, werden dabei nach Möglichkeit
+    // übersprungen. Sonst könnte z.B. der Wunsch-Partner oder -Verein eines Spielers schon
+    // in einer früheren Runde für ein fremdes Team weggezogen werden, bevor der eigentliche
+    // Spieler überhaupt an der Reihe war (der gemeldete Bug).
+    const reserved = new Set();
+    if (draftState.currentStep === 1) {
+      getPendingDraftCheats(draftState.remainingPlayers).forEach(c => { if (c.p2) { reserved.add(c.p1); reserved.add(c.p2); } });
+    } else if (draftState.currentStep === 2) {
+      getPendingDraftCheats(draftState.remainingPlayers).forEach(c => { if (c.club) reserved.add(c.club); });
+    }
+    targetIndex = reserved.size > 0 ? pickRandomIndexAvoidingReserved(currentPool, reserved) : Math.floor(Math.random() * currentPool.length);
   }
   const targetItem = currentPool[targetIndex];
   const numItems = currentPool.length;
@@ -3102,7 +3131,6 @@ function renderAdminPanel() {
               <button class="btn-danger btn-sm" onclick="rejectPendingPassword(${index})">❌ Ablehnen</button>
             ` : ''}
             ${p.pendingPassword && !isGod() ? '<span style="font-size:0.8em; opacity:0.75; align-self:center;">⏳ Wartet auf Bestätigung</span>' : ''}
-            ${isAdmin() ? `<button class="btn-secondary btn-sm" onclick="renamePlayer(${index})">✏️ Umbenennen</button>` : ''}
             ${isAdmin() ? `<button class="${isRefBtnClass} btn-sm" onclick="toggleRef(${index})">${p.isRef ? '🟨 Ref (Aktiv)' : 'Ref vergeben'}</button>` : ''}
             ${isGod() ? (hasPW
               ? `<button class="btn-danger btn-sm" onclick="removePlayerPassword(${index})">PW löschen</button>`
