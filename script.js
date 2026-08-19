@@ -81,6 +81,7 @@ window.addDraftCheat = addDraftCheat;
 window.removeDraftCheat = removeDraftCheat;
 window.quickDrawTeams = quickDrawTeams;
 window.spinWheel = spinWheel;
+window.skipWheelSpin = skipWheelSpin;
 window.nextDraftStep = nextDraftStep;
 window.finishDraft = finishDraft;
 window.cancelDraft = cancelDraft;
@@ -251,6 +252,8 @@ let bets = [];          // { matchId, isKO, playerName, chosenTeamId, amount }
 // Status-Variablen für das Auslosungs-System (Duo-Draft) - UNVERÄNDERT
 let draftState = { active: false, currentStep: 0, tempP1: null, tempP2: null, remainingPlayers: [], remainingClubs: [], spinning: false, startTime: null, targetAngle: 0, duration: 4000, lastDrawnItem: null, pairs: [] };
 let animFrameId = null;
+let draftSpinTimeoutId = null; // laufender setTimeout-Handle der aktuellen Dreh-Animation, siehe spinWheel()/skipWheelSpin()
+let pendingSpinResult = null; // bereits feststehendes, aber noch nicht übernommenes Ergebnis der laufenden Drehung
 // localStorage-Schlüssel, um sich zu merken, mit welcher Passwort-Version man zuletzt ALS
 // DIESE IDENTITÄT erfolgreich angemeldet war. Das Passwort gilt jetzt identitätsweit (für
 // ALLE Turniere gemeinsam) statt pro Turnier - deshalb NUR nach dem Namen geschlüsselt,
@@ -701,7 +704,11 @@ function enterAsSpectator() {
   // Rendert einmal den kompletten aktuellen Stand - wichtig, weil der Live-Listener beim
   // ALLERERSTEN Laden nach dem Betreten (siehe attachTournamentListener) hier abbricht,
   // BEVOR er selbst renderAll() aufruft (er wartet ja erst auf handleTournamentEntry()).
+  // handleLiveDraftUI() ebenso - sonst würde eine schon laufende Live-Auslosung für wer
+  // gerade erst (wieder-)betritt nicht als Overlay erscheinen, bis irgendwer anders als
+  // Nächstes am Rad dreht.
   renderAll();
+  handleLiveDraftUI();
   const adminBtn = document.getElementById('btn-admin');
   if (adminBtn) adminBtn.style.display = hasElevated() ? 'inline-block' : 'none';
   showTab('home');
@@ -1277,8 +1284,11 @@ function startCreateTournament() {
   const input = document.getElementById('new-tournament-name');
   const name = input ? input.value.trim() : '';
   if (!name) return alert('Bitte einen Namen für das neue Turnier eingeben!');
+  // God hat website-weit ohnehin schon in JEDEM Turnier automatisch Admin-Rechte (siehe
+  // isAdmin/isGod) - ein zusätzliches, identitätsweites Admin-Passwort für sich selbst
+  // festzulegen wäre für ihn überflüssig, genau wie für alle, die schon eins haben.
   const gp = getGlobalPlayer(myPlayerName);
-  if (gp && gp.password) {
+  if (isGod() || (gp && gp.password)) {
     pendingNewTournament = { name };
     document.getElementById('tournament-join-password-modal').style.display = 'flex';
     const jpInput = document.getElementById('new-tournament-join-password');
@@ -1384,6 +1394,12 @@ function goToLandingPage() {
   document.getElementById('app-nav').style.display = 'none';
   document.getElementById('app-main').style.display = 'none';
   document.getElementById('tournament-join-modal').style.display = 'none';
+  // Die Live-Auslosungs-Show ist ein eigenes, bildschirmfüllendes Overlay außerhalb von
+  // #app-main - ohne diesen Reset würde sie beim Wechsel mitten aus einer laufenden
+  // Auslosung heraus einfach über der Turnierauswahl stehen bleiben.
+  if (draftState) draftState.active = false;
+  const draftModal = document.getElementById('draft-modal');
+  if (draftModal) draftModal.style.display = 'none';
   renderLandingPage();
   document.getElementById('landing-page').style.display = 'flex';
 }
@@ -2478,6 +2494,7 @@ function renderDraftStep() {
           💾 Teams speichern & Auslosung beenden
         </button>
       ` : '<p style="color:var(--fal-yellow);">Warte auf Admin-Bestätigung...</p>'}
+      <button class="btn-secondary role-btn" style="margin-top:10px;" onclick="goToLandingPage()">🔄 Turnier wechseln</button>
     `;
     return;
   }
@@ -2517,6 +2534,11 @@ function renderDraftStep() {
             🎰 Rad drehen
           </button>
         ` : ''}
+        ${draftState.spinning && pendingSpinResult !== null ? `
+          <button class="btn-primary role-btn" onclick="skipWheelSpin()">
+            ⏭️ Überspringen
+          </button>
+        ` : ''}
         ${!draftState.spinning && draftState.lastDrawnItem ? `
           <button class="btn-primary role-btn" onclick="nextDraftStep()">
             Weiter ➡️
@@ -2528,6 +2550,7 @@ function renderDraftStep() {
         ${draftState.spinning ? '🎰 Das Rad dreht sich live...' : 'Der Admin dreht gleich am Rad!'}
       </p>
     `}
+    <button class="btn-secondary role-btn" style="margin-top:10px;" onclick="goToLandingPage()">🔄 Turnier wechseln</button>
   `;
   startWheelAnimationLoop();
 }
@@ -2633,6 +2656,30 @@ function drawWheelCanvas(angleOffset) {
 }
 
 // Admin dreht das Rad: würfelt zufällig ein Element aus dem aktuellen Pool und startet die Dreh-Animation
+// Übernimmt ein gezogenes Element (Spieler oder Club) in den draftState - je nach Schritt
+// entweder als tempP1/tempP2 oder als neu abgeschlossenes Team/Duo. Gemeinsam genutzt von
+// spinWheel() (nach der Dreh-Animation) und dem Ein-Element-Sonderfall (siehe dort).
+function applyDrawnDraftItem(item, solo, clubStep) {
+  draftState.spinning = false;
+  draftState.lastDrawnItem = item;
+  if (draftState.currentStep === 0) {
+    draftState.tempP1 = item;
+  } else if (draftState.currentStep === clubStep) {
+    if (!draftState.pairs) draftState.pairs = [];
+    draftState.pairs.push({
+      id: draftState.pairs.length + 1,
+      name: `Team ${draftState.pairs.length + 1}`,
+      p1: draftState.tempP1,
+      p2: solo ? null : draftState.tempP2,
+      club: item
+    });
+  } else {
+    // Nur Duo: currentStep === 1 (Partner-Ziehung)
+    draftState.tempP2 = item;
+  }
+  saveData();
+  renderDraftStep();
+}
 function spinWheel() {
   if (!hasElevated() || draftState.spinning) return;
   const solo = draftState.mode === 'solo';
@@ -2640,6 +2687,14 @@ function spinWheel() {
   let currentPool = (draftState.currentStep === clubStep) ? draftState.remainingClubs : draftState.remainingPlayers;
   if (!currentPool || currentPool.length === 0) {
     return alert("Keine Elemente mehr zum Auslosen im aktuellen Pool!");
+  }
+  // Bleibt nur noch EIN Element übrig, gibt's nichts mehr auszulosen - UND ein Rad mit nur
+  // einem (Voll-Kreis-)Segment sieht beim Drehen optisch immer gleich aus, das wirkt wie
+  // hängengeblieben. Deshalb direkt automatisch übernehmen, ganz ohne Dreh-Animation.
+  if (currentPool.length === 1) {
+    draftState.targetAngle = 0;
+    applyDrawnDraftItem(currentPool[0], solo, clubStep);
+    return;
   }
   // Voreinstellungen prüfen: der erste Spieler bleibt IMMER ehrlich zufällig (schließlich muss
   // irgendwer als erstes gezogen werden) - erst beim Verein (Solo) bzw. beim Partner UND Verein
@@ -2699,29 +2754,30 @@ function spinWheel() {
   draftState.duration = 4000;
   draftState.lastDrawnItem = null;
   saveData();
-  setTimeout(() => {
+  // Ergebnis steht schon fest (nur die Animation läuft noch) - lokal (NICHT in Firebase)
+  // gemerkt, damit skipWheelSpin() bei Bedarf sofort dasselbe Ergebnis übernehmen kann,
+  // ohne die vollen ~4s Dreh-Animation abwarten zu müssen.
+  pendingSpinResult = targetItem;
+  if (draftSpinTimeoutId) clearTimeout(draftSpinTimeoutId);
+  draftSpinTimeoutId = setTimeout(() => {
+    draftSpinTimeoutId = null;
+    pendingSpinResult = null;
     if (hasElevated() && draftState.spinning) {
-      draftState.spinning = false;
-      draftState.lastDrawnItem = targetItem;
-      if (draftState.currentStep === 0) {
-        draftState.tempP1 = targetItem;
-      } else if (draftState.currentStep === clubStep) {
-        if (!draftState.pairs) draftState.pairs = [];
-        draftState.pairs.push({
-          id: draftState.pairs.length + 1,
-          name: `Team ${draftState.pairs.length + 1}`,
-          p1: draftState.tempP1,
-          p2: solo ? null : draftState.tempP2,
-          club: targetItem
-        });
-      } else {
-        // Nur Duo: currentStep === 1 (Partner-Ziehung)
-        draftState.tempP2 = targetItem;
-      }
-      saveData();
-      renderDraftStep();
+      applyDrawnDraftItem(targetItem, solo, clubStep);
     }
   }, 4100);
+}
+// Admin/God kann die laufende Dreh-Animation überspringen, statt die vollen ~4s abzuwarten -
+// übernimmt sofort dasselbe (schon feststehende) Ergebnis, das der reguläre Timer ohnehin
+// geliefert hätte.
+function skipWheelSpin() {
+  if (!hasElevated() || !draftState.spinning || pendingSpinResult === null) return;
+  if (draftSpinTimeoutId) { clearTimeout(draftSpinTimeoutId); draftSpinTimeoutId = null; }
+  const solo = draftState.mode === 'solo';
+  const clubStep = solo ? 1 : 2;
+  const result = pendingSpinResult;
+  pendingSpinResult = null;
+  applyDrawnDraftItem(result, solo, clubStep);
 }
 
 // Übernimmt das zuletzt gezogene Element (Spieler/Club) und schaltet zum nächsten Auslosungs-Schritt
@@ -2767,6 +2823,11 @@ function cancelDraft() {
   if (!hasElevated()) return;
   if (confirm("Möchtest du die Auslosung wirklich abbrechen und zurücksetzen?")) {
     if (animFrameId) cancelAnimationFrame(animFrameId);
+    // Ein evtl. noch laufender Dreh-Timer darf NICHT später auf die (gleich zurückgesetzte)
+    // Auslosung zugreifen - sonst könnte er nach einem sofortigen Neustart der Auslosung
+    // versehentlich ein Ergebnis in die neue, gerade erst begonnene Runde schreiben.
+    if (draftSpinTimeoutId) { clearTimeout(draftSpinTimeoutId); draftSpinTimeoutId = null; }
+    pendingSpinResult = null;
     draftState = {
       active: false, spinning: false, currentStep: 0,
       tempP1: null, tempP2: null, lastDrawnItem: null,
