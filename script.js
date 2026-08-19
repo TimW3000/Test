@@ -54,10 +54,6 @@ window.rejectPendingPassword = rejectPendingPassword;
 window.toggleRegistrationLock = toggleRegistrationLock;
 window.toggleTournamentMode = toggleTournamentMode;
 window.updateMatchInterval = updateMatchInterval;
-window.drawGroups = drawGroups;
-window.drawKOPhase = drawKOPhase;
-window.drawSemifinals = drawSemifinals;
-window.drawFinals = drawFinals;
 window.resetTournament = resetTournament;
 window.resetKOPhase = resetKOPhase;
 window.resetGroupPhase = resetGroupPhase;
@@ -85,6 +81,13 @@ window.skipWheelSpin = skipWheelSpin;
 window.nextDraftStep = nextDraftStep;
 window.finishDraft = finishDraft;
 window.cancelDraft = cancelDraft;
+window.startGroupDraft = startGroupDraft;
+window.quickDrawGroups = quickDrawGroups;
+window.spinGroupWheel = spinGroupWheel;
+window.skipGroupWheelSpin = skipGroupWheelSpin;
+window.cancelGroupDraft = cancelGroupDraft;
+window.finishGroupDraft = finishGroupDraft;
+window.advanceKORound = advanceKORound;
 window.saveRules = saveRules;
 window.submitTip = submitTip;
 window.placeBet = placeBet;
@@ -207,7 +210,15 @@ let teams = [];
 // parseTournamentFormatText/openFormatWizard), vor der Auslosung im Admin-Panel noch änderbar.
 let tournamentMode = 'duo';
 let plannedPlayerCount = null; // rein informative Ziel-Spieleranzahl aus der Freitext-Beschreibung, siehe openFormatWizard()
-let numGroups = 3;       // Wie viele Gruppen wurden zuletzt ausgelost? (2, 3 oder 4)
+let numGroups = 3;       // Wie viele Gruppen wurden zuletzt ausgelost? (beliebige Zahl ab 2, siehe generateGroupLetters)
+// Wie viele Teams insgesamt in die KO-Runde einziehen (admin-/text-wählbar, siehe advanceKORound).
+// null = noch nicht festgelegt -> beim ersten KO-Auslosen wird ein Standardwert (2 pro Gruppe)
+// vorgeschlagen. Reicht die Zahl nicht glatt durch alle Gruppen, füllt ein automatischer
+// Quervergleich (Gruppendritte, ggf. -vierte, ...) den Rest auf, siehe computeKOQualifiers().
+let koQualifiersTotal = null;
+// Teams mit Freilos direkt in Runde 2, wenn die KO-Teilnehmerzahl keine Zweierpotenz ist
+// (siehe buildKORound1Pairing) - wird nach der ersten KO-Runde wieder geleert.
+let koByeTeamIds = [];
 let matchIntervalMinutes = 20; // Zeitabstand zwischen zwei Spiel-Slots (Hauptplatz+Nebenplatz), admin-einstellbar
 // Admin-"Cheat"-Vorauswahl fürs Glücksrad: [{ p1, p2, club }]. Legt fest, welche
 // zwei Spieler garantiert ins selbe Team kommen (und optional welchen Club sie
@@ -254,6 +265,13 @@ let draftState = { active: false, currentStep: 0, tempP1: null, tempP2: null, re
 let animFrameId = null;
 let draftSpinTimeoutId = null; // laufender setTimeout-Handle der aktuellen Dreh-Animation, siehe spinWheel()/skipWheelSpin()
 let pendingSpinResult = null; // bereits feststehendes, aber noch nicht übernommenes Ergebnis der laufenden Drehung
+// Eigene, EINFACHERE Draft-State-Machine fürs Gruppen-Glücksrad (welches Team kommt in
+// welche Gruppe) - bewusst getrennt von draftState (Team-Auslosung), weil hier nur ein
+// einziger Ziehungs-Schritt existiert (kein Cheat-System, kein Duo/Solo-Unterschied). Teilt
+// sich aber dasselbe #draft-modal/#draft-stage-Overlay, siehe handleLiveDraftUI().
+let groupDraftState = { active: false, spinning: false, remainingTeams: [], groupLetters: [], targetGroupIndex: 0, assignments: {}, lastDrawnItem: null, lastAssignedGroup: null, startTime: null, targetAngle: 0, duration: 4000 };
+let groupSpinTimeoutId = null;
+let pendingGroupSpinResult = null;
 // localStorage-Schlüssel, um sich zu merken, mit welcher Passwort-Version man zuletzt ALS
 // DIESE IDENTITÄT erfolgreich angemeldet war. Das Passwort gilt jetzt identitätsweit (für
 // ALLE Turniere gemeinsam) statt pro Turnier - deshalb NUR nach dem Namen geschlüsselt,
@@ -908,6 +926,8 @@ function resetLocalStateToDefaults() {
   tournamentMode = 'duo';
   plannedPlayerCount = null;
   numGroups = 3;
+  koQualifiersTotal = null;
+  koByeTeamIds = [];
   matchIntervalMinutes = 20;
   draftCheats = [];
   groups = [];
@@ -920,6 +940,7 @@ function resetLocalStateToDefaults() {
   joinPassword = null;
   coinAnimation = 'none';
   draftState = { active: false, currentStep: 0, tempP1: null, tempP2: null, remainingPlayers: [], remainingClubs: [], spinning: false, startTime: null, targetAngle: 0, duration: 4000, lastDrawnItem: null, pairs: [] };
+  groupDraftState = { active: false, spinning: false, remainingTeams: [], groupLetters: [], targetGroupIndex: 0, assignments: {}, lastDrawnItem: null, lastAssignedGroup: null, startTime: null, targetAngle: 0, duration: 4000 };
   userBalances = {};
   bets = [];
   tournamentEntryHandled = false;
@@ -945,6 +966,8 @@ function attachTournamentListener() {
     tournamentMode = data.tournamentMode || 'duo';
     plannedPlayerCount = data.plannedPlayerCount || null;
     numGroups = data.numGroups || 3;
+    koQualifiersTotal = data.koQualifiersTotal || null;
+    koByeTeamIds = data.koByeTeamIds || [];
     matchIntervalMinutes = data.matchIntervalMinutes || 20;
     draftCheats = data.draftCheats || [];
     groups = data.groups || [];
@@ -957,6 +980,7 @@ function attachTournamentListener() {
     joinPassword = data.joinPassword || null;
     coinAnimation = data.coinAnimation || 'none';
     draftState = data.draftState || { active: false, currentStep: 0, tempP1: null, tempP2: null, remainingPlayers: [], remainingClubs: [], spinning: false, startTime: null, targetAngle: 0, duration: 4000, lastDrawnItem: null, pairs: [] };
+    groupDraftState = data.groupDraftState || { active: false, spinning: false, remainingTeams: [], groupLetters: [], targetGroupIndex: 0, assignments: {}, lastDrawnItem: null, lastAssignedGroup: null, startTime: null, targetAngle: 0, duration: 4000 };
     userBalances = data.userBalances || {};
     bets = data.bets || [];
 
@@ -1000,6 +1024,8 @@ function saveData() {
     tournamentMode,
     plannedPlayerCount,
     numGroups,
+    koQualifiersTotal,
+    koByeTeamIds,
     matchIntervalMinutes,
     draftCheats,
     groups,
@@ -1012,6 +1038,7 @@ function saveData() {
     joinPassword,
     coinAnimation,
     draftState,
+    groupDraftState,
     userBalances,
     bets
   }).catch((error) => {
@@ -1145,6 +1172,19 @@ function extractNumberBefore(text, words) {
 // funktioniert offline. Deckt die gängigen Formulierungen ab ("X Spieler", "in Y Gruppen",
 // "jeder bekommt einen Verein" usw.), aber nicht jede denkbare Formulierung - deshalb wird
 // das Ergebnis in renderFormatWizardPreview() immer noch mal zum Bestätigen/Korrigieren gezeigt.
+// Erkennt, wie viele Teams INSGESAMT in die KO-Runde einziehen sollen, aus Formulierungen
+// wie "top 16", "die besten 8 kommen weiter", "16 kommen ins Achtelfinale", "16 in die KO-Runde".
+function extractKOQualifiers(text) {
+  let m = text.match(/top\s*(\d+)/i);
+  if (m) return parseInt(m[1], 10);
+  m = text.match(/(?:die\s+)?besten\s+(\d+)/i);
+  if (m) return parseInt(m[1], 10);
+  m = text.match(/(\d+)\s*(?:mannschaften|teams)?\s*(?:kommen|ziehen|qualifizieren sich)\s*(?:sich\s*)?(?:weiter|in\s*die\s*ko|ins\s*achtelfinale|ins\s*viertelfinale|ins\s*sechzehntelfinale|in\s*die\s*k\.?o\.?-?runde)/i);
+  if (m) return parseInt(m[1], 10);
+  m = text.match(/(\d+)\s*(?:im|ins)\s*(?:achtelfinale|viertelfinale|halbfinale|sechzehntelfinale|ko|k\.?o\.?)/i);
+  if (m) return parseInt(m[1], 10);
+  return null;
+}
 function parseTournamentFormatText(text) {
   const notes = [];
   const playerCount = extractNumberBefore(text, ['spieler', 'leute', 'personen', 'teilnehmer']);
@@ -1152,12 +1192,15 @@ function parseTournamentFormatText(text) {
   else notes.push('Spieleranzahl nicht erkannt - trag sie unten selbst ein (nur zur eigenen Orientierung).');
 
   let numGroups = extractNumberBefore(text, ['gruppen', 'töpfe', 'pots']);
-  if (numGroups && ![2, 3, 4].includes(numGroups)) {
-    notes.push(`${numGroups} Gruppen erkannt, aber unterstützt werden aktuell nur 2, 3 oder 4 - bitte unten auswählen.`);
+  if (numGroups && (numGroups < 2 || numGroups > 26)) {
+    notes.push(`${numGroups} Gruppen erkannt, das liegt aber außerhalb des unterstützten Bereichs (2-26) - bitte unten korrigieren.`);
     numGroups = null;
   } else if (numGroups) {
     notes.push(`Gruppenanzahl erkannt: ${numGroups}`);
   }
+
+  const koQualifiers = extractKOQualifiers(text);
+  if (koQualifiers) notes.push(`KO-Teilnehmerzahl erkannt: ${koQualifiers} Teams insgesamt (Rest wird per Quervergleich der nächstplatzierten Teams aufgefüllt, falls nötig).`);
 
   // Solo/Einzel-Hinweise: "jeder bekommt einen Verein", "Einzelturnier", "keine 2er-Teams" usw.
   const soloPatterns = [
@@ -1174,11 +1217,11 @@ function parseTournamentFormatText(text) {
 
   // Rein informative Notiz zu ungleichen Gruppengrößen ("4 bzw 5", "4 oder 5") - wird nicht
   // gesondert gespeichert, weil die bestehende Auslosung Restspieler ohnehin automatisch
-  // gleichmäßig auf die Gruppen verteilt (siehe drawGroups()).
+  // gleichmäßig auf die Gruppen verteilt (siehe quickDrawGroups()/startGroupDraft()).
   const unevenMatch = text.match(/(\d+)\s*(?:bzw\.?|oder|-)\s*(\d+)\s*(?:er)?\s*(pro\s+gruppe|spieler|teams?)?/i);
   if (unevenMatch) notes.push(`Hinweis: unterschiedliche Gruppengrößen (${unevenMatch[1]}/${unevenMatch[2]}) werden bei der Auslosung automatisch möglichst gleichmäßig verteilt.`);
 
-  return { playerCount, numGroups, mode, notes };
+  return { playerCount, numGroups, koQualifiers, mode, notes };
 }
 // Öffnet den Format-Assistenten (Schritt 1: Name + optionale Freitext-Beschreibung)
 function openFormatWizard() {
@@ -1219,7 +1262,7 @@ function analyzeFormatWizardText() {
   wizardTournamentName = name;
   const textInput = document.getElementById('wizard-format-text');
   const text = textInput ? textInput.value.trim() : '';
-  if (!text) { proceedFromFormatWizard({ mode: 'duo', numGroups: null, playerCount: null }); return; }
+  if (!text) { proceedFromFormatWizard({ mode: 'duo', numGroups: null, playerCount: null, koQualifiers: null }); return; }
   renderFormatWizardPreview(parseTournamentFormatText(text));
 }
 // Zeigt die editierbare Vorschau des erkannten Formats (Schritt 2)
@@ -1241,13 +1284,10 @@ function renderFormatWizardPreview(parsed) {
         <input type="radio" name="wizard-mode" value="solo" ${parsed.mode === 'solo' ? 'checked' : ''}> 🧍 Einzel
       </label>
     </div>
-    <label style="display:block; font-size:0.85em; margin-bottom:4px;">Gruppenanzahl:</label>
-    <select id="wizard-num-groups" style="width:100%; padding:8px; margin-bottom:14px;">
-      <option value="">Später beim Auslosen festlegen</option>
-      <option value="2" ${parsed.numGroups === 2 ? 'selected' : ''}>2 Gruppen</option>
-      <option value="3" ${parsed.numGroups === 3 ? 'selected' : ''}>3 Gruppen</option>
-      <option value="4" ${parsed.numGroups === 4 ? 'selected' : ''}>4 Gruppen</option>
-    </select>
+    <label style="display:block; font-size:0.85em; margin-bottom:4px;">Gruppenanzahl (beliebig, min. 2 - leer lassen, um es später beim Auslosen festzulegen):</label>
+    <input type="number" id="wizard-num-groups" min="2" max="26" value="${parsed.numGroups || ''}" placeholder="später festlegen" style="width:100%; box-sizing:border-box; padding:8px; margin-bottom:10px;">
+    <label style="display:block; font-size:0.85em; margin-bottom:4px;">Wie viele Teams sollen insgesamt in die KO-Runde einziehen? (optional - leer lassen, um es später festzulegen)</label>
+    <input type="number" id="wizard-ko-qualifiers" min="2" value="${parsed.koQualifiers || ''}" placeholder="später festlegen" style="width:100%; box-sizing:border-box; padding:8px; margin-bottom:14px;">
     <div style="display:flex; gap:8px;">
       <button class="btn-secondary" style="flex:1;" onclick="renderFormatWizardStep1()">‹ Zurück</button>
       <button class="btn-primary" style="flex:1;" onclick="confirmFormatWizardPreview()">Turnier erstellen</button>
@@ -1256,12 +1296,14 @@ function renderFormatWizardPreview(parsed) {
 }
 function confirmFormatWizardPreview() {
   const playerCountInput = document.getElementById('wizard-player-count');
-  const numGroupsSelect = document.getElementById('wizard-num-groups');
+  const numGroupsInput = document.getElementById('wizard-num-groups');
+  const koQualifiersInput = document.getElementById('wizard-ko-qualifiers');
   const modeInput = document.querySelector('input[name="wizard-mode"]:checked');
   proceedFromFormatWizard({
     mode: modeInput ? modeInput.value : 'duo',
-    numGroups: numGroupsSelect && numGroupsSelect.value ? parseInt(numGroupsSelect.value, 10) : null,
-    playerCount: playerCountInput && playerCountInput.value ? parseInt(playerCountInput.value, 10) : null
+    numGroups: numGroupsInput && numGroupsInput.value ? parseInt(numGroupsInput.value, 10) : null,
+    playerCount: playerCountInput && playerCountInput.value ? parseInt(playerCountInput.value, 10) : null,
+    koQualifiers: koQualifiersInput && koQualifiersInput.value ? parseInt(koQualifiersInput.value, 10) : null
   });
 }
 // Übernimmt das (ggf. von Hand korrigierte) Format und übergibt an den bestehenden
@@ -1360,7 +1402,8 @@ function finalizeCreateTournament(joinPwd) {
     joinPassword: joinPwd,
     tournamentMode: format.mode === 'solo' ? 'solo' : 'duo',
     numGroups: format.numGroups || 3,
-    plannedPlayerCount: format.playerCount || null
+    plannedPlayerCount: format.playerCount || null,
+    koQualifiersTotal: format.koQualifiers || null
   }).catch((error) => {
     alert('⚠️ Turnier konnte nicht erstellt werden:\n' + error.message);
   });
@@ -1398,6 +1441,7 @@ function goToLandingPage() {
   // #app-main - ohne diesen Reset würde sie beim Wechsel mitten aus einer laufenden
   // Auslosung heraus einfach über der Turnierauswahl stehen bleiben.
   if (draftState) draftState.active = false;
+  if (groupDraftState) groupDraftState.active = false;
   const draftModal = document.getElementById('draft-modal');
   if (draftModal) draftModal.style.display = 'none';
   renderLandingPage();
@@ -2010,7 +2054,12 @@ function computePlayerStats(playerName, matches) {
     tEntry.played++;
     tEntry[outcomeKey]++;
     if (m.round) {
-      const depth = KO_ROUND_DEPTH[m.round] || 0;
+      // Neuere Turniere (mit generischer KO-Phase, siehe advanceKORound) tragen die
+      // Runden-Tiefe direkt als roundNumber mit - zuverlässiger als der Rundenname, der
+      // jetzt beliebig sein kann (Achtelfinale, Sechzehntelfinale, "Runde der N", ...).
+      // Ältere, bereits abgeschlossene Turniere ohne roundNumber fallen auf die feste
+      // Namenstabelle zurück, damit ihre Statistik-Historie unverändert bleibt.
+      const depth = (m.roundNumber !== undefined && m.roundNumber !== null) ? m.roundNumber + 1 : (KO_ROUND_DEPTH[m.round] || 0);
       if (depth > tEntry.deepestRoundDepth) { tEntry.deepestRoundDepth = depth; tEntry.deepestRound = m.round; }
       if (m.round === '🏆 FINALE') { tEntry.reachedFinal = true; tEntry.wonFinal = outcome === 'win'; }
       if (m.round === '🥉 Spiel um Platz 3') { tEntry.playedThirdPlace = true; tEntry.wonThirdPlace = outcome === 'win'; }
@@ -2031,8 +2080,7 @@ function computePlayerStats(playerName, matches) {
     if (e.wonFinal) placement = '🏆 Turniersieger';
     else if (e.reachedFinal) placement = '🥈 Finalist';
     else if (e.playedThirdPlace) placement = e.wonThirdPlace ? '🥉 3. Platz' : '4. Platz';
-    else if (e.deepestRound && e.deepestRound.indexOf('Halbfinale') === 0) placement = 'Halbfinale erreicht';
-    else if (e.deepestRound === 'Viertelfinale') placement = 'Viertelfinale erreicht';
+    else if (e.deepestRound) placement = `${e.deepestRound} erreicht`;
     else placement = 'Gruppenphase';
     return {
       tournamentId: tid, tournamentName: e.tournamentName, partners: Array.from(e.partners),
@@ -2468,13 +2516,18 @@ function quickDrawTeams() {
 function handleLiveDraftUI() {
   const modal = document.getElementById('draft-modal');
   if (!modal) return;
-  if (!draftState || !draftState.active) {
-    modal.style.display = 'none';
-    if (animFrameId) cancelAnimationFrame(animFrameId);
+  if (draftState && draftState.active) {
+    modal.style.display = 'flex';
+    renderDraftStep();
     return;
   }
-  modal.style.display = 'flex';
-  renderDraftStep();
+  if (groupDraftState && groupDraftState.active) {
+    modal.style.display = 'flex';
+    renderGroupDraftStep();
+    return;
+  }
+  modal.style.display = 'none';
+  if (animFrameId) cancelAnimationFrame(animFrameId);
 }
 
 // Baut die Anzeige für den aktuellen Auslosungs-Schritt auf (Spieler 1 / Spieler 2 / Club)
@@ -3000,9 +3053,10 @@ function updateMatchInterval() {
   alert(`✅ Zeitabstand auf ${val} Minuten geändert – der Spielplan wurde entsprechend aktualisiert.`);
 }
 // ============================================================================
-// 8. GRUPPEN- & KO-AUSLOSUNG — Gruppenphase erstellen, dann je nach Gruppenanzahl
-//    (2/3/4, siehe drawGroups) automatisch passende KO-Phase: Viertelfinale,
-//    Halbfinale, Finale & Spiel um Platz 3.
+// 8. GRUPPEN- & KO-AUSLOSUNG — Gruppenphase erstellen (beliebige Gruppenanzahl), dann eine
+//    frei wählbare Gesamt-Teilnehmerzahl für die KO-Runde (siehe advanceKORound weiter
+//    unten), die automatisch passende Runden (Achtelfinale/Viertelfinale/Halbfinale/
+//    Finale + Spiel um Platz 3) erzeugt, inkl. Quervergleich & Freilosen bei Bedarf.
 // ============================================================================
 function makeMatch(id, group, slot, t1Id, t2Id) {
   return {
@@ -3095,208 +3149,486 @@ function rescheduleWholeArray(matchArray) {
     m.scheduledTime = anchorTime + (pairIndex - anchorPairIndex) * matchIntervalMinutes * 60000;
   });
 }
-// Teilt die Teams zufällig auf die vom Admin gewählte Anzahl Gruppen (2/3/4) auf
-// und erstellt daraus direkt den kompletten Gruppen-Spielplan (Hin- und Rückspiele)
-function drawGroups() {
+// Erzeugt die Gruppen-Bezeichnungen "Gruppe A".."Gruppe Z" (max. 26 Gruppen)
+function generateGroupLetters(n) {
+  const letters = [];
+  for (let i = 0; i < n; i++) letters.push('Gruppe ' + String.fromCharCode(65 + i));
+  return letters;
+}
+// Prüft, ob eine gewünschte Gruppenanzahl mit der aktuellen Team-Anzahl grundsätzlich
+// möglich ist (mind. 2 Teams pro Gruppe, max. 26 Gruppen wegen A-Z). Gibt bei Erfolg
+// null zurück, sonst eine Fehlermeldung.
+function validateGroupCount(n) {
+  if (isNaN(n) || n < 2) return 'Bitte eine Zahl ab 2 als Gruppenanzahl eingeben!';
+  if (n > 26) return 'Maximal 26 Gruppen werden unterstützt (Gruppe A bis Gruppe Z).';
+  if (!teams || teams.length < n * 2) return `Für ${n} Gruppen benötigst du mindestens ${n * 2} Teams (aktuell: ${teams ? teams.length : 0}), damit jede Gruppe mindestens 2 Teams hat.`;
+  return null;
+}
+// Baut aus den fertig befüllten "groups" (letter + teams[]) den kompletten Gruppen-
+// Spielplan (Hin- und Rückspiele aller Team-Paare je Gruppe, über alle Gruppen verzahnt),
+// setzt die KO-Phase zurück und speichert. Gemeinsam genutzt von quickDrawGroups() und
+// finishGroupDraft() (Glücksrad-Variante), damit die Spielplan-Logik nur einmal existiert.
+function buildGroupScheduleAndSave() {
+  let rawGroupMatches = [];
+  groups.forEach(group => {
+    const gTeams = group.teams;
+    for (let i = 0; i < gTeams.length; i++) {
+      for (let j = i + 1; j < gTeams.length; j++) {
+        rawGroupMatches.push(makeMatch(null, group.letter, null, gTeams[i], gTeams[j]));
+      }
+    }
+  });
+  let matchesByGroup = {};
+  groups.forEach(g => {
+    matchesByGroup[g.letter] = rawGroupMatches.filter(m => m.group === g.letter);
+  });
+  let interleavedMatches = [];
+  let maxLen = Math.max(0, ...Object.values(matchesByGroup).map(arr => arr.length));
+  for (let i = 0; i < maxLen; i++) {
+    groups.forEach(g => {
+      if (matchesByGroup[g.letter][i]) interleavedMatches.push(matchesByGroup[g.letter][i]);
+    });
+  }
+  groupMatches = [];
+  let matchId = 1;
+  interleavedMatches.forEach((match, idx) => {
+    match.id = matchId++;
+    match.slot = idx + 1;
+    match.court = (idx % 2 === 1) ? 'Nebenplatz' : 'Hauptplatz';
+    groupMatches.push(match);
+  });
+  assignScheduledTimes(groupMatches, Date.now());
+  koMatches = [];
+  koByeTeamIds = [];
+  saveData();
+  renderAll();
+}
+// Teilt die Teams SOFORT (ohne Glücksrad-Show) zufällig auf die gewählte Anzahl Gruppen
+// (beliebig, min. 2) auf und erstellt daraus direkt den kompletten Gruppen-Spielplan.
+function quickDrawGroups() {
   if (!hasElevated()) return;
   if (!teams || teams.length < 4) {
     return alert(`Du benötigst mindestens 4 Teams (aktuell: ${teams ? teams.length : 0}).`);
   }
-  // Admin gibt vor, in wie viele Gruppen aufgeteilt wird. Das bestimmt später
-  // automatisch, wie die KO-Phase abläuft (siehe drawKOPhase).
-  const input = prompt('Wie viele Gruppen sollen ausgelost werden? (2, 3 oder 4)', String(numGroups || 3));
+  const input = prompt('Wie viele Gruppen sollen ausgelost werden?', String(numGroups || Math.max(2, Math.round(teams.length / 4))));
   if (input === null) return;
   const n = parseInt(input, 10);
-  if (![2, 3, 4].includes(n)) return alert('Bitte 2, 3 oder 4 als Gruppenanzahl eingeben!');
-  if (teams.length < n * 2) {
-    return alert(`Für ${n} Gruppen benötigst du mindestens ${n * 2} Teams (aktuell: ${teams.length}), damit jede Gruppe mindestens 2 Teams hat.`);
-  }
-  if (confirm(`Möchtest du die Teams jetzt zufällig auf ${n} Gruppen verteilen und den Spielplan erstellen?`)) {
-    numGroups = n;
-    const groupLetters = ['Gruppe A', 'Gruppe B', 'Gruppe C', 'Gruppe D'].slice(0, n);
-    const shuffledTeams = [...teams].sort(() => Math.random() - 0.5);
-    groups = groupLetters.map(letter => ({ letter, teams: [] }));
-    shuffledTeams.forEach((team, index) => {
-      groups[index % groups.length].teams.push(team.id);
-    });
-    let rawGroupMatches = [];
-    groups.forEach(group => {
-      const gTeams = group.teams;
-      for (let i = 0; i < gTeams.length; i++) {
-        for (let j = i + 1; j < gTeams.length; j++) {
-          rawGroupMatches.push(makeMatch(null, group.letter, null, gTeams[i], gTeams[j]));
-        }
-      }
-    });
-    let matchesByGroup = {};
-    groupLetters.forEach(l => {
-      matchesByGroup[l] = rawGroupMatches.filter(m => m.group === l);
-    });
-    let interleavedMatches = [];
-    let maxLen = Math.max(...Object.values(matchesByGroup).map(arr => arr.length));
-    for (let i = 0; i < maxLen; i++) {
-      groupLetters.forEach(l => {
-        if (matchesByGroup[l][i]) interleavedMatches.push(matchesByGroup[l][i]);
-      });
-    }
-    groupMatches = [];
-    let matchId = 1;
-    interleavedMatches.forEach((match, idx) => {
-      match.id = matchId++;
-      match.slot = idx + 1;
-      match.court = (idx % 2 === 1) ? 'Nebenplatz' : 'Hauptplatz';
-      groupMatches.push(match);
-    });
-    assignScheduledTimes(groupMatches, Date.now());
-    koMatches = [];
-    saveData();
-    renderAll();
-    showTab('matches');
-    alert(`🎉 ${n} Gruppen & der komplette Spielplan wurden erfolgreich erstellt!`);
-  }
-}
-// KO-Phase auslosen. Das Verhalten passt sich automatisch an die Anzahl der
-// zuvor gewählten Gruppen an (siehe drawGroups):
-//  - 2 Gruppen  -> es gibt kein Viertelfinale, es geht DIREKT ins Halbfinale
-//                  (Gruppensieger gegen Gruppenzweiten der jeweils anderen Gruppe)
-//  - 3 Gruppen  -> bisheriges System: Viertelfinale mit den 2 besten Gruppendritten
-//  - 4 Gruppen  -> Viertelfinale mit den Top 2 jeder Gruppe (über Kreuz gepaart)
-function drawKOPhase() {
-  if (!hasElevated()) return;
-  if (!groups || groups.length < 2) {
-    return alert('Bitte zuerst die Gruppenphase auslosen.');
-  }
-  if (!groupMatches.every(m => m.played)) {
-    return alert('Es müssen zuerst alle Gruppenspiele eingetragen sein!');
-  }
-  const standings = calculateGroupStandings();
-
-  // --- Fall A: 2 Gruppen -> direkt ins Halbfinale ---
-  if (numGroups === 2) {
-    const [gA, gB] = standings;
-    if (!gA.rankings[0] || !gA.rankings[1] || !gB.rankings[0] || !gB.rankings[1]) {
-      return alert('Es sind nicht genügend qualifizierte Teams vorhanden (mind. 2 pro Gruppe)!');
-    }
-    if (!confirm('Bei 2 Gruppen geht es direkt ins Halbfinale: 1. gegen 2. der jeweils anderen Gruppe. Jetzt auslosen?')) return;
-    koMatches = [];
-    koMatches.push(makeKOMatch(201, 'Halbfinale 1', 'Hauptplatz', gA.rankings[0].teamId, gB.rankings[1].teamId));
-    koMatches.push(makeKOMatch(202, 'Halbfinale 2', 'Nebenplatz', gB.rankings[0].teamId, gA.rankings[1].teamId));
-    assignScheduledTimes(koMatches, Date.now());
-    saveData();
-    showTab('matches');
-    alert('🎉 Halbfinale wurde direkt ausgelost!');
-    return;
-  }
-
-  // --- Fall B: 4 Gruppen -> Viertelfinale mit Top 2 jeder Gruppe ---
-  if (numGroups === 4) {
-    const [gA, gB, gC, gD] = standings;
-    const allGroupsHaveTop2 = [gA, gB, gC, gD].every(g => g.rankings[0] && g.rankings[1]);
-    if (!allGroupsHaveTop2) {
-      return alert('Es sind nicht genügend qualifizierte Teams vorhanden (mind. 2 pro Gruppe)!');
-    }
-    if (!confirm('Viertelfinale auslosen? (Gruppensieger gegen Gruppenzweiten einer anderen Gruppe, über Kreuz)')) return;
-    koMatches = [];
-    let matchId = 101;
-    koMatches.push(makeKOMatch(matchId++, 'Viertelfinale', 'Hauptplatz', gA.rankings[0].teamId, gB.rankings[1].teamId));
-    koMatches.push(makeKOMatch(matchId++, 'Viertelfinale', 'Nebenplatz', gB.rankings[0].teamId, gA.rankings[1].teamId));
-    koMatches.push(makeKOMatch(matchId++, 'Viertelfinale', 'Hauptplatz', gC.rankings[0].teamId, gD.rankings[1].teamId));
-    koMatches.push(makeKOMatch(matchId++, 'Viertelfinale', 'Nebenplatz', gD.rankings[0].teamId, gC.rankings[1].teamId));
-    assignScheduledTimes(koMatches, Date.now());
-    saveData();
-    showTab('matches');
-    alert('🎉 Viertelfinale wurde ausgelost!');
-    return;
-  }
-
-  // --- Fall C: 3 Gruppen (Standard-Modus mit Quervergleich der Gruppendritten) ---
-  const winners = standings.map(g => ({ ...g.rankings[0], group: g.letter }));
-  const runnerUps = standings.map(g => ({ ...g.rankings[1], group: g.letter }));
-  const thirds = standings
-    .map(g => ({ ...g.rankings[2], group: g.letter }))
-    .filter(r => r && r.teamId !== undefined)
-    .sort((a, b) => b.points - a.points || b.diff - a.diff || b.gf - a.gf)
-    .slice(0, 2);
-  if (winners.length < 3 || runnerUps.length < 3 || thirds.length < 2) {
-    return alert('Es sind nicht genügend qualifizierte Teams vorhanden!');
-  }
-  if (!confirm('Viertelfinale auslosen? (Gruppendritte spielen gegen Gruppensieger, keine Wiederholung aus der Gruppenphase)')) return;
-  let availableWinners = [...winners];
-  let availableRunnerUps = [...runnerUps];
-  const pairsArr = [];
-  // Schritt 1: beide Gruppendritte bekommen einen Gruppensieger (nicht aus eigener Gruppe)
-  thirds.forEach(third => {
-    let idx = availableWinners.findIndex(w => w.group !== third.group);
-    if (idx === -1) idx = 0;
-    const opponent = availableWinners.splice(idx, 1)[0];
-    pairsArr.push({ a: opponent, b: third });
+  const err = validateGroupCount(n);
+  if (err) return alert(err);
+  if (!confirm(`Möchtest du die Teams jetzt zufällig auf ${n} Gruppen verteilen und den Spielplan erstellen?`)) return;
+  numGroups = n;
+  const groupLetters = generateGroupLetters(n);
+  const shuffledTeams = [...teams].sort(() => Math.random() - 0.5);
+  groups = groupLetters.map(letter => ({ letter, teams: [] }));
+  shuffledTeams.forEach((team, index) => {
+    groups[index % groups.length].teams.push(team.id);
   });
-  // Schritt 2: übriger Gruppensieger vs. Gruppenzweiter (nicht aus eigener Gruppe)
-  const remWinner = availableWinners[0];
-  let idx2 = availableRunnerUps.findIndex(r => r.group !== remWinner.group);
-  if (idx2 === -1) idx2 = 0;
-  const oppRU = availableRunnerUps.splice(idx2, 1)[0];
-  pairsArr.push({ a: remWinner, b: oppRU });
-  // Schritt 3: die beiden übrigen Gruppenzweiten spielen gegeneinander (unterschiedliche Gruppen, also kein Rematch)
-  pairsArr.push({ a: availableRunnerUps[0], b: availableRunnerUps[1] });
-  koMatches = [];
-  let matchId = 101;
-  pairsArr.forEach((p, i) => {
-    koMatches.push(makeKOMatch(matchId++, 'Viertelfinale', (i % 2 === 0) ? 'Hauptplatz' : 'Nebenplatz', p.a.teamId, p.b.teamId));
-  });
-  assignScheduledTimes(koMatches, Date.now());
-  saveData();
+  buildGroupScheduleAndSave();
   showTab('matches');
+  alert(`🎉 ${n} Gruppen & der komplette Spielplan wurden erfolgreich erstellt!`);
 }
-// Lost aus den 4 Viertelfinal-Siegern die zwei Halbfinal-Paarungen aus
-// (wird bei 2 Gruppen nicht gebraucht, da dort direkt in drawKOPhase() ausgelost wird)
-function drawSemifinals() {
+// ============================================================================
+// 8a. GRUPPEN-GLÜCKSRAD — analog zur Team-Auslosung: zieht Team für Team per Glücksrad
+//     und verteilt sie reihum auf die Gruppen (Team 1 -> Gruppe A, Team 2 -> Gruppe B, ...,
+//     dann wieder von vorn). Eigene, bewusst einfachere Draft-State-Machine (groupDraftState),
+//     siehe deren Deklaration weiter oben - teilt sich aber dasselbe #draft-modal-Overlay.
+// ============================================================================
+// Startet die Live-Gruppen-Auslosungs-Show
+function startGroupDraft() {
   if (!hasElevated()) return;
-  if (numGroups === 2) {
-    return alert('Bei 2 Gruppen wird das Halbfinale bereits direkt in Schritt 3 (KO-Phase auslosen) erstellt – dieser Button wird dafür nicht gebraucht.');
+  if (!teams || teams.length < 4) {
+    return alert(`Du benötigst mindestens 4 Teams (aktuell: ${teams ? teams.length : 0}).`);
   }
-  const qfMatches = koMatches.filter(m => m.round === 'Viertelfinale');
-  if (qfMatches.length < 4) return alert('Es muss zuerst das Viertelfinale ausgelost werden!');
-  const winners = [];
-  qfMatches.forEach(m => {
-    if (m.played) {
-      if (m.score1 > m.score2) winners.push(m.t1Id);
-      else if (m.score2 > m.score1) winners.push(m.t2Id);
+  const input = prompt('Wie viele Gruppen sollen ausgelost werden?', String(numGroups || Math.max(2, Math.round(teams.length / 4))));
+  if (input === null) return;
+  const n = parseInt(input, 10);
+  const err = validateGroupCount(n);
+  if (err) return alert(err);
+  if (!confirm(`Soll die Gruppen-Auslosungs-Show jetzt LIVE gestartet werden? ${teams.length} Teams werden nacheinander per Glücksrad auf ${n} Gruppen verteilt.`)) return;
+  numGroups = n;
+  const groupLetters = generateGroupLetters(n);
+  const assignments = {};
+  groupLetters.forEach(l => { assignments[l] = []; });
+  groupDraftState = {
+    active: true, spinning: false,
+    remainingTeams: teams.map(t => t.name),
+    groupLetters, targetGroupIndex: 0, assignments,
+    lastDrawnItem: null, lastAssignedGroup: null,
+    startTime: null, targetAngle: 0, duration: 4000
+  };
+  saveData();
+  renderAll();
+  handleLiveDraftUI();
+}
+// Dreht das Glücksrad für das nächste zu ziehende Team (landet automatisch in der
+// aktuellen Ziel-Gruppe, siehe groupDraftState.targetGroupIndex)
+function spinGroupWheel() {
+  if (!hasElevated() || groupDraftState.spinning) return;
+  const pool = groupDraftState.remainingTeams;
+  if (!pool || pool.length === 0) return alert('Keine Teams mehr übrig!');
+  // Bleibt nur noch EIN Team übrig, gibt's nichts mehr auszulosen - UND ein Rad mit nur
+  // einem (Voll-Kreis-)Segment sieht beim Drehen optisch immer gleich aus (siehe
+  // drawGroupWheelCanvas). Deshalb direkt automatisch übernehmen, ganz ohne Animation.
+  if (pool.length === 1) {
+    groupDraftState.targetAngle = 0;
+    applyGroupDraw(pool[0]);
+    return;
+  }
+  const targetIndex = Math.floor(Math.random() * pool.length);
+  const targetItem = pool[targetIndex];
+  const numItems = pool.length;
+  const sliceAngle = (2 * Math.PI) / numItems;
+  const targetSegmentCenter = (targetIndex + 0.5) * sliceAngle;
+  const targetAngleAtTop = (1.5 * Math.PI) - targetSegmentCenter;
+  const totalRotation = (2 * Math.PI * 5) + targetAngleAtTop;
+  groupDraftState.spinning = true;
+  groupDraftState.startTime = Date.now();
+  groupDraftState.targetAngle = totalRotation;
+  groupDraftState.duration = 4000;
+  groupDraftState.lastDrawnItem = null;
+  saveData();
+  pendingGroupSpinResult = targetItem;
+  if (groupSpinTimeoutId) clearTimeout(groupSpinTimeoutId);
+  groupSpinTimeoutId = setTimeout(() => {
+    groupSpinTimeoutId = null;
+    pendingGroupSpinResult = null;
+    if (hasElevated() && groupDraftState.spinning) {
+      applyGroupDraw(targetItem);
+    }
+  }, 4100);
+}
+// Admin/God kann die laufende Dreh-Animation überspringen - übernimmt sofort das
+// schon feststehende Ergebnis (siehe skipWheelSpin() beim Team-Glücksrad, analog)
+function skipGroupWheelSpin() {
+  if (!hasElevated() || !groupDraftState.spinning || pendingGroupSpinResult === null) return;
+  if (groupSpinTimeoutId) { clearTimeout(groupSpinTimeoutId); groupSpinTimeoutId = null; }
+  const result = pendingGroupSpinResult;
+  pendingGroupSpinResult = null;
+  applyGroupDraw(result);
+}
+// Übernimmt das gezogene Team: weist es der aktuellen Ziel-Gruppe zu und rückt die
+// Ziel-Gruppe eins weiter (reihum A, B, C, ..., wieder A, ...)
+function applyGroupDraw(teamName) {
+  groupDraftState.spinning = false;
+  groupDraftState.lastDrawnItem = teamName;
+  const idx = groupDraftState.remainingTeams.indexOf(teamName);
+  if (idx !== -1) groupDraftState.remainingTeams.splice(idx, 1);
+  const letter = groupDraftState.groupLetters[groupDraftState.targetGroupIndex];
+  const team = teams.find(t => t.name === teamName);
+  if (team) {
+    if (!groupDraftState.assignments[letter]) groupDraftState.assignments[letter] = [];
+    groupDraftState.assignments[letter].push(team.id);
+  }
+  groupDraftState.lastAssignedGroup = letter;
+  groupDraftState.targetGroupIndex = (groupDraftState.targetGroupIndex + 1) % groupDraftState.groupLetters.length;
+  saveData();
+  renderGroupDraftStep();
+}
+// Baut die Anzeige für den aktuellen Gruppen-Auslosungs-Schritt auf
+function renderGroupDraftStep() {
+  const stage = document.getElementById('draft-stage');
+  if (!stage) return;
+  if (!groupDraftState.remainingTeams || groupDraftState.remainingTeams.length === 0) {
+    stage.innerHTML = `
+      <h3 style="color:#4CAF50; margin-bottom: 10px;">🎉 Alle Teams wurden auf die Gruppen verteilt! 🎉</h3>
+      ${hasElevated() ? `
+        <button class="btn-primary role-btn" style="margin-top:15px;" onclick="finishGroupDraft()">
+          💾 Gruppen speichern & Spielplan erstellen
+        </button>
+      ` : '<p style="color:var(--fal-yellow);">Warte auf Admin-Bestätigung...</p>'}
+      <button class="btn-secondary role-btn" style="margin-top:10px;" onclick="goToLandingPage()">🔄 Turnier wechseln</button>
+    `;
+    return;
+  }
+  const nextLetter = groupDraftState.groupLetters[groupDraftState.targetGroupIndex];
+  stage.innerHTML = `
+    <p style="font-size:0.9em; opacity:0.8;">Noch ${groupDraftState.remainingTeams.length} Team(s) übrig</p>
+    <h3 style="margin:5px 0; color:var(--fal-yellow);">🎰 Lose Team für <strong>${nextLetter}</strong></h3>
+    <div class="wheel-container" style="position:relative; width:260px; margin:0 auto;">
+      <div class="wheel-pointer" style="position:absolute; top:-10px; left:50%; transform:translateX(-50%); width:0; height:0; border-left:10px solid transparent; border-right:10px solid transparent; border-top:15px solid red; z-index:10;"></div>
+      <canvas id="wheel-canvas" width="260" height="260"></canvas>
+    </div>
+    <div id="spin-result" style="height: 35px; font-weight: bold; font-size: 1.1em; color: var(--fal-yellow); margin-top:5px;">
+      ${groupDraftState.lastDrawnItem ? `🎯 <u>${groupDraftState.lastDrawnItem}</u> → ${groupDraftState.lastAssignedGroup}` : ''}
+    </div>
+    ${hasElevated() ? `
+      <div style="margin-top:15px; display:flex; gap:10px; justify-content:center;">
+        <button class="btn-secondary role-btn" style="background:#e74c3c; color:white; border:none;" onclick="cancelGroupDraft()">
+          🛑 Abbrechen
+        </button>
+        ${!groupDraftState.spinning ? `
+          <button class="btn-primary role-btn" id="btn-spin-group-wheel" onclick="spinGroupWheel()">
+            🎰 Rad drehen
+          </button>
+        ` : ''}
+        ${groupDraftState.spinning && pendingGroupSpinResult !== null ? `
+          <button class="btn-primary role-btn" onclick="skipGroupWheelSpin()">
+            ⏭️ Überspringen
+          </button>
+        ` : ''}
+      </div>
+    ` : `
+      <p style="font-size:0.9em; opacity:0.8; margin-top:10px;">
+        ${groupDraftState.spinning ? '🎰 Das Rad dreht sich live...' : 'Der Admin dreht gleich am Rad!'}
+      </p>
+    `}
+    <button class="btn-secondary role-btn" style="margin-top:10px;" onclick="goToLandingPage()">🔄 Turnier wechseln</button>
+  `;
+  startGroupWheelAnimationLoop();
+}
+// Startet die requestAnimationFrame-Schleife fürs Gruppen-Glücksrad (analog zum Team-Rad)
+function startGroupWheelAnimationLoop() {
+  if (animFrameId) cancelAnimationFrame(animFrameId);
+  function animate() {
+    if (!groupDraftState || !groupDraftState.active) return;
+    let currentAngle = 0;
+    if (groupDraftState.spinning && groupDraftState.startTime) {
+      const elapsed = Date.now() - groupDraftState.startTime;
+      const progress = Math.min(elapsed / (groupDraftState.duration || 4000), 1);
+      const easeOut = 1 - Math.pow(1 - progress, 3);
+      currentAngle = (groupDraftState.targetAngle || 0) * easeOut;
+      if (progress >= 1) {
+        drawGroupWheelCanvas(groupDraftState.targetAngle);
+        return;
+      }
+    } else {
+      currentAngle = groupDraftState.targetAngle || 0;
+    }
+    drawGroupWheelCanvas(currentAngle);
+    if (groupDraftState.spinning) {
+      animFrameId = requestAnimationFrame(animate);
+    }
+  }
+  animFrameId = requestAnimationFrame(animate);
+}
+// Zeichnet das Gruppen-Glücksrad (schlichter als das Team-Rad: keine Vereinswappen/-farben,
+// nur abwechselnd Blau/Gelb mit dem Team-Namen)
+function drawGroupWheelCanvas(angleOffset) {
+  const canvas = document.getElementById('wheel-canvas');
+  if (!canvas) return;
+  const ctx = canvas.getContext('2d');
+  const items = groupDraftState.remainingTeams;
+  const numItems = items ? items.length : 0;
+  ctx.clearRect(0, 0, 260, 260);
+  if (numItems === 0) return;
+  const centerX = 130, centerY = 130, radius = 130;
+  const sliceAngle = (2 * Math.PI) / numItems;
+  for (let i = 0; i < numItems; i++) {
+    const startAngle = angleOffset + i * sliceAngle;
+    const endAngle = startAngle + sliceAngle;
+    const itemText = String(items[i]);
+    const segmentColor = (i % 2 === 0) ? '#1b365d' : '#f1c40f';
+    ctx.beginPath();
+    ctx.moveTo(centerX, centerY);
+    ctx.arc(centerX, centerY, radius, startAngle, endAngle);
+    ctx.closePath();
+    ctx.fillStyle = segmentColor;
+    ctx.fill();
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = '#ffffff';
+    ctx.stroke();
+    ctx.save();
+    ctx.translate(centerX, centerY);
+    ctx.rotate(startAngle + sliceAngle / 2);
+    ctx.textAlign = "right";
+    ctx.textBaseline = "middle";
+    ctx.font = "bold 13px -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif";
+    const textColor = getReadableTextColor(segmentColor);
+    const outlineColor = (textColor === '#ffffff') ? 'rgba(0,0,0,0.55)' : 'rgba(255,255,255,0.65)';
+    ctx.strokeStyle = outlineColor;
+    ctx.lineWidth = 1.5;
+    ctx.strokeText(itemText, radius - 35, 0);
+    ctx.fillStyle = textColor;
+    ctx.fillText(itemText, radius - 35, 0);
+    ctx.restore();
+  }
+}
+// Bricht die laufende Gruppen-Auslosung ab und setzt sie komplett zurück
+function cancelGroupDraft() {
+  if (!hasElevated()) return;
+  if (confirm("Möchtest du die Gruppen-Auslosung wirklich abbrechen und zurücksetzen?")) {
+    if (animFrameId) cancelAnimationFrame(animFrameId);
+    if (groupSpinTimeoutId) { clearTimeout(groupSpinTimeoutId); groupSpinTimeoutId = null; }
+    pendingGroupSpinResult = null;
+    groupDraftState = { active: false, spinning: false, remainingTeams: [], groupLetters: [], targetGroupIndex: 0, assignments: {}, lastDrawnItem: null, lastAssignedGroup: null, startTime: null, targetAngle: 0, duration: 4000 };
+    saveData();
+    const modal = document.getElementById('draft-modal');
+    if (modal) modal.style.display = 'none';
+    renderAll();
+    alert("Gruppen-Auslosung wurde zurückgesetzt!");
+  }
+}
+// Übernimmt die fertig gelosten Gruppen und erstellt daraus den kompletten Spielplan
+function finishGroupDraft() {
+  if (!hasElevated()) return;
+  groups = groupDraftState.groupLetters.map(letter => ({ letter, teams: groupDraftState.assignments[letter] || [] }));
+  groupDraftState.active = false;
+  buildGroupScheduleAndSave();
+  showTab('matches');
+  alert('🎉 Gruppen wurden gespeichert & Spielplan erstellt!');
+}
+// ============================================================================
+// 8b. KO-PHASE (generisch) — funktioniert für JEDE Gruppenanzahl und JEDE gewünschte
+//     Teilnehmerzahl. Reicht die direkte Qualifikation (Top N je Gruppe) nicht glatt
+//     auf die gewünschte Gesamtzahl, füllt ein automatischer Quervergleich (beste
+//     Gruppendritte, ggf. -vierte, ...) den Rest auf (computeKOQualifiers). Ist die
+//     Teilnehmerzahl keine Zweierpotenz, bekommen die bestplatzierten Team(s) ein
+//     Freilos direkt in Runde 2 (buildKORound1Pairing/koByeTeamIds). Danach wird JEDE
+//     weitere Runde per advanceKORound() aus den Siegern der vorigen Runde ausgelost -
+//     eine einzige generische Funktion statt fixer Viertel-/Halbfinale/Finale-Schritte.
+// ============================================================================
+// Kleinste Zweierpotenz >= n (Bracket-Größe für die KO-Phase)
+function nextPowerOf2(n) {
+  let p = 1;
+  while (p < n) p *= 2;
+  return p;
+}
+// Liefert den deutschen Runden-Namen für die Anzahl Teams, die in diese Runde einziehen
+function roundNameForSize(size) {
+  if (size <= 2) return '🏆 FINALE';
+  if (size === 4) return 'Halbfinale';
+  if (size === 8) return 'Viertelfinale';
+  if (size === 16) return 'Achtelfinale';
+  if (size === 32) return 'Sechzehntelfinale';
+  return `Runde der ${size}`;
+}
+// Ermittelt aus den Gruppentabellen die KO-Qualifikanten für eine gewünschte
+// Gesamtzahl: pro Gruppe direkt die Top "perGroup" (= Ganzzahl-Anteil), reicht das
+// nicht glatt auf, füllt ein Quervergleich der jeweils nächstplatzierten Teams
+// (Gruppendritte bei perGroup=2, Gruppenvierte bei perGroup=3, usw.) den Rest auf.
+function computeKOQualifiers(standings, totalQualifiers) {
+  const numG = standings.length;
+  const perGroup = Math.floor(totalQualifiers / numG);
+  const wildcardsNeeded = totalQualifiers - perGroup * numG;
+  const qualifiers = [];
+  standings.forEach(g => {
+    for (let i = 0; i < perGroup; i++) {
+      const r = g.rankings[i];
+      if (r && r.teamId !== undefined) qualifiers.push({ ...r, group: g.letter, rank: i + 1 });
     }
   });
-  if (winners.length < 4) return alert('Es müssen erst alle 4 Viertelfinal-Spiele eingetragen sein!');
-  if (confirm('Halbfinale jetzt zufällig aus den 4 Siegern auslosen?')) {
-    const shuffled = [...winners].sort(() => Math.random() - 0.5);
-    const newMatches = [
-      makeKOMatch(201, 'Halbfinale 1', 'Hauptplatz', shuffled[0], shuffled[1]),
-      makeKOMatch(202, 'Halbfinale 2', 'Nebenplatz', shuffled[2], shuffled[3])
-    ];
-    assignScheduledTimes(newMatches, Date.now()); // eigener Zeit-Anker, unabhängig vom Viertelfinale
-    koMatches.push(...newMatches);
+  if (wildcardsNeeded > 0) {
+    const candidatePool = standings
+      .map(g => { const r = g.rankings[perGroup]; return (r && r.teamId !== undefined) ? { ...r, group: g.letter, rank: perGroup + 1 } : null; })
+      .filter(Boolean)
+      .sort((a, b) => b.points - a.points || b.diff - a.diff || b.gf - a.gf);
+    candidatePool.slice(0, wildcardsNeeded).forEach(r => qualifiers.push(r));
+  }
+  return qualifiers;
+}
+// Baut die Runde-1-Paarungen aus den Qualifikanten: die bestplatzierten Team(s) bekommen
+// bei Bedarf ein Freilos (siehe nextPowerOf2), der Rest wird zufällig gepaart, wobei ein
+// direktes Rematch aus der Gruppenphase (gleiche Gruppe) nach Möglichkeit vermieden wird.
+function buildKORound1Pairing(qualifiers) {
+  const bracketSize = nextPowerOf2(qualifiers.length);
+  const byeCount = bracketSize - qualifiers.length;
+  const seeded = [...qualifiers].sort((a, b) => a.rank - b.rank || b.points - a.points || b.diff - a.diff || b.gf - a.gf);
+  const byeTeams = seeded.slice(0, byeCount);
+  const pool = seeded.slice(byeCount).sort(() => Math.random() - 0.5);
+  const pairs = [];
+  while (pool.length > 0) {
+    const a = pool.shift();
+    let idx = pool.findIndex(t => t.group !== a.group);
+    if (idx === -1) idx = 0;
+    const b = pool.splice(idx, 1)[0];
+    pairs.push([a, b]);
+  }
+  return { byeTeams, pairs, bracketSize };
+}
+// Lost die nächste KO-Runde aus: beim allerersten Aufruf (noch keine KO-Spiele) wird die
+// gewünschte Gesamt-Teilnehmerzahl abgefragt und Runde 1 aus der Gruppenphase gebildet.
+// Danach lost jeder weitere Aufruf die jeweils nächste Runde aus den Siegern der zuletzt
+// abgeschlossenen Runde aus - beim Übergang von 4 auf 2 Teams gleichzeitig auch das
+// Spiel um Platz 3 aus den beiden Verlierern.
+function advanceKORound() {
+  if (!hasElevated()) return;
+  if (koMatches.length === 0) {
+    if (!groups || groups.length < 2) return alert('Bitte zuerst die Gruppenphase auslosen.');
+    if (!groupMatches.every(m => m.played)) return alert('Es müssen zuerst alle Gruppenspiele eingetragen sein!');
+    const standings = calculateGroupStandings();
+    const maxPossible = standings.reduce((s, g) => s + g.rankings.length, 0);
+    const defaultTotal = koQualifiersTotal || Math.min(numGroups * 2, maxPossible);
+    const input = prompt(`Wie viele Teams sollen insgesamt in die KO-Runde einziehen? (${numGroups} Gruppen, max. ${maxPossible} Teams insgesamt)`, String(defaultTotal));
+    if (input === null) return;
+    const total = parseInt(input, 10);
+    if (isNaN(total) || total < 2) return alert('Bitte eine Zahl ab 2 eingeben!');
+    if (total > maxPossible) return alert(`Es gibt insgesamt nur ${maxPossible} Teams - so viele können nicht in die KO-Runde einziehen.`);
+    const perGroup = Math.floor(total / numGroups);
+    if (perGroup > 0 && standings.some(g => g.rankings.length < perGroup)) {
+      return alert(`Mindestens eine Gruppe hat weniger als ${perGroup} Teams - bitte eine kleinere Gesamtzahl wählen.`);
+    }
+    const qualifiers = computeKOQualifiers(standings, total);
+    if (qualifiers.length < 2) return alert('Zu wenige qualifizierte Teams für eine KO-Runde ermittelt.');
+    if (qualifiers.length < total && !confirm(`Es konnten nur ${qualifiers.length} statt ${total} Teams ermittelt werden (nicht genug Kandidaten für den Quervergleich). Trotzdem mit ${qualifiers.length} Teams fortfahren?`)) return;
+    koQualifiersTotal = total;
+    const { byeTeams, pairs, bracketSize } = buildKORound1Pairing(qualifiers);
+    koByeTeamIds = byeTeams.map(t => t.teamId);
+    const roundName = roundNameForSize(bracketSize);
+    const byeNote = byeTeams.length ? `\n\n${byeTeams.length} Team(s) haben ein Freilos direkt in die nächste Runde: ${byeTeams.map(t => t.name).join(', ')}` : '';
+    if (!confirm(`${roundName} mit ${qualifiers.length} Teams auslosen?${byeNote}`)) return;
+    koMatches = [];
+    let matchId = 1;
+    pairs.forEach((pair, i) => {
+      const m = makeKOMatch(matchId++, roundName, (i % 2 === 0) ? 'Hauptplatz' : 'Nebenplatz', pair[0].teamId, pair[1].teamId);
+      m.roundNumber = 0;
+      koMatches.push(m);
+    });
+    assignScheduledTimes(koMatches, Date.now());
     saveData();
     showTab('matches');
+    alert(`🎉 ${roundName} wurde ausgelost!${byeNote}`);
+    return;
   }
-}
-// Erstellt aus den beiden Halbfinal-Ergebnissen das Finale und das Spiel um Platz 3
-function drawFinals() {
-  if (!hasElevated()) return;
-  const hf1 = koMatches.find(m => m.round === 'Halbfinale 1');
-  const hf2 = koMatches.find(m => m.round === 'Halbfinale 2');
-  if (!hf1 || !hf2 || !hf1.played || !hf2.played) return alert('Beide Halbfinal-Spiele müssen erst eingetragen sein!');
-  const hf1Winner = hf1.score1 > hf1.score2 ? hf1.t1Id : hf1.t2Id;
-  const hf1Loser  = hf1.score1 > hf1.score2 ? hf1.t2Id : hf1.t1Id;
-  const hf2Winner = hf2.score1 > hf2.score2 ? hf2.t1Id : hf2.t2Id;
-  const hf2Loser  = hf2.score1 > hf2.score2 ? hf2.t2Id : hf2.t1Id;
-  if (confirm('Finale & Spiel um Platz 3 jetzt erstellen?')) {
-    const newMatches = [
-      makeKOMatch(301, '🥉 Spiel um Platz 3', 'Nebenplatz', hf1Loser, hf2Loser),
-      makeKOMatch(302, '🏆 FINALE', 'Hauptplatz', hf1Winner, hf2Winner)
-    ];
+
+  if (koMatches.some(m => m.round === '🏆 FINALE')) {
+    return alert('Das Finale wurde bereits ausgelost - das Turnier ist damit komplett!');
+  }
+  const currentRoundNumber = Math.max(...koMatches.map(m => m.roundNumber || 0));
+  const currentRoundMatches = koMatches.filter(m => (m.roundNumber || 0) === currentRoundNumber);
+  if (!currentRoundMatches.every(m => m.played)) {
+    return alert(`Es müssen zuerst alle Spiele der aktuellen Runde (${currentRoundMatches[0].round}) eingetragen sein!`);
+  }
+  const winners = currentRoundMatches.map(m => ({ teamId: m.score1 > m.score2 ? m.t1Id : m.t2Id }));
+  const losers = currentRoundMatches.map(m => ({ teamId: m.score1 > m.score2 ? m.t2Id : m.t1Id }));
+  const advancing = [...winners];
+  if (currentRoundNumber === 0 && koByeTeamIds.length > 0) {
+    koByeTeamIds.forEach(tid => advancing.push({ teamId: tid }));
+    koByeTeamIds = [];
+  }
+  if (advancing.length < 2) return alert('Nicht genug Teams für eine weitere Runde übrig.');
+
+  let matchId = Math.max(...koMatches.map(m => m.id)) + 1;
+  if (advancing.length === 2) {
+    if (!confirm('Finale & Spiel um Platz 3 jetzt erstellen?')) return;
+    const newMatches = [];
+    if (losers.length >= 2) {
+      const m3 = makeKOMatch(matchId++, '🥉 Spiel um Platz 3', 'Nebenplatz', losers[0].teamId, losers[1].teamId);
+      m3.roundNumber = currentRoundNumber + 1;
+      newMatches.push(m3);
+    }
+    const mf = makeKOMatch(matchId++, '🏆 FINALE', 'Hauptplatz', advancing[0].teamId, advancing[1].teamId);
+    mf.roundNumber = currentRoundNumber + 1;
+    newMatches.push(mf);
     assignScheduledTimes(newMatches, Date.now());
     koMatches.push(...newMatches);
     saveData();
     showTab('matches');
+    return;
   }
+
+  const roundName = roundNameForSize(advancing.length);
+  if (!confirm(`${roundName} jetzt aus den ${advancing.length} verbliebenen Teams auslosen?`)) return;
+  const shuffled = [...advancing].sort(() => Math.random() - 0.5);
+  const newMatches = [];
+  for (let i = 0; i < shuffled.length; i += 2) {
+    const m = makeKOMatch(matchId++, roundName, (newMatches.length % 2 === 0) ? 'Hauptplatz' : 'Nebenplatz', shuffled[i].teamId, shuffled[i + 1].teamId);
+    m.roundNumber = currentRoundNumber + 1;
+    newMatches.push(m);
+  }
+  assignScheduledTimes(newMatches, Date.now());
+  koMatches.push(...newMatches);
+  saveData();
+  showTab('matches');
 }
 // Erstattet allen Spielern die Coins, die sie auf gelöschte Spiele gesetzt hatten,
 // und entfernt diese Wetten danach (verhindert, dass Coins bei einem Reset "verschwinden")
@@ -3310,8 +3642,9 @@ function refundAndClearBets(isKO) {
 function resetKOPhase() {
   if (!hasElevated()) return;
   if (koMatches.length === 0) return alert('Es gibt aktuell keine KO-Phase zum Zurücksetzen.');
-  if (!confirm('KO-Phase wirklich zurücksetzen? Viertelfinale/Halbfinale/Finale werden gelöscht (offene Wetten darauf werden erstattet). Die Gruppenphase bleibt erhalten.')) return;
+  if (!confirm('KO-Phase wirklich zurücksetzen? Alle KO-Runden werden gelöscht (offene Wetten darauf werden erstattet). Die Gruppenphase bleibt erhalten.')) return;
   koMatches = [];
+  koByeTeamIds = [];
   refundAndClearBets(true);
   saveData();
   renderAll();
@@ -3326,6 +3659,7 @@ function resetGroupPhase() {
   groups = [];
   groupMatches = [];
   koMatches = [];
+  koByeTeamIds = [];
   refundAndClearBets(false);
   refundAndClearBets(true);
   saveData();
@@ -3343,6 +3677,8 @@ function resetTeamDraft() {
   groupMatches = [];
   koMatches = [];
   numGroups = 3;
+  koQualifiersTotal = null;
+  koByeTeamIds = [];
   refundAndClearBets(false);
   refundAndClearBets(true);
   Object.keys(tips).forEach(name => {
@@ -3351,6 +3687,7 @@ function resetTeamDraft() {
   tips = {};
   tipsEvaluated = false;
   draftState = { active: false, currentStep: 0, tempP1: null, tempP2: null, remainingPlayers: [], remainingClubs: [], spinning: false, startTime: null, targetAngle: 0, duration: 4000, lastDrawnItem: null, pairs: [] };
+  groupDraftState = { active: false, spinning: false, remainingTeams: [], groupLetters: [], targetGroupIndex: 0, assignments: {}, lastDrawnItem: null, lastAssignedGroup: null, startTime: null, targetAngle: 0, duration: 4000 };
   saveData();
   renderAll();
   alert('✅ Team-Auslosung wurde zurückgesetzt.');
@@ -3905,7 +4242,14 @@ function calculateGroupStandings() {
     return { letter: g.letter, rankings };
   });
 }
-// Zeigt die Gruppentabellen an, inkl. Quervergleich der Gruppendritten (nur im 3-Gruppen-Modus)
+// Deutsches Ordnungszahl-Wort für den Quervergleich ("Dritten", "Vierten", ...)
+function germanOrdinalWord(n) {
+  const words = { 1: 'Ersten', 2: 'Zweiten', 3: 'Dritten', 4: 'Vierten', 5: 'Fünften', 6: 'Sechsten', 7: 'Siebten', 8: 'Achten', 9: 'Neunten', 10: 'Zehnten' };
+  return words[n] || `${n}.-Platzierten`;
+}
+// Zeigt die Gruppentabellen an, inkl. generischem Quervergleich (siehe computeKOQualifiers) -
+// erscheint automatisch, sobald die gewählte KO-Teilnehmerzahl nicht glatt auf alle Gruppen
+// aufgeht und darum ein Vergleich der jeweils nächstplatzierten Teams nötig ist.
 function renderGroups() {
   const container = document.getElementById('groups-container');
   if (!container) return;
@@ -3924,7 +4268,7 @@ function renderGroups() {
           </thead>
           <tbody>
             ${g.rankings.map((r, idx) => `
-              <tr style="${idx === 2 ? 'opacity: 0.9;' : ''}">
+              <tr>
                 <td>${idx + 1}</td>
                 <td>${teamCrestImg(teams.find(t => t.id === r.teamId), 20)}<strong>${escapeHtml(r.name)}</strong></td>
                 <td>${r.played}</td>
@@ -3938,34 +4282,40 @@ function renderGroups() {
       </div>
     </div>
   `).join('');
-  if (groups.length === 3) {
-    const thirdPlaces = standings
-      .map(g => ({ ...g.rankings[2], group: g.letter }))
-      .filter(r => r !== undefined && r.teamId !== undefined)
-      .sort((a, b) => b.points - a.points || b.diff - a.diff || b.gf - a.gf);
-    html += `
-      <div class="admin-card highlight-me" style="grid-column: 1 / -1; margin-top: 10px;">
-        <h3 style="color:var(--fal-yellow); margin-top:0;">📊 Quervergleich der Gruppendritten (Top 2 kommen ins Viertelfinale)</h3>
-        <div class="table-container">
-          <table>
-            <thead><tr><th>Platz</th><th>Team (Gruppe)</th><th>Sp</th><th>Tore</th><th>Diff</th><th>Pkt</th><th>Status</th></tr></thead>
-            <tbody>
-              ${thirdPlaces.map((r, idx) => `
-                <tr style="${idx < 2 ? 'background: rgba(0, 255, 100, 0.1);' : 'background: rgba(255, 0, 0, 0.1);'}">
-                  <td>${idx + 1}</td>
-                  <td>${teamCrestImg(teams.find(t => t.id === r.teamId), 20)}<strong>${escapeHtml(r.name)}</strong> (${escapeHtml(r.group)})</td>
-                  <td>${r.played}</td>
-                  <td>${r.gf}:${r.ga}</td>
-                  <td>${r.diff > 0 ? '+' + r.diff : r.diff}</td>
-                  <td><strong>${r.points}</strong></td>
-                  <td>${idx < 2 ? '✅ Qualifiziert' : '❌ Ausgeschieden'}</td>
-                </tr>
-              `).join('')}
-            </tbody>
-          </table>
+  const numG = standings.length;
+  if (koQualifiersTotal && numG > 0) {
+    const perGroup = Math.floor(koQualifiersTotal / numG);
+    const wildcards = koQualifiersTotal - perGroup * numG;
+    if (wildcards > 0) {
+      const candidatePool = standings
+        .map(g => { const r = g.rankings[perGroup]; return (r && r.teamId !== undefined) ? { ...r, group: g.letter } : null; })
+        .filter(Boolean)
+        .sort((a, b) => b.points - a.points || b.diff - a.diff || b.gf - a.gf);
+      const ordinalWord = germanOrdinalWord(perGroup + 1);
+      html += `
+        <div class="admin-card highlight-me" style="grid-column: 1 / -1; margin-top: 10px;">
+          <h3 style="color:var(--fal-yellow); margin-top:0;">📊 Quervergleich der Gruppen-${ordinalWord} (${wildcards} kommen zusätzlich weiter)</h3>
+          <div class="table-container">
+            <table>
+              <thead><tr><th>Platz</th><th>Team (Gruppe)</th><th>Sp</th><th>Tore</th><th>Diff</th><th>Pkt</th><th>Status</th></tr></thead>
+              <tbody>
+                ${candidatePool.map((r, idx) => `
+                  <tr style="${idx < wildcards ? 'background: rgba(0, 255, 100, 0.1);' : 'background: rgba(255, 0, 0, 0.1);'}">
+                    <td>${idx + 1}</td>
+                    <td>${teamCrestImg(teams.find(t => t.id === r.teamId), 20)}<strong>${escapeHtml(r.name)}</strong> (${escapeHtml(r.group)})</td>
+                    <td>${r.played}</td>
+                    <td>${r.gf}:${r.ga}</td>
+                    <td>${r.diff > 0 ? '+' + r.diff : r.diff}</td>
+                    <td><strong>${r.points}</strong></td>
+                    <td>${idx < wildcards ? '✅ Qualifiziert' : '❌ Ausgeschieden'}</td>
+                  </tr>
+                `).join('')}
+              </tbody>
+            </table>
+          </div>
         </div>
-      </div>
-    `;
+      `;
+    }
   }
   container.innerHTML = html;
 }
@@ -4065,16 +4415,49 @@ function renderMatches() {
     if (!koMatches || koMatches.length === 0) {
       koContainer.innerHTML = '<p class="empty-state">KO-Phase noch nicht ausgelost.</p>';
     } else {
-      const roundOrder = ['Viertelfinale', 'Halbfinale 1', 'Halbfinale 2', '🥉 Spiel um Platz 3', '🏆 FINALE'];
-      const rounds = roundOrder.filter(r => koMatches.some(m => m.round === r));
-      koContainer.innerHTML = rounds.map(r => `
-        <h4 style="color:var(--fal-yellow); margin-top:15px;">${r}</h4>
+      // Runden nach roundNumber sortieren (0=Runde 1, 1=Runde 2, ...) statt fixer Namensliste,
+      // damit das auch für beliebig viele KO-Runden funktioniert (siehe advanceKORound).
+      // Innerhalb der letzten Runde steht "Spiel um Platz 3" vor "FINALE".
+      const roundNumbers = [...new Set(koMatches.map(m => m.roundNumber || 0))].sort((a, b) => a - b);
+      const roundNames = [];
+      roundNumbers.forEach(rn => {
+        const namesInRound = [...new Set(koMatches.filter(m => (m.roundNumber || 0) === rn).map(m => m.round))];
+        namesInRound.sort((a, b) => (a === '🏆 FINALE' ? 1 : 0) - (b === '🏆 FINALE' ? 1 : 0));
+        roundNames.push(...namesInRound);
+      });
+      koContainer.innerHTML = roundNames.map(r => `
+        <h4 style="color:var(--fal-yellow); margin-top:15px;">${escapeHtml(r)}</h4>
         ${koMatches.filter(m => m.round === r).map(m => renderMatchBlock(m, true)).join('')}
       `).join('');
     }
   }
 }
 // Baut den kompletten Admin-Bereich auf: Spielerverwaltung, Test-Spieler-Button, Club-Liste, Registrierungssperre
+// Zeigt im Admin-Panel EINEN dynamischen Button für die KO-Phase, statt fixer
+// Viertel-/Halbfinale/Finale-Schritte - der Text passt sich dem aktuellen Fortschritt an
+// (siehe advanceKORound für die eigentliche Logik).
+function renderKOControlPanel() {
+  const el = document.getElementById('ko-control-container');
+  if (!el) return;
+  if (!groups || groups.length === 0) {
+    el.innerHTML = `<p style="opacity:0.7; font-size:0.9em;">Zuerst die Gruppenphase auslosen.</p>`;
+    return;
+  }
+  if (koMatches.length === 0) {
+    el.innerHTML = `<button class="btn-primary" onclick="advanceKORound()">⚔️ 3. KO-Runde auslosen (Teilnehmerzahl wählbar)</button>`;
+    return;
+  }
+  if (koMatches.some(m => m.round === '🏆 FINALE')) {
+    el.innerHTML = `<p style="opacity:0.8; font-size:0.9em;">🏆 Finale wurde bereits ausgelost - das Turnier ist komplett.</p>`;
+    return;
+  }
+  const currentRoundNumber = Math.max(...koMatches.map(m => m.roundNumber || 0));
+  const currentRoundMatches = koMatches.filter(m => (m.roundNumber || 0) === currentRoundNumber);
+  const allPlayed = currentRoundMatches.every(m => m.played);
+  el.innerHTML = allPlayed
+    ? `<button class="btn-primary" onclick="advanceKORound()">⚔️ Nächste KO-Runde auslosen</button>`
+    : `<p style="opacity:0.8; font-size:0.9em;">⏳ Erst alle Spiele der aktuellen Runde (${escapeHtml(currentRoundMatches[0].round)}) eintragen, dann kann die nächste Runde ausgelost werden.</p>`;
+}
 function renderAdminPanel() {
   const playerListEl = document.getElementById('admin-player-list');
   const clubListEl = document.getElementById('admin-club-list');
@@ -4088,6 +4471,7 @@ function renderAdminPanel() {
   }
   renderInvitePanel();
   renderDraftCheatPanel();
+  renderKOControlPanel();
   // Zeitabstand-Eingabefeld mit dem aktuellen Wert synchron halten - aber nicht, während
   // der Admin gerade selbst darin tippt (sonst würde ein Live-Update seine Eingabe überschreiben)
   const intervalInput = document.getElementById('match-interval-input');
