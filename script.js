@@ -86,6 +86,8 @@ window.submitTip = submitTip;
 window.placeBet = placeBet;
 window.openWrapped = openWrapped;
 window.closeWrapped = closeWrapped;
+window.setCoinAnimation = setCoinAnimation;
+window.toggleHeaderDetails = toggleHeaderDetails;
 window.enterTournament = enterTournament;
 window.startCreateTournament = startCreateTournament;
 window.cancelCreateTournament = cancelCreateTournament;
@@ -183,6 +185,9 @@ let rules = DEFAULT_RULES;
 let tips = {};          // { playerName: { teamId, amount } }
 let tipsEvaluated = false;
 let registrationLocked = false;
+// Wie sich das FAL-Coin-Symbol in der Übersicht verhält: 'none' (still), 'spin' (dreht sich),
+// 'bounce' (wippt) oder 'pulse' (pulsiert) - admin-einstellbar, siehe setCoinAnimation().
+let coinAnimation = 'none';
 // Welches Turnier ist gerade aktiv? Jedes Turnier wird komplett getrennt in Firebase
 // unter tournaments/{currentTournamentId} gespeichert (siehe Abschnitt "Turnier-Auswahl").
 let currentTournamentId = localStorage.getItem('fifa_current_tournament') || null;
@@ -309,6 +314,14 @@ function teamCrestImg(team, size) {
   const fit = usingPhoto ? 'cover' : 'contain';
   const radius = usingPhoto ? '50%' : '3px';
   return `<img src="${url}" alt="" style="height:${size}px; width:${size}px; object-fit:${fit}; vertical-align:middle; border-radius:${radius}; margin-right:5px; background:#fff;">`;
+}
+// Baut das FAL-Coin-Symbol (reines CSS, kein Bild nötig - siehe .fal-coin in style.css).
+// Bewegt sich je nach admin-eingestellter coinAnimation (still/spin/bounce/pulse), siehe
+// setCoinAnimation() im Wett-System-Abschnitt weiter unten.
+function coinIcon(size) {
+  size = size || 20;
+  const animClass = (coinAnimation && coinAnimation !== 'none') ? ' fal-coin-anim-' + coinAnimation : '';
+  return `<span class="fal-coin${animClass}" style="width:${size}px; height:${size}px; font-size:${Math.round(size * 0.5)}px;"></span>`;
 }
 // Liefert eine feste Farbe für einen Club: bekannte Vereinsfarbe, sonst eine
 // aus der 18er-Palette abgeleitete Farbe, die für den gleichen Namen immer gleich bleibt.
@@ -587,10 +600,22 @@ function enterAsSpectator() {
   document.getElementById('app-header').style.display = 'flex';
   document.getElementById('app-nav').style.display = 'flex';
   document.getElementById('app-main').style.display = 'block';
-  renderUserBadge();
+  // Rendert einmal den kompletten aktuellen Stand - wichtig, weil der Live-Listener beim
+  // ALLERERSTEN Laden nach dem Betreten (siehe attachTournamentListener) hier abbricht,
+  // BEVOR er selbst renderAll() aufruft (er wartet ja erst auf handleTournamentEntry()).
+  renderAll();
   const adminBtn = document.getElementById('btn-admin');
   if (adminBtn) adminBtn.style.display = hasElevated() ? 'inline-block' : 'none';
   showTab('home');
+}
+// Klappt den Detailbereich im Header (Angemeldet als / Passwort vorschlagen / Wechseln-Buttons)
+// auf oder zu - per Icon oben rechts im Header (siehe #header-toggle-btn in index.html)
+function toggleHeaderDetails() {
+  const container = document.getElementById('user-badge-container');
+  const btn = document.getElementById('header-toggle-btn');
+  if (!container) return;
+  const isExpanded = container.classList.toggle('expanded');
+  if (btn) btn.classList.toggle('expanded', isExpanded);
 }
 // Zeigt den Namens-Badge im Header + (falls zutreffend) den "Passwort vorschlagen"-Button
 // bzw. den Hinweis, dass ein Passwort-Wunsch schon auf Bestätigung wartet.
@@ -749,6 +774,7 @@ function resetLocalStateToDefaults() {
   tips = {};
   tipsEvaluated = false;
   registrationLocked = false;
+  coinAnimation = 'none';
   draftState = { active: false, currentStep: 0, tempP1: null, tempP2: null, remainingPlayers: [], remainingClubs: [], spinning: false, startTime: null, targetAngle: 0, duration: 4000, lastDrawnItem: null, pairs: [] };
   userBalances = {};
   bets = [];
@@ -782,6 +808,7 @@ function attachTournamentListener() {
     tips = data.tips || {};
     tipsEvaluated = data.tipsEvaluated || false;
     registrationLocked = data.registrationLocked || false;
+    coinAnimation = data.coinAnimation || 'none';
     draftState = data.draftState || { active: false, currentStep: 0, tempP1: null, tempP2: null, remainingPlayers: [], remainingClubs: [], spinning: false, startTime: null, targetAngle: 0, duration: 4000, lastDrawnItem: null, pairs: [] };
     userBalances = data.userBalances || {};
     bets = data.bets || [];
@@ -842,6 +869,7 @@ function saveData() {
     tips,
     tipsEvaluated,
     registrationLocked,
+    coinAnimation,
     draftState,
     userBalances,
     bets
@@ -2352,7 +2380,7 @@ function renderTipRound() {
     const tipTeam = teams.find(t => t.id === myTip.teamId);
     container.innerHTML = `
       <div class="bet-card">
-        ✅ Du hast <strong>${myTip.amount} 🪙</strong> auf <strong>${tipTeam ? tipTeam.name : '???'}</strong>${tipTeam && tipTeam.club ? ' (' + tipTeam.club + ')' : ''} gesetzt.
+        ✅ Du hast <strong>${myTip.amount} Coins</strong> ${coinIcon(14)} auf <strong>${tipTeam ? tipTeam.name : '???'}</strong>${tipTeam && tipTeam.club ? ' (' + tipTeam.club + ')' : ''} gesetzt.
         <div style="font-size:0.85em; opacity:0.75; margin-top:6px;">Quote ${odds}:1 – dein Tipp ist fix und kann nicht mehr geändert werden.</div>
       </div>
       ${finished ? renderTipResultsBreakdown() : '<p style="font-size:0.85em; opacity:0.7;">Die Tipps der anderen werden erst nach dem Finale sichtbar.</p>'}
@@ -2373,7 +2401,7 @@ function renderTipRound() {
         <input type="number" id="tip-amount-input" placeholder="Coins" min="1" max="${currentBalance}">
         <button class="btn-primary" onclick="submitTip()">Tipp abgeben</button>
       </div>
-      <div style="font-size:0.8em; opacity:0.7; margin-top:6px;">Dein Kontostand: ${currentBalance} 🪙 — Achtung: Der Tipp kann danach nicht mehr geändert werden!</div>
+      <div style="font-size:0.8em; opacity:0.7; margin-top:6px;">Dein Kontostand: ${currentBalance} Coins ${coinIcon(14)} — Achtung: Der Tipp kann danach nicht mehr geändert werden!</div>
     </div>
   `;
 }
@@ -2475,7 +2503,7 @@ function renderLiveBetsTile() {
       <div style="padding:8px 0; border-bottom:1px solid rgba(255,255,255,0.08);">
         <div style="font-size:0.8em; opacity:0.7;">${match.isKO ? match.round : match.group} • 🔴 Läuft gerade</div>
         <div style="font-size:0.9em;">${t1 ? t1.name : '?'} vs ${t2 ? t2.name : '?'}</div>
-        <div style="font-size:0.9em; margin-top:2px;">Deine Wette: <strong style="color:var(--fal-yellow);">${bet.amount} 🪙</strong> auf <strong>${chosenTeam ? chosenTeam.name : '?'}</strong></div>
+        <div style="font-size:0.9em; margin-top:2px;">Deine Wette: <strong style="color:var(--fal-yellow);">${bet.amount} Coins</strong> ${coinIcon(14)} auf <strong>${chosenTeam ? chosenTeam.name : '?'}</strong></div>
       </div>
     `;
   }).join('');
@@ -2787,6 +2815,10 @@ function renderAdminPanel() {
   if (intervalInput && document.activeElement !== intervalInput) {
     intervalInput.value = matchIntervalMinutes;
   }
+  const coinAnimSelect = document.getElementById('coin-animation-select');
+  if (coinAnimSelect) coinAnimSelect.value = coinAnimation;
+  const coinAnimPreview = document.getElementById('coin-animation-preview');
+  if (coinAnimPreview) coinAnimPreview.innerHTML = coinIcon(18);
   if (lockContainer) {
     lockContainer.innerHTML = `
       <div style="display:flex; align-items:center; justify-content:space-between; background:rgba(0,0,0,0.2); padding:8px 12px; border-radius:8px; margin-bottom:12px;">
@@ -2841,6 +2873,14 @@ function renderAdminPanel() {
 //     Wetten sind nur möglich, solange ein Spiel weder gestartet (m.started)
 //     noch beendet (m.played) ist — siehe placeBet() und markMatchStarted().
 // ============================================================================
+// Ändert, wie sich das FAL-Coin-Symbol website-weit für dieses Turnier bewegt
+// (still/spin/bounce/pulse) - admin-einstellbar im Admin-Panel unter Turnier-Steuerung.
+function setCoinAnimation(mode) {
+  if (!hasElevated()) return;
+  coinAnimation = mode;
+  saveData();
+  renderAll();
+}
 // Liest den Coin-Kontostand eines Spielers aus (Startguthaben: 100 Coins)
 function getUserBalance(playerName) {
   if (!playerName) return 0;
@@ -2855,6 +2895,8 @@ function renderBettingSystem() {
   const matchesListEl = document.getElementById('betting-matches-list');
   const leaderboardEl = document.getElementById('betting-leaderboard');
   if (!balanceEl || !matchesListEl || !leaderboardEl) return;
+  const coinIconEl = document.getElementById('home-coin-icon');
+  if (coinIconEl) coinIconEl.innerHTML = coinIcon(20);
 
   const currentBalance = myPlayerName ? getUserBalance(myPlayerName) : 0;
   balanceEl.innerText = currentBalance;
@@ -2912,7 +2954,7 @@ function renderBettingSystem() {
     leaderboardEl.innerHTML = sortedUsers.map((u, i) => `
       <div class="leaderboard-item">
         <span>${i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : `${i + 1}.`} ${u.name}</span>
-        <span style="font-weight: bold; color: var(--fal-yellow);">${u.balance} 🪙</span>
+        <span style="font-weight: bold; color: var(--fal-yellow); display:inline-flex; align-items:center; gap:4px;">${u.balance} ${coinIcon(15)}</span>
       </div>
     `).join('');
   }
@@ -3051,7 +3093,7 @@ function renderWrappedCard() {
       <div class="wrapped-stat"><div class="wrapped-stat-value">${stats.goals}</div><div class="wrapped-stat-label">⚽ Tore</div></div>
       <div class="wrapped-stat"><div class="wrapped-stat-value">${stats.conceded}</div><div class="wrapped-stat-label">🥅 Gegentore</div></div>
       <div class="wrapped-stat"><div class="wrapped-stat-value">${stats.wins}/${stats.played}</div><div class="wrapped-stat-label">🏅 Siege</div></div>
-      <div class="wrapped-stat"><div class="wrapped-stat-value">${balance} 🪙</div><div class="wrapped-stat-label">Kontostand</div></div>
+      <div class="wrapped-stat"><div class="wrapped-stat-value" style="display:flex; align-items:center; justify-content:center; gap:5px;">${balance} ${coinIcon(18)}</div><div class="wrapped-stat-label">Kontostand</div></div>
     </div>
     ${best ? `<div class="wrapped-highlight">🔥 Bestes Ergebnis: <strong>${best.goalsFor}:${best.goalsAgainst}</strong> gegen ${escapeHtml(best.opponent)}</div>` : ''}
     ${worstIsLoss ? `<div class="wrapped-highlight">😅 Bitterste Niederlage: <strong>${worst.goalsFor}:${worst.goalsAgainst}</strong> gegen ${escapeHtml(worst.opponent)}</div>` : ''}
