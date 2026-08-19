@@ -784,18 +784,37 @@ function joinCurrentTournamentAsPlayer() {
     if (input) input.value = '';
     return;
   }
-  players.push({ name: myPlayerName, isRef: false });
-  saveData();
-  enterAsSpectator();
+  addSelfAsPlayer();
 }
 // Prüft das eingegebene Beitritts-Passwort und tritt bei Erfolg dem Turnier als Spieler bei
 function confirmJoinPasswordAndJoin() {
   const input = document.getElementById('join-tournament-password-input');
   const pwd = input ? input.value.trim() : '';
   if (pwd !== joinPassword) return alert('Falsches Beitritts-Passwort!');
-  players.push({ name: myPlayerName, isRef: false });
-  saveData();
+  addSelfAsPlayer();
+}
+// Fügt die eigene Identität zur Spielerliste hinzu - ATOMAR per Firebase-Transaction auf
+// NUR dem players-Pfad, statt (wie früher) das komplette Turnier mit dem eigenen, evtl.
+// bereits leicht veralteten lokalen Zustand zu überschreiben (saveData()). Traten zwei
+// Leute fast gleichzeitig bei, konnte der zweite sonst den ersten unbemerkt wieder aus der
+// Liste werfen, weil sein lokaler Stand noch nichts vom ersten Beitritt wusste - GENAU das
+// war der gemeldete "Beitritt bleibt nicht gespeichert"-Bug. Die Transaction liest dagegen
+// immer den aktuellen Server-Stand, bevor sie den neuen Spieler anhängt. Der lokale
+// players-Array wird zusätzlich sofort (optimistisch) ergänzt, damit die eigene Oberfläche
+// nicht erst auf die Server-Antwort warten muss - ein nachfolgendes Live-Update gleicht das
+// bei Bedarf automatisch wieder ab.
+function addSelfAsPlayer() {
+  if (!currentTournamentId || !myPlayerName) return;
+  const myKey = myPlayerName.trim().toLowerCase();
+  if (!players.some(p => p.name.trim().toLowerCase() === myKey)) {
+    players.push({ name: myPlayerName, isRef: false });
+  }
   enterAsSpectator();
+  db.ref('tournaments/' + currentTournamentId + '/players').transaction((currentPlayers) => {
+    const list = currentPlayers || [];
+    if (list.some(p => p && p.name && p.name.trim().toLowerCase() === myKey)) return list;
+    return [...list, { name: myPlayerName, isRef: false }];
+  }).catch((error) => alert('⚠️ Beitreten fehlgeschlagen:\n' + error.message));
 }
 // Schaut sich das Turnier nur an, ohne selbst Spieler zu werden
 function spectateCurrentTournament() {
@@ -804,7 +823,8 @@ function spectateCurrentTournament() {
 // Meldet die eigene Identität als Spieler aus DIESEM Turnier ab (der Platz/Team/Wetten/Tipp
 // gehen dabei verloren, wie auch wenn ein Admin einen Spieler entfernt) und geht zurück zur
 // Turnierauswahl. Die globale Identität selbst bleibt unangetastet - man bleibt auf der
-// Website "man selbst" und kann jederzeit erneut beitreten.
+// Website "man selbst" und kann jederzeit erneut beitreten. Läuft - aus demselben Grund wie
+// addSelfAsPlayer() - ebenfalls über eine Transaction auf NUR dem players-Pfad.
 function leaveTournament() {
   const p = getPlayerObj(myPlayerName);
   if (!p) return;
@@ -812,13 +832,16 @@ function leaveTournament() {
     ? 'Du bist Ersteller/Admin dieses Turniers! Verlässt du es, hat hier (außer dem God) niemand mehr Admin-Rechte. Wirklich als Spieler austreten?'
     : 'Turnier wirklich als Spieler verlassen? Dein Team-Platz, deine Wetten und dein Tipp gehen dabei verloren.';
   if (!confirm(warning)) return;
-  const idx = players.findIndex(pl => pl.name.toLowerCase() === myPlayerName.trim().toLowerCase());
-  if (idx === -1) return;
-  players.splice(idx, 1);
-  saveData();
+  const tid = currentTournamentId;
+  const myKey = myPlayerName.trim().toLowerCase();
+  const idx = players.findIndex(pl => pl.name.toLowerCase() === myKey);
+  if (idx !== -1) players.splice(idx, 1);
   goToLandingPage();
+  db.ref('tournaments/' + tid + '/players').transaction((currentPlayers) => {
+    const list = currentPlayers || [];
+    return list.filter(pl => !(pl && pl.name && pl.name.trim().toLowerCase() === myKey));
+  }).catch((error) => alert('⚠️ Verlassen fehlgeschlagen:\n' + error.message));
 }
-// Zeigt die Passwort-Abfrage fürs (Wieder-)Betreten eines Turniers, in dem die eigene
 // Wird aufgerufen, wenn der eigene Spieler aus DIESEM Turnier entfernt wurde - die GLOBALE
 // Identität bleibt dabei erhalten, nur die Anmeldung für dieses eine Turnier muss neu
 // erfolgen (siehe handleTournamentEntry). Ein Passwort wird dabei NICHT mehr abgefragt (das
