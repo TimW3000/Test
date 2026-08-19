@@ -66,6 +66,8 @@ window.addClub = addClub;
 window.removeClub = removeClub;
 window.resetClubsToDefault = resetClubsToDefault;
 window.setClubLogo = setClubLogo;
+window.triggerClubLogoUpload = triggerClubLogoUpload;
+window.handleClubLogoFileSelected = handleClubLogoFileSelected;
 window.startInteractiveDraft = startInteractiveDraft;
 window.addDraftCheat = addDraftCheat;
 window.removeDraftCheat = removeDraftCheat;
@@ -79,6 +81,9 @@ window.submitTip = submitTip;
 window.placeBet = placeBet;
 window.openWrapped = openWrapped;
 window.closeWrapped = closeWrapped;
+window.enterTournament = enterTournament;
+window.createNewTournament = createNewTournament;
+window.goToLandingPage = goToLandingPage;
 // ============================================================================
 // 1. FIREBASE-KONFIGURATION — Verbindungsdaten zur Online-Datenbank
 // ============================================================================
@@ -164,7 +169,12 @@ let rules = DEFAULT_RULES;
 let tips = {};          // { playerName: { teamId, amount } }
 let tipsEvaluated = false;
 let registrationLocked = false;
-let myPlayerName = localStorage.getItem('fifa_my_player') || null;
+// Welches Turnier ist gerade aktiv? Jedes Turnier wird komplett getrennt in Firebase
+// unter tournaments/{currentTournamentId} gespeichert (siehe Abschnitt "Turnier-Auswahl").
+let currentTournamentId = localStorage.getItem('fifa_current_tournament') || null;
+let tournamentsList = {}; // { id: { name, createdAt } } - für die Turnierauswahl-Startseite
+let tournamentRef = null; // aktuell aktiver Firebase-Listener-Pfad, zum sauberen Wechseln
+let myPlayerName = currentTournamentId ? (localStorage.getItem(myPlayerStorageKey()) || null) : null;
 let pendingAdminLogin = false;
 let isFirebaseConnected = null; // null = noch unbekannt, true/false = Verbindungsstatus (siehe .info/connected weiter unten)
 let userBalances = {};  // { "Name": 100 }
@@ -172,6 +182,14 @@ let bets = [];          // { matchId, isKO, playerName, chosenTeamId, amount }
 // Status-Variablen für das Auslosungs-System (Duo-Draft) - UNVERÄNDERT
 let draftState = { active: false, currentStep: 0, tempP1: null, tempP2: null, remainingPlayers: [], remainingClubs: [], spinning: false, startTime: null, targetAngle: 0, duration: 4000, lastDrawnItem: null, pairs: [] };
 let animFrameId = null;
+// localStorage-Schlüssel für "mein Spieler" - pro Turnier getrennt, damit man in
+// mehreren Turnieren gleichzeitig unterschiedliche Rollen haben kann.
+function myPlayerStorageKey() {
+  return 'fifa_my_player_' + (currentTournamentId || 'none');
+}
+function myPlayerPwvStorageKey() {
+  return 'fifa_my_player_pwv_' + (currentTournamentId || 'none');
+}
 // Sucht das Spieler-Objekt zu einem Namen (Groß-/Kleinschreibung egal)
 function getPlayerObj(name) {
   if (!name) return null;
@@ -184,7 +202,7 @@ function getPlayerObj(name) {
 // das neue Passwort tatsächlich einmal selbst eingeben muss.
 function markLoggedInPasswordVersion(name) {
   const p = getPlayerObj(name);
-  localStorage.setItem('fifa_my_player_pwv', String(p && p.passwordVersion ? p.passwordVersion : 0));
+  localStorage.setItem(myPlayerPwvStorageKey(), String(p && p.passwordVersion ? p.passwordVersion : 0));
 }
 // true, wenn der aktuell angemeldete Spieler der Admin ("Tim") ist
 function isAdmin() {
@@ -290,6 +308,56 @@ function setClubLogo(clubName) {
   }
   saveData();
 }
+// Merkt sich, für welchen Club gerade ein Foto hochgeladen wird (zwischen dem Öffnen
+// der Dateiauswahl und der Auswahl der Datei liegt ja ein Moment Wartezeit)
+let pendingLogoUploadClub = null;
+// Öffnet die Datei-/Kameraauswahl des Handys/Browsers für ein bestimmtes Wappen
+function triggerClubLogoUpload(clubName) {
+  if (!hasElevated()) return;
+  pendingLogoUploadClub = clubName;
+  const input = document.getElementById('club-logo-file-input');
+  if (input) input.click();
+}
+// Wird aufgerufen, sobald im Datei-Dialog ein Bild ausgewählt/fotografiert wurde
+function handleClubLogoFileSelected(event) {
+  const file = event.target.files && event.target.files[0];
+  event.target.value = ''; // zurücksetzen, damit dieselbe Datei auch erneut ausgewählt werden kann
+  const clubName = pendingLogoUploadClub;
+  pendingLogoUploadClub = null;
+  if (!file || !clubName) return;
+  if (!file.type.startsWith('image/')) return alert('Bitte eine Bilddatei auswählen!');
+  resizeImageFile(file, 200, (dataUrl) => {
+    clubLogos[clubName] = dataUrl;
+    saveData();
+    renderAll();
+  });
+}
+// Verkleinert ein hochgeladenes Bild (z.B. ein Handyfoto) per Canvas auf maximal
+// maxSize Pixel an der längeren Seite, damit auch Fotos nicht die Datenbank aufblähen.
+// Ruft callback(dataUrl) mit dem fertigen, verkleinerten Bild als data:-URL auf.
+function resizeImageFile(file, maxSize, callback) {
+  const reader = new FileReader();
+  reader.onload = (e) => {
+    const img = new Image();
+    img.onload = () => {
+      let width = img.width, height = img.height;
+      if (width > height && width > maxSize) {
+        height = Math.round(height * maxSize / width);
+        width = maxSize;
+      } else if (height >= width && height > maxSize) {
+        width = Math.round(width * maxSize / height);
+        height = maxSize;
+      }
+      const canvas = document.createElement('canvas');
+      canvas.width = width;
+      canvas.height = height;
+      canvas.getContext('2d').drawImage(img, 0, 0, width, height);
+      callback(canvas.toDataURL('image/jpeg', 0.85));
+    };
+    img.src = e.target.result;
+  };
+  reader.readAsDataURL(file);
+}
 document.addEventListener('DOMContentLoaded', () => {
   const btnShowNew = document.getElementById('btn-show-new');
   if (btnShowNew) btnShowNew.addEventListener('click', showNewPlayerInput);
@@ -306,9 +374,26 @@ document.addEventListener('DOMContentLoaded', () => {
   document.querySelectorAll('.btn-reset-role').forEach(btn => {
     btn.addEventListener('click', resetRoleSelection);
   });
-  if (myPlayerName) {
-    enterAsSpectator();
-  }
+  // Turnierliste für die Startseite läuft immer mit, unabhängig davon, ob man schon
+  // in einem Turnier ist (falls man später auf "Turnier wechseln" klickt, siehe Header)
+  attachTournamentsMetaListener();
+  migrateOldTournamentIfNeeded().then((migratedId) => {
+    if (migratedId) {
+      currentTournamentId = migratedId;
+      localStorage.setItem('fifa_current_tournament', migratedId);
+      myPlayerName = localStorage.getItem(myPlayerStorageKey()) || null;
+    }
+    if (currentTournamentId) {
+      attachTournamentListener();
+      if (myPlayerName) {
+        enterAsSpectator();
+      } else {
+        document.getElementById('role-selection-modal').style.display = 'flex';
+      }
+    } else {
+      document.getElementById('landing-page').style.display = 'flex';
+    }
+  });
 });
 // ============================================================================
 // 3. ROLLEN & AUTH — Rollenauswahl-Modal, An-/Abmelden, Passwörter
@@ -365,8 +450,8 @@ function renderUserBadge() {
 }
 // Meldet den aktuellen Spieler ab und zeigt wieder die Rollenauswahl beim Start
 function switchUser() {
-  localStorage.removeItem('fifa_my_player');
-  localStorage.removeItem('fifa_my_player_pwv');
+  localStorage.removeItem(myPlayerStorageKey());
+  localStorage.removeItem(myPlayerPwvStorageKey());
   myPlayerName = null;
   document.getElementById('app-header').style.display = 'none';
   document.getElementById('app-nav').style.display = 'none';
@@ -436,7 +521,7 @@ function selectMyPlayer(name) {
     return;
   }
   myPlayerName = name;
-  localStorage.setItem('fifa_my_player', name);
+  localStorage.setItem(myPlayerStorageKey(), name);
   markLoggedInPasswordVersion(name);
   enterAsSpectator();
 }
@@ -456,7 +541,7 @@ function registerNewPlayer() {
   if (getPlayerObj(name)) return alert('Dieser Name existiert bereits!');
   players.push({ name: name, isRef: false, password: null });
   myPlayerName = name;
-  localStorage.setItem('fifa_my_player', name);
+  localStorage.setItem(myPlayerStorageKey(), name);
   markLoggedInPasswordVersion(name);
   saveData();
   enterAsSpectator();
@@ -485,7 +570,7 @@ function confirmAdminPassword() {
         saveData();
       }
       myPlayerName = pendingAdminLogin.name;
-      localStorage.setItem('fifa_my_player', myPlayerName);
+      localStorage.setItem(myPlayerStorageKey(), myPlayerName);
       markLoggedInPasswordVersion(myPlayerName);
       pendingAdminLogin = false;
       enterAsSpectator();
@@ -496,7 +581,7 @@ function confirmAdminPassword() {
     const pObj = getPlayerObj(pendingAdminLogin.name);
     if (pObj && pObj.password === pwd) {
       myPlayerName = pendingAdminLogin.name;
-      localStorage.setItem('fifa_my_player', myPlayerName);
+      localStorage.setItem(myPlayerStorageKey(), myPlayerName);
       markLoggedInPasswordVersion(myPlayerName);
       pendingAdminLogin = false;
       enterAsSpectator();
@@ -530,72 +615,102 @@ db.ref('.info/connected').on('value', (snap) => {
   isFirebaseConnected = (snap.val() === true);
   renderUserBadge();
 });
-db.ref('tournament').on('value', (snapshot) => {
-  const data = snapshot.val() || {};
-  let rawPlayers = data.players || [];
-  players = rawPlayers.map(p => typeof p === 'string' ? { name: p, isRef: false, password: null } : p);
-  availableClubs = data.availableClubs || [...DEFAULT_CLUBS];
-  // Nur beim allerersten Laden (noch nie gespeichert) mit den Standard-Wappen befüllen -
-  // danach gilt immer exakt das, was gespeichert wurde (auch wenn der Admin ein Wappen
-  // bewusst entfernt hat, siehe setClubLogo).
-  clubLogos = data.clubLogos || { ...DEFAULT_CLUB_LOGOS };
-  teams = data.teams || [];
-  numGroups = data.numGroups || 3;
-  matchIntervalMinutes = data.matchIntervalMinutes || 20;
-  draftCheats = data.draftCheats || [];
-  groups = data.groups || [];
-  groupMatches = data.groupMatches || [];
-  koMatches = data.koMatches || [];
-  rules = data.rules || DEFAULT_RULES;
-  tips = data.tips || {};
-  tipsEvaluated = data.tipsEvaluated || false;
-  registrationLocked = data.registrationLocked || false;
-  draftState = data.draftState || { active: false, currentStep: 0, tempP1: null, tempP2: null, remainingPlayers: [], remainingClubs: [], spinning: false, startTime: null, targetAngle: 0, duration: 4000, lastDrawnItem: null, pairs: [] };
-  userBalances = data.userBalances || {};
-  bets = data.bets || [];
-  // Falls das Turnier zurückgesetzt wurde (oder der eigene Spieler entfernt wurde),
-  // wird man automatisch zurück zum Auswahlbildschirm geschickt.
-  if (myPlayerName && !getPlayerObj(myPlayerName)) {
-    myPlayerName = null;
-    localStorage.removeItem('fifa_my_player');
-    localStorage.removeItem('fifa_my_player_pwv');
-    document.getElementById('app-header').style.display = 'none';
-    document.getElementById('app-nav').style.display = 'none';
-    document.getElementById('app-main').style.display = 'none';
-    resetRoleSelection();
-    document.getElementById('role-selection-modal').style.display = 'flex';
-    return;
-  }
-  // Wurde für den eigenen Spieler gerade ein Passwort gesetzt/bestätigt (siehe
-  // setPlayerPassword/confirmPendingPassword), stimmt die lokal gemerkte Passwort-Version
-  // nicht mehr mit der aktuellen überein -> zwingt zur erneuten Anmeldung MIT Passwort.
-  if (myPlayerName) {
-    const myPObj = getPlayerObj(myPlayerName);
-    const currentVersion = (myPObj && myPObj.passwordVersion) || 0;
-    const knownVersion = parseInt(localStorage.getItem('fifa_my_player_pwv') || '0', 10);
-    if (currentVersion > knownVersion) {
-      myPlayerName = null;
-      localStorage.removeItem('fifa_my_player');
-      localStorage.removeItem('fifa_my_player_pwv');
-      document.getElementById('app-header').style.display = 'none';
-      document.getElementById('app-nav').style.display = 'none';
-      document.getElementById('app-main').style.display = 'none';
-      resetRoleSelection();
-      document.getElementById('role-selection-modal').style.display = 'flex';
-      alert('🔑 Für dein Konto wurde ein neues Passwort gesetzt/bestätigt. Bitte melde dich erneut damit an.');
+// Setzt den kompletten lokalen Zustand auf die Ausgangswerte zurück. Wird beim Wechsel
+// zu einem ANDEREN Turnier aufgerufen, damit nicht kurz die Daten des alten Turniers
+// unter der neuen Oberfläche aufblitzen, während die neuen Daten noch laden.
+function resetLocalStateToDefaults() {
+  players = [];
+  availableClubs = [...DEFAULT_CLUBS];
+  clubLogos = { ...DEFAULT_CLUB_LOGOS };
+  teams = [];
+  numGroups = 3;
+  matchIntervalMinutes = 20;
+  draftCheats = [];
+  groups = [];
+  groupMatches = [];
+  koMatches = [];
+  rules = DEFAULT_RULES;
+  tips = {};
+  tipsEvaluated = false;
+  registrationLocked = false;
+  draftState = { active: false, currentStep: 0, tempP1: null, tempP2: null, remainingPlayers: [], remainingClubs: [], spinning: false, startTime: null, targetAngle: 0, duration: 4000, lastDrawnItem: null, pairs: [] };
+  userBalances = {};
+  bets = [];
+}
+// Zeigt bei einem Login-/Sync-Problem des eigenen Spielers wieder die Rollenauswahl an
+// (z.B. weil der eigene Spieler entfernt wurde oder ein neues Passwort gesetzt wurde)
+function forceBackToRoleSelection(alertMessage) {
+  myPlayerName = null;
+  localStorage.removeItem(myPlayerStorageKey());
+  localStorage.removeItem(myPlayerPwvStorageKey());
+  document.getElementById('app-header').style.display = 'none';
+  document.getElementById('app-nav').style.display = 'none';
+  document.getElementById('app-main').style.display = 'none';
+  resetRoleSelection();
+  document.getElementById('role-selection-modal').style.display = 'flex';
+  if (alertMessage) alert(alertMessage);
+}
+// Hängt den Live-Sync für EIN bestimmtes Turnier ein (tournaments/{currentTournamentId}).
+// Löst zuerst einen eventuell noch aktiven Listener eines ANDEREN Turniers, damit nicht
+// zwei Turniere gleichzeitig mitgehört werden (siehe enterTournament/goToLandingPage).
+function attachTournamentListener() {
+  if (tournamentRef) { tournamentRef.off('value'); tournamentRef = null; }
+  if (!currentTournamentId) return;
+  tournamentRef = db.ref('tournaments/' + currentTournamentId);
+  tournamentRef.on('value', (snapshot) => {
+    const data = snapshot.val() || {};
+    let rawPlayers = data.players || [];
+    players = rawPlayers.map(p => typeof p === 'string' ? { name: p, isRef: false, password: null } : p);
+    availableClubs = data.availableClubs || [...DEFAULT_CLUBS];
+    // Nur beim allerersten Laden (noch nie gespeichert) mit den Standard-Wappen befüllen -
+    // danach gilt immer exakt das, was gespeichert wurde (auch wenn der Admin ein Wappen
+    // bewusst entfernt hat, siehe setClubLogo).
+    clubLogos = data.clubLogos || { ...DEFAULT_CLUB_LOGOS };
+    teams = data.teams || [];
+    numGroups = data.numGroups || 3;
+    matchIntervalMinutes = data.matchIntervalMinutes || 20;
+    draftCheats = data.draftCheats || [];
+    groups = data.groups || [];
+    groupMatches = data.groupMatches || [];
+    koMatches = data.koMatches || [];
+    rules = data.rules || DEFAULT_RULES;
+    tips = data.tips || {};
+    tipsEvaluated = data.tipsEvaluated || false;
+    registrationLocked = data.registrationLocked || false;
+    draftState = data.draftState || { active: false, currentStep: 0, tempP1: null, tempP2: null, remainingPlayers: [], remainingClubs: [], spinning: false, startTime: null, targetAngle: 0, duration: 4000, lastDrawnItem: null, pairs: [] };
+    userBalances = data.userBalances || {};
+    bets = data.bets || [];
+    // Falls das Turnier zurückgesetzt wurde (oder der eigene Spieler entfernt wurde),
+    // wird man automatisch zurück zum Auswahlbildschirm geschickt.
+    if (myPlayerName && !getPlayerObj(myPlayerName)) {
+      forceBackToRoleSelection(null);
       return;
     }
-  }
-  renderAll();
-  handleLiveDraftUI();
-}, (error) => {
-  // Wird z.B. ausgelöst, wenn die Firebase-Datenbankregeln das Lesen verbieten
-  console.error('Firebase Lese-Fehler:', error);
-  alert('⚠️ Verbindung zur Datenbank fehlgeschlagen!\n\n' + error.message + '\n\nBitte die Firebase-Datenbankregeln prüfen.');
-});
-// Schreibt den kompletten aktuellen Zustand in Firebase zurück (löst bei ALLEN Geräten ein Update aus)
+    // Wurde für den eigenen Spieler gerade ein Passwort gesetzt/bestätigt (siehe
+    // setPlayerPassword/confirmPendingPassword), stimmt die lokal gemerkte Passwort-Version
+    // nicht mehr mit der aktuellen überein -> zwingt zur erneuten Anmeldung MIT Passwort.
+    if (myPlayerName) {
+      const myPObj = getPlayerObj(myPlayerName);
+      const currentVersion = (myPObj && myPObj.passwordVersion) || 0;
+      const knownVersion = parseInt(localStorage.getItem(myPlayerPwvStorageKey()) || '0', 10);
+      if (currentVersion > knownVersion) {
+        forceBackToRoleSelection('🔑 Für dein Konto wurde ein neues Passwort gesetzt/bestätigt. Bitte melde dich erneut damit an.');
+        return;
+      }
+    }
+    renderAll();
+    handleLiveDraftUI();
+  }, (error) => {
+    // Wird z.B. ausgelöst, wenn die Firebase-Datenbankregeln das Lesen verbieten
+    console.error('Firebase Lese-Fehler:', error);
+    alert('⚠️ Verbindung zur Datenbank fehlgeschlagen!\n\n' + error.message + '\n\nBitte die Firebase-Datenbankregeln prüfen.');
+  });
+}
+// Schreibt den kompletten aktuellen Zustand des AKTIVEN Turniers in Firebase zurück
+// (löst bei ALLEN Geräten, die dasselbe Turnier offen haben, ein Update aus)
 function saveData() {
-  db.ref('tournament').set({
+  if (!currentTournamentId) return;
+  db.ref('tournaments/' + currentTournamentId).set({
     players,
     availableClubs,
     clubLogos,
@@ -619,6 +734,110 @@ function saveData() {
     // warum "die Datenbank nicht speichert". Jetzt gibt es stattdessen eine klare Meldung.
     console.error('Firebase Speicher-Fehler:', error);
     alert('⚠️ Speichern fehlgeschlagen!\n\n' + error.message + '\n\nBitte die Firebase-Datenbankregeln prüfen (Firebase-Konsole -> Realtime Database -> Regeln).');
+  });
+}
+// ============================================================================
+// 4b. TURNIER-AUSWAHL — die Startseite VOR der Rollenauswahl: hier wählt man,
+//     welchem Turnier man beitritt (oder erstellt ein neues). Jedes Turnier lebt
+//     komplett getrennt unter tournaments/{id} in Firebase.
+// ============================================================================
+// Lädt fortlaufend die Liste ALLER existierenden Turniere (nur Name + Erstelldatum,
+// nicht die kompletten Turnierdaten) für die Startseite.
+function attachTournamentsMetaListener() {
+  db.ref('tournaments_meta').on('value', (snap) => {
+    tournamentsList = snap.val() || {};
+    renderLandingPage();
+  });
+}
+// Baut die Liste der Turniere auf der Startseite auf (neueste zuerst)
+function renderLandingPage() {
+  const container = document.getElementById('landing-page-list');
+  if (!container) return;
+  const ids = Object.keys(tournamentsList).sort((a, b) => (tournamentsList[b].createdAt || 0) - (tournamentsList[a].createdAt || 0));
+  if (ids.length === 0) {
+    container.innerHTML = '<p class="empty-state">Noch keine Turniere vorhanden. Erstelle unten das erste!</p>';
+    return;
+  }
+  container.innerHTML = ids.map(id => `
+    <button class="btn-secondary role-btn" style="text-align:left;" onclick="enterTournament('${id}')">
+      🏆 ${escapeHtml(tournamentsList[id].name)}
+    </button>
+  `).join('');
+}
+// Legt ein neues, leeres Turnier an und tritt ihm direkt bei
+function createNewTournament() {
+  const input = document.getElementById('new-tournament-name');
+  const name = input ? input.value.trim() : '';
+  if (!name) return alert('Bitte einen Namen für das neue Turnier eingeben!');
+  const newRef = db.ref('tournaments_meta').push();
+  const id = newRef.key;
+  newRef.set({ name, createdAt: Date.now() }).catch((error) => {
+    alert('⚠️ Turnier konnte nicht erstellt werden:\n' + error.message);
+  });
+  enterTournament(id);
+}
+// Tritt einem Turnier bei (bestehend oder gerade neu erstellt): hängt den Live-Sync
+// dafür ein und zeigt je nachdem, ob man dort schon mal angemeldet war, direkt die
+// App oder die Rollenauswahl.
+function enterTournament(id) {
+  resetLocalStateToDefaults(); // verhindert, dass kurz Daten des vorherigen Turniers aufblitzen
+  currentTournamentId = id;
+  localStorage.setItem('fifa_current_tournament', id);
+  document.getElementById('landing-page').style.display = 'none';
+  attachTournamentListener();
+  myPlayerName = localStorage.getItem(myPlayerStorageKey()) || null;
+  if (myPlayerName) {
+    enterAsSpectator();
+  } else {
+    resetRoleSelection();
+    document.getElementById('role-selection-modal').style.display = 'flex';
+  }
+}
+// Verlässt das aktuelle Turnier und zeigt wieder die Turnierauswahl-Startseite.
+// Die eigene Rolle in ANDEREN Turnieren bleibt dabei erhalten (pro Turnier eigener
+// localStorage-Schlüssel, siehe myPlayerStorageKey).
+function goToLandingPage() {
+  if (tournamentRef) { tournamentRef.off('value'); tournamentRef = null; }
+  currentTournamentId = null;
+  localStorage.removeItem('fifa_current_tournament');
+  myPlayerName = null;
+  document.getElementById('app-header').style.display = 'none';
+  document.getElementById('app-nav').style.display = 'none';
+  document.getElementById('app-main').style.display = 'none';
+  document.getElementById('role-selection-modal').style.display = 'none';
+  renderLandingPage();
+  document.getElementById('landing-page').style.display = 'flex';
+}
+// Einmalige Migration: Wer die App schon vor dem Multi-Turnier-System genutzt hat,
+// hatte seine Daten unter dem alten, einzelnen Pfad "tournament" gespeichert. Damit
+// dieses Turnier nicht verloren geht, wird es beim allerersten Start unter dem neuen
+// System als eigenes Turnier "Mein Turnier" angelegt (die alten Daten bleiben zusätzlich
+// unangetastet als Sicherheitskopie liegen). Läuft nur, solange es noch KEIN Turnier
+// im neuen System gibt.
+function migrateOldTournamentIfNeeded() {
+  return db.ref('tournaments_meta').once('value').then((metaSnap) => {
+    const meta = metaSnap.val();
+    if (meta && Object.keys(meta).length > 0) return null;
+    return db.ref('tournament').once('value').then((oldSnap) => {
+      const oldData = oldSnap.val();
+      if (!oldData || !oldData.players || oldData.players.length === 0) return null;
+      const newRef = db.ref('tournaments_meta').push();
+      const id = newRef.key;
+      return newRef.set({ name: 'Mein Turnier', createdAt: Date.now() })
+        .then(() => db.ref('tournaments/' + id).set(oldData))
+        .then(() => {
+          // Bestehenden Login (aus der alten, ungebundenen Speicherung) fürs neue,
+          // migrierte Turnier übernehmen, damit man sich nicht neu anmelden muss
+          const oldPlayer = localStorage.getItem('fifa_my_player');
+          const oldPwv = localStorage.getItem('fifa_my_player_pwv');
+          if (oldPlayer) localStorage.setItem('fifa_my_player_' + id, oldPlayer);
+          if (oldPwv) localStorage.setItem('fifa_my_player_pwv_' + id, oldPwv);
+          return id;
+        });
+    });
+  }).catch((error) => {
+    console.error('Migrations-Fehler:', error);
+    return null;
   });
 }
 // ============================================================================
@@ -2283,7 +2502,8 @@ function renderAdminPanel() {
     clubListEl.innerHTML = availableClubs.map((club, index) => `
       <span class="club-badge">
         ${clubLogoImg(club, 16)}${club}
-        <span style="cursor:pointer;" title="Wappen-URL setzen" onclick="setClubLogo('${club.replace(/'/g, "\\'")}')">🖼️</span>
+        <span style="cursor:pointer;" title="Wappen-URL eingeben" onclick="setClubLogo('${club.replace(/'/g, "\\'")}')">🖼️</span>
+        <span style="cursor:pointer;" title="Foto hochladen (Kamera/Galerie)" onclick="triggerClubLogoUpload('${club.replace(/'/g, "\\'")}')">📷</span>
         <span style="cursor:pointer; color:#ff4d4d; font-weight:bold; margin-left:4px;" onclick="removeClub(${index})">×</span>
       </span>
     `).join('');

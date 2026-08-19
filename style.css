@@ -228,6 +228,28 @@ input:focus, textarea:focus, select:focus { outline: none; border-color: var(--f
   border: 1px solid rgba(255,255,255,0.08);
 }
 
+/* Aufklappbare Admin-Bereiche (Spieler verwalten, Turnier-Steuerung, usw.) */
+.admin-card summary {
+  list-style: none;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  user-select: none;
+}
+.admin-card summary::-webkit-details-marker { display: none; }
+.admin-card summary h3 { margin: 0; flex: 1; }
+.admin-card summary::before {
+  content: '▸';
+  color: var(--fal-yellow);
+  font-size: 0.85em;
+  transition: transform 0.15s ease;
+  flex-shrink: 0;
+}
+.admin-card details[open] summary::before { transform: rotate(90deg); }
+.admin-card details > *:not(summary) { margin-top: 10px; }
+.admin-card details summary h3 { margin-top: 0 !important; }
+
 .highlight-me {
   border: 2px solid var(--fal-yellow) !important;
   box-shadow: 0 0 12px rgba(255, 200, 0, 0.25);
