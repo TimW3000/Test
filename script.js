@@ -29,14 +29,16 @@
 // Diese Funktionen werden aus HTML-Buttons per onclick="..." aufgerufen.
 // Da script.js als Modul-ähnliche Datei geladen wird, müssen sie hier explizit
 // am globalen window-Objekt hängen, sonst findet das HTML sie nicht.
-window.showExistingPlayers = showExistingPlayers;
-window.showNewPlayerInput = showNewPlayerInput;
-window.resetRoleSelection = resetRoleSelection;
-window.enterAsSpectator = enterAsSpectator;
+window.showGlobalNewNameInput = showGlobalNewNameInput;
+window.showGlobalExistingNames = showGlobalExistingNames;
+window.resetGlobalIdentitySelection = resetGlobalIdentitySelection;
+window.registerGlobalIdentity = registerGlobalIdentity;
+window.selectGlobalExistingName = selectGlobalExistingName;
+window.confirmGodPassword = confirmGodPassword;
 window.switchUser = switchUser;
-window.selectMyPlayer = selectMyPlayer;
-window.registerNewPlayer = registerNewPlayer;
-window.confirmAdminPassword = confirmAdminPassword;
+window.joinCurrentTournamentAsPlayer = joinCurrentTournamentAsPlayer;
+window.spectateCurrentTournament = spectateCurrentTournament;
+window.confirmTournamentPassword = confirmTournamentPassword;
 window.showTab = showTab;
 window.addPlayer = addPlayer;
 window.addTestPlayers = addTestPlayers;
@@ -85,8 +87,15 @@ window.placeBet = placeBet;
 window.openWrapped = openWrapped;
 window.closeWrapped = closeWrapped;
 window.enterTournament = enterTournament;
-window.createNewTournament = createNewTournament;
+window.startCreateTournament = startCreateTournament;
+window.cancelCreateTournament = cancelCreateTournament;
+window.confirmCreateTournament = confirmCreateTournament;
 window.goToLandingPage = goToLandingPage;
+window.deleteTournamentAsGod = deleteTournamentAsGod;
+window.renameTournamentAsGod = renameTournamentAsGod;
+window.godConfirmPendingPassword = godConfirmPendingPassword;
+window.godRejectPendingPassword = godRejectPendingPassword;
+window.toggleGlobalLock = toggleGlobalLock;
 // ============================================================================
 // 1. FIREBASE-KONFIGURATION — Verbindungsdaten zur Online-Datenbank
 // ============================================================================
@@ -104,7 +113,9 @@ if (!firebase.apps.length) {
   firebase.initializeApp(firebaseConfig);
 }
 const db = firebase.database();
-const ADMIN_PASSWORD = "1234";
+// Das "God-Passwort" gilt website-weit für den Namen "tim" (siehe isGod()) - komplett
+// unabhängig von den einzelnen, pro Turnier selbst gewählten Admin-Passwörtern.
+const GOD_PASSWORD = "1234";
 const DEFAULT_CLUBS = [
   "Real Madrid", "FC Bayern", "ManCity", "Arsenal",
   "FC Barcelona", "PSG", "Inter Mailand", "Leverkusen",
@@ -175,21 +186,28 @@ let registrationLocked = false;
 // Welches Turnier ist gerade aktiv? Jedes Turnier wird komplett getrennt in Firebase
 // unter tournaments/{currentTournamentId} gespeichert (siehe Abschnitt "Turnier-Auswahl").
 let currentTournamentId = localStorage.getItem('fifa_current_tournament') || null;
-let tournamentsList = {}; // { id: { name, createdAt } } - für die Turnierauswahl-Startseite
+let tournamentsList = {}; // { id: { name, createdAt, createdBy } } - für die Turnierauswahl-Startseite
 let tournamentRef = null; // aktuell aktiver Firebase-Listener-Pfad, zum sauberen Wechseln
-let myPlayerName = currentTournamentId ? (localStorage.getItem(myPlayerStorageKey()) || null) : null;
-let pendingAdminLogin = false;
+// Die eigene Identität ist jetzt GLOBAL (website-weit dieselbe, nicht mehr pro Turnier) -
+// wird VOR der Turnierauswahl festgelegt, siehe Abschnitt 3b (Globale Identität).
+let myPlayerName = localStorage.getItem('fifa_global_name') || null;
+let pendingGlobalLogin = null; // { name } - während der God-Passwort-Abfrage im globalen Identitäts-Modal
+let pendingTournamentLogin = null; // Name, während der Passwort-Abfrage beim (Wieder-)Betreten eines Turniers
+let globalPlayers = {}; // { nameLowerCase: { name, createdAt } } - Registry aller bekannten Identitäten
+let globalSettings = { lockNewIdentities: false, lockNewTournaments: false }; // website-weite God-Sperren
+let godOversightData = {}; // { tournamentId: { name, players: [...] } } - nur für God geladen, siehe attachGodOversightListener
+let godOversightRef = null;
+let tournamentEntryHandled = false; // verhindert, dass handleTournamentEntry() bei jedem Live-Update erneut den Beitreten/Zuschauen-Dialog zeigt
+let myPlayerWasPresent = false; // war man beim letzten Laden Spieler in DIESEM Turnier? (erkennt ein "aus dem Turnier entfernt"-Event, siehe attachTournamentListener)
 let isFirebaseConnected = null; // null = noch unbekannt, true/false = Verbindungsstatus (siehe .info/connected weiter unten)
 let userBalances = {};  // { "Name": 100 }
 let bets = [];          // { matchId, isKO, playerName, chosenTeamId, amount }
 // Status-Variablen für das Auslosungs-System (Duo-Draft) - UNVERÄNDERT
 let draftState = { active: false, currentStep: 0, tempP1: null, tempP2: null, remainingPlayers: [], remainingClubs: [], spinning: false, startTime: null, targetAngle: 0, duration: 4000, lastDrawnItem: null, pairs: [] };
 let animFrameId = null;
-// localStorage-Schlüssel für "mein Spieler" - pro Turnier getrennt, damit man in
-// mehreren Turnieren gleichzeitig unterschiedliche Rollen haben kann.
-function myPlayerStorageKey() {
-  return 'fifa_my_player_' + (currentTournamentId || 'none');
-}
+// localStorage-Schlüssel, um sich zu merken, mit welcher Passwort-Version man zuletzt IN
+// DIESEM Turnier erfolgreich angemeldet war - weiterhin pro Turnier, weil ein Passwort
+// (falls überhaupt gesetzt) pro Turnier separat vom Ersteller/Admin vergeben wird.
 function myPlayerPwvStorageKey() {
   return 'fifa_my_player_pwv_' + (currentTournamentId || 'none');
 }
@@ -207,9 +225,22 @@ function markLoggedInPasswordVersion(name) {
   const p = getPlayerObj(name);
   localStorage.setItem(myPlayerPwvStorageKey(), String(p && p.passwordVersion ? p.passwordVersion : 0));
 }
-// true, wenn der aktuell angemeldete Spieler der Admin ("Tim") ist
+// true, wenn die aktuelle Identität "Tim" ist UND das God-Passwort bestätigt wurde (siehe
+// confirmGodPassword). Der "God" hat website-weite Sonderrechte: God-Panel, Cheats fürs
+// Glücksrad, sowie automatisch Admin-Rechte in JEDEM Turnier (auch ohne dort Mitspieler zu sein).
+function isGod() {
+  return !!(myPlayerName && myPlayerName.trim().toLowerCase() === 'tim');
+}
+// true, wenn der aktuell angemeldete Spieler DIESES Turnier erstellt hat (siehe confirmCreateTournament)
+function isTournamentOwner() {
+  const p = getPlayerObj(myPlayerName);
+  return !!(p && p.isTournamentOwner);
+}
+// "Admin" ist jetzt entweder der God (Tim, website-weit) ODER der Ersteller/Admin DIESES
+// einen Turniers - beide dürfen alles im Admin-Panel AUSSER den Auslosungs-Cheats (die
+// bleiben exklusiv dem God vorbehalten, siehe addDraftCheat/renderDraftCheatPanel).
 function isAdmin() {
-  return myPlayerName && myPlayerName.trim().toLowerCase() === 'tim';
+  return isGod() || isTournamentOwner();
 }
 // true, wenn der aktuell angemeldete Spieler die Schiedsrichter-Rolle (Ref) hat
 function isRef() {
@@ -424,48 +455,135 @@ function setTeamDisplayMode(teamId, mode) {
   renderAll();
 }
 document.addEventListener('DOMContentLoaded', () => {
-  const btnShowNew = document.getElementById('btn-show-new');
-  if (btnShowNew) btnShowNew.addEventListener('click', showNewPlayerInput);
-  const btnShowExisting = document.getElementById('btn-show-existing');
-  if (btnShowExisting) btnShowExisting.addEventListener('click', showExistingPlayers);
-  const btnSpectator = document.getElementById('btn-enter-spectator');
-  if (btnSpectator) btnSpectator.addEventListener('click', enterAsSpectator);
-  const btnRegister = document.getElementById('btn-register-new');
-  if (btnRegister) btnRegister.addEventListener('click', registerNewPlayer);
-  const btnConfirmAdmin = document.getElementById('btn-confirm-admin');
-  if (btnConfirmAdmin) btnConfirmAdmin.addEventListener('click', confirmAdminPassword);
-  const btnSwitchUser = document.getElementById('btn-switch-user');
-  if (btnSwitchUser) btnSwitchUser.addEventListener('click', switchUser);
-  document.querySelectorAll('.btn-reset-role').forEach(btn => {
-    btn.addEventListener('click', resetRoleSelection);
-  });
-  // Turnierliste für die Startseite läuft immer mit, unabhängig davon, ob man schon
-  // in einem Turnier ist (falls man später auf "Turnier wechseln" klickt, siehe Header)
+  // Turnierliste + website-weite Identitäts-Registry/Sperren laufen immer mit
   attachTournamentsMetaListener();
+  attachGlobalPlayersListener();
+  attachGlobalSettingsListener();
   migrateOldTournamentIfNeeded().then((migratedId) => {
     if (migratedId) {
       currentTournamentId = migratedId;
       localStorage.setItem('fifa_current_tournament', migratedId);
-      myPlayerName = localStorage.getItem(myPlayerStorageKey()) || null;
     }
-    if (currentTournamentId) {
-      attachTournamentListener();
-      if (myPlayerName) {
-        enterAsSpectator();
-      } else {
-        document.getElementById('role-selection-modal').style.display = 'flex';
-      }
+    if (myPlayerName) {
+      proceedAfterGlobalIdentity();
     } else {
-      document.getElementById('landing-page').style.display = 'flex';
+      document.getElementById('global-identity-modal').style.display = 'flex';
     }
   });
 });
 // ============================================================================
-// 3. ROLLEN & AUTH — Rollenauswahl-Modal, An-/Abmelden, Passwörter
+// 3. ROLLEN & AUTH — Globale Identität (website-weit), Turnier-Beitritt, Passwörter
 // ============================================================================
-// Blendet das Rollenauswahl-Modal aus und zeigt die App (als Zuschauer oder angemeldeter Spieler)
+// Läuft, sobald die eigene GLOBALE Identität feststeht (aus localStorage bekannt ODER
+// gerade im Identitäts-Modal festgelegt/bestätigt). Geht dann entweder direkt ins zuletzt
+// offene Turnier oder zeigt die Turnierauswahl-Startseite.
+function proceedAfterGlobalIdentity() {
+  document.getElementById('global-identity-modal').style.display = 'none';
+  if (isGod()) attachGodOversightListener();
+  if (currentTournamentId) {
+    tournamentEntryHandled = false;
+    attachTournamentListener();
+  } else {
+    renderLandingPage();
+    document.getElementById('landing-page').style.display = 'flex';
+  }
+}
+// Blendet im Identitäts-Modal das Formular "Neue Identität" ein
+function showGlobalNewNameInput() {
+  // Die Sperre wird erst in registerGlobalIdentity() geprüft (nicht schon hier!) - sonst
+  // könnte sich nicht mal der God selbst über "Neue Identität" -> "tim" einloggen, falls
+  // gerade neue Identitäten gesperrt sind. Der Name ist an dieser Stelle noch unbekannt.
+  document.getElementById('global-role-options').style.display = 'none';
+  document.getElementById('global-new-name-select').style.display = 'block';
+  document.getElementById('global-existing-select').style.display = 'none';
+  document.getElementById('global-god-password-select').style.display = 'none';
+}
+// Blendet im Identitäts-Modal die Liste bereits bekannter Identitäten ein
+function showGlobalExistingNames() {
+  const container = document.getElementById('global-existing-list');
+  if (container) {
+    const names = Object.values(globalPlayers).map(p => p.name).sort((a, b) => a.localeCompare(b));
+    container.innerHTML = names.length === 0
+      ? '<p class="empty-state">Noch keine Identitäten bekannt.</p>'
+      : names.map(n => `<button class="btn-secondary" style="margin: 4px; width: auto;" onclick="selectGlobalExistingName('${n.replace(/'/g, "\\'")}')">${escapeHtml(n)}</button>`).join('');
+  }
+  document.getElementById('global-role-options').style.display = 'none';
+  document.getElementById('global-new-name-select').style.display = 'none';
+  document.getElementById('global-existing-select').style.display = 'block';
+  document.getElementById('global-god-password-select').style.display = 'none';
+}
+// Setzt das Identitäts-Modal auf die Start-Ansicht (die 2 Hauptbuttons) zurück
+function resetGlobalIdentitySelection() {
+  pendingGlobalLogin = null;
+  document.getElementById('global-role-options').style.display = 'block';
+  document.getElementById('global-new-name-select').style.display = 'none';
+  document.getElementById('global-existing-select').style.display = 'none';
+  document.getElementById('global-god-password-select').style.display = 'none';
+}
+// Legt eine komplett neue globale Identität an (fragt bei "tim" zuerst das God-Passwort ab)
+function registerGlobalIdentity() {
+  const input = document.getElementById('global-self-name');
+  const name = input ? input.value.trim() : '';
+  if (!name) return alert('Bitte einen Namen eingeben!');
+  if (globalPlayers[name.toLowerCase()]) return alert('Dieser Name ist schon vergeben - bitte über "Ich bin schon bekannt" auswählen.');
+  if (name.toLowerCase() === 'tim') { promptGodPassword(name); return; }
+  if (globalSettings.lockNewIdentities) return alert('🔒 Der God hat das Anlegen neuer Identitäten aktuell gesperrt.');
+  finalizeGlobalIdentity(name);
+}
+// Klick auf eine bereits bekannte Identität in der Liste
+function selectGlobalExistingName(name) {
+  if (name.trim().toLowerCase() === 'tim') { promptGodPassword(name); return; }
+  finalizeGlobalIdentity(name);
+}
+// Zeigt die God-Passwort-Abfrage im Identitäts-Modal
+function promptGodPassword(name) {
+  pendingGlobalLogin = { name };
+  document.getElementById('global-role-options').style.display = 'none';
+  document.getElementById('global-new-name-select').style.display = 'none';
+  document.getElementById('global-existing-select').style.display = 'none';
+  document.getElementById('global-god-password-select').style.display = 'block';
+  const pwdInput = document.getElementById('global-god-password-input');
+  if (pwdInput) pwdInput.value = '';
+}
+// Prüft das eingegebene God-Passwort (website-weit, gilt für den Namen "tim")
+function confirmGodPassword() {
+  const pwdInput = document.getElementById('global-god-password-input');
+  const pwd = pwdInput ? pwdInput.value.trim() : '';
+  if (!pendingGlobalLogin) return;
+  if (pwd === GOD_PASSWORD) {
+    const name = pendingGlobalLogin.name;
+    pendingGlobalLogin = null;
+    finalizeGlobalIdentity(name);
+  } else {
+    alert('Versuchs erst gar nicht');
+  }
+}
+// Speichert die neue globale Identität lokal + in der website-weiten Registry und geht weiter
+function finalizeGlobalIdentity(name) {
+  myPlayerName = name;
+  localStorage.setItem('fifa_global_name', name);
+  if (!globalPlayers[name.toLowerCase()]) {
+    db.ref('globalPlayers/' + name.toLowerCase()).set({ name, createdAt: Date.now() });
+  }
+  proceedAfterGlobalIdentity();
+}
+// Gibt die eigene Identität komplett auf (z.B. wenn ein anderer Spieler das Gerät übernimmt)
+function switchUser() {
+  localStorage.removeItem('fifa_global_name');
+  myPlayerName = null;
+  if (godOversightRef) { godOversightRef.off('value'); godOversightRef = null; }
+  document.getElementById('app-header').style.display = 'none';
+  document.getElementById('app-nav').style.display = 'none';
+  document.getElementById('app-main').style.display = 'none';
+  document.getElementById('landing-page').style.display = 'none';
+  document.getElementById('tournament-join-modal').style.display = 'none';
+  resetGlobalIdentitySelection();
+  document.getElementById('global-identity-modal').style.display = 'flex';
+}
+// Blendet die Beitreten/Zuschauen- bzw. Passwort-Modals des aktuellen Turniers aus und
+// zeigt die App (als Zuschauer oder angemeldeter Spieler dieses Turniers)
 function enterAsSpectator() {
-  document.getElementById('role-selection-modal').style.display = 'none';
+  document.getElementById('tournament-join-modal').style.display = 'none';
   document.getElementById('app-header').style.display = 'flex';
   document.getElementById('app-nav').style.display = 'flex';
   document.getElementById('app-main').style.display = 'block';
@@ -480,16 +598,18 @@ function renderUserBadge() {
   const userBadge = document.getElementById('user-badge');
   if (userBadge) {
     let roleTag = '';
-    if (isAdmin()) roleTag = '⭐ (Admin)';
+    if (isGod()) roleTag = '👑 (God)';
+    else if (isTournamentOwner()) roleTag = '⭐ (Admin)';
     else if (isRef()) roleTag = '🟨 (Ref)';
+    else if (!getPlayerObj(myPlayerName)) roleTag = '👀 (Zuschauer hier)';
     userBadge.innerHTML = myPlayerName
       ? `Angemeldet als: <strong>${myPlayerName}</strong> ${roleTag}`
       : 'Modus: <strong>Zuschauer</strong>';
   }
-  // Verbindungsstatus zu Firebase - nur für den Admin sichtbar (Fehlersuche-Werkzeug)
+  // Verbindungsstatus zu Firebase - nur für den God sichtbar (Fehlersuche-Werkzeug)
   const connBadge = document.getElementById('connection-status-badge');
   if (connBadge) {
-    if (!isAdmin() || isFirebaseConnected === null) {
+    if (!isGod() || isFirebaseConnected === null) {
       connBadge.style.display = 'none';
     } else if (isFirebaseConnected) {
       connBadge.style.display = 'inline';
@@ -513,147 +633,78 @@ function renderUserBadge() {
     }
   }
 }
-// Meldet den aktuellen Spieler ab und zeigt wieder die Rollenauswahl beim Start
-function switchUser() {
-  localStorage.removeItem(myPlayerStorageKey());
+// Entscheidet beim (erneuten) Betreten eines Turniers automatisch, ob man direkt angemeldet
+// wird, noch ein Passwort eingeben muss, oder erst entscheiden muss, ob man beitritt oder nur
+// zuschaut. Läuft nur einmal pro Turnier-Aufruf (siehe tournamentEntryHandled).
+function handleTournamentEntry() {
+  const pObj = getPlayerObj(myPlayerName);
+  if (pObj) {
+    const hasLoggedInBefore = localStorage.getItem(myPlayerPwvStorageKey()) !== null;
+    if (hasLoggedInBefore) { enterAsSpectator(); return; }
+    if (pObj.password) { promptTournamentPassword(myPlayerName); return; }
+    markLoggedInPasswordVersion(myPlayerName);
+    enterAsSpectator();
+    return;
+  }
+  showJoinOrSpectatePrompt();
+}
+// Zeigt das Beitreten/Zuschauen-Modal für ein Turnier, in dem man noch kein Spieler ist
+function showJoinOrSpectatePrompt() {
+  document.getElementById('tournament-join-modal').style.display = 'flex';
+  document.getElementById('join-options').style.display = 'block';
+  document.getElementById('join-password-select').style.display = 'none';
+}
+// Tritt dem aktuellen Turnier als vollwertiger Spieler bei (unter der globalen Identität)
+function joinCurrentTournamentAsPlayer() {
+  if (registrationLocked && !isGod()) return alert('Die Registrierung neuer Spieler wurde für dieses Turnier gesperrt.');
+  if (getPlayerObj(myPlayerName)) { markLoggedInPasswordVersion(myPlayerName); enterAsSpectator(); return; }
+  players.push({ name: myPlayerName, isRef: false, password: null });
+  saveData();
+  markLoggedInPasswordVersion(myPlayerName);
+  enterAsSpectator();
+}
+// Schaut sich das Turnier nur an, ohne selbst Spieler zu werden
+function spectateCurrentTournament() {
+  enterAsSpectator();
+}
+// Zeigt die Passwort-Abfrage fürs (Wieder-)Betreten eines Turniers, in dem die eigene
+// Identität schon ein passwortgeschütztes Spieler-Konto hat
+function promptTournamentPassword(name) {
+  pendingTournamentLogin = name;
+  document.getElementById('tournament-join-modal').style.display = 'flex';
+  document.getElementById('join-options').style.display = 'none';
+  document.getElementById('join-password-select').style.display = 'block';
+  const textEl = document.getElementById('tournament-password-prompt-text');
+  if (textEl) textEl.innerText = `🔒 Passwort für ${name} in diesem Turnier eingeben:`;
+  const pwdInput = document.getElementById('tournament-password-input');
+  if (pwdInput) pwdInput.value = '';
+}
+// Prüft das eingegebene Turnier-Passwort und meldet bei Erfolg an
+function confirmTournamentPassword() {
+  const pwdInput = document.getElementById('tournament-password-input');
+  const pwd = pwdInput ? pwdInput.value.trim() : '';
+  if (!pendingTournamentLogin) return;
+  const pObj = getPlayerObj(pendingTournamentLogin);
+  if (pObj && pObj.password === pwd) {
+    markLoggedInPasswordVersion(pendingTournamentLogin);
+    pendingTournamentLogin = null;
+    enterAsSpectator();
+  } else {
+    alert('Falsches Passwort!');
+  }
+}
+// Wird bei einem Login-/Sync-Problem des eigenen Spielers in DIESEM Turnier aufgerufen
+// (z.B. weil der eigene Spieler entfernt wurde oder ein neues Passwort gesetzt wurde) -
+// die GLOBALE Identität bleibt dabei erhalten, nur die Anmeldung für dieses eine Turnier
+// muss neu erfolgen (siehe handleTournamentEntry).
+function forceBackToTournamentEntry(alertMessage) {
   localStorage.removeItem(myPlayerPwvStorageKey());
-  myPlayerName = null;
   document.getElementById('app-header').style.display = 'none';
   document.getElementById('app-nav').style.display = 'none';
   document.getElementById('app-main').style.display = 'none';
-  resetRoleSelection();
-  document.getElementById('role-selection-modal').style.display = 'flex';
-}
-// Blendet im Rollenauswahl-Modal das Formular "Neuer Spieler" ein
-function showNewPlayerInput() {
-  if (typeof registrationLocked !== 'undefined' && registrationLocked) {
-    alert('Die Registrierung neuer Spieler wurde vom Admin gesperrt.');
-    return;
-  }
-  const opts = document.getElementById('role-options');
-  const newSel = document.getElementById('new-player-select');
-  const existSel = document.getElementById('existing-players-select');
-  const adminSel = document.getElementById('admin-password-select');
-
-  if (opts) opts.style.display = 'none';
-  if (newSel) newSel.style.display = 'block';
-  if (existSel) existSel.style.display = 'none';
-  if (adminSel) adminSel.style.display = 'none';
-}
-
-// Blendet im Rollenauswahl-Modal die Liste der bestehenden Spieler zur Auswahl ein
-function showExistingPlayers() {
-  const container = document.getElementById('existing-players-list');
-  if (container) {
-    if (typeof players !== 'undefined' && players.length === 0) {
-      container.innerHTML = '<p class="empty-state">Noch keine Spieler registriert.</p>';
-    } else if (typeof players !== 'undefined') {
-      container.innerHTML = players.map(p => `
-        <button class="btn-secondary" style="margin: 4px; width: auto;" onclick="selectMyPlayer('${p.name}')">
-          ${p.name} ${p.isRef ? '🟨' : ''} ${p.password ? '🔒' : ''}
-        </button>
-      `).join('');
-    }
-  }
-
-  const opts = document.getElementById('role-options');
-  const newSel = document.getElementById('new-player-select');
-  const existSel = document.getElementById('existing-players-select');
-  const adminSel = document.getElementById('admin-password-select');
-
-  if (opts) opts.style.display = 'none';
-  if (newSel) newSel.style.display = 'none';
-  if (existSel) existSel.style.display = 'block';
-  if (adminSel) adminSel.style.display = 'none';
-}
-// Setzt das Rollenauswahl-Modal auf die Start-Ansicht (die 3 Hauptbuttons) zurück
-function resetRoleSelection() {
-  pendingAdminLogin = false;
-  document.getElementById('role-options').style.display = 'block';
-  document.getElementById('new-player-select').style.display = 'none';
-  document.getElementById('existing-players-select').style.display = 'none';
-  document.getElementById('admin-password-select').style.display = 'none';
-}
-// Wird geklickt, wenn sich jemand als bestehender Spieler anmeldet (fragt ggf. Passwort ab)
-function selectMyPlayer(name) {
-  const pObj = getPlayerObj(name);
-  if (name.trim().toLowerCase() === 'tim') {
-    promptPassword('admin', name, '🔒 Zugang gesperrt!');
-    return;
-  }
-  if (pObj && pObj.password) {
-    promptPassword('player', name, `🔒 Passwort für ${name} eingeben:`);
-    return;
-  }
-  myPlayerName = name;
-  localStorage.setItem(myPlayerStorageKey(), name);
-  markLoggedInPasswordVersion(name);
-  enterAsSpectator();
-}
-// Legt einen komplett neuen Spieler an und meldet ihn direkt als "mich" an
-function registerNewPlayer() {
-  if (registrationLocked) {
-    alert('Die Registrierung neuer Spieler wurde vom Admin gesperrt.');
-    return;
-  }
-  const input = document.getElementById('self-player-name');
-  const name = input ? input.value.trim() : '';
-  if (!name) return alert('Bitte Namen eingeben!');
-  if (name.toLowerCase() === 'tim') {
-    promptPassword('admin', name, '🔒 Zugang gesperrt!');
-    return;
-  }
-  if (getPlayerObj(name)) return alert('Dieser Name existiert bereits!');
-  players.push({ name: name, isRef: false, password: null });
-  myPlayerName = name;
-  localStorage.setItem(myPlayerStorageKey(), name);
-  markLoggedInPasswordVersion(name);
-  saveData();
-  enterAsSpectator();
-}
-// Zeigt die Passwort-Abfrage im Modal an (für Admin-Login oder passwortgeschützte Spieler)
-function promptPassword(type, name, textPrompt) {
-  pendingAdminLogin = { type, name };
-  document.getElementById('role-options').style.display = 'none';
-  document.getElementById('new-player-select').style.display = 'none';
-  document.getElementById('existing-players-select').style.display = 'none';
-  document.getElementById('admin-password-select').style.display = 'block';
-  const textEl = document.getElementById('password-prompt-text');
-  if (textEl) textEl.innerText = textPrompt;
-  const pwdInput = document.getElementById('admin-password-input');
-  if (pwdInput) pwdInput.value = '';
-}
-// Prüft das eingegebene Passwort (Admin oder Spieler) und meldet bei Erfolg an
-function confirmAdminPassword() {
-  const pwdInput = document.getElementById('admin-password-input');
-  const pwd = pwdInput ? pwdInput.value.trim() : '';
-  if (!pendingAdminLogin) return;
-  if (pendingAdminLogin.type === 'admin') {
-    if (pwd === ADMIN_PASSWORD) {
-      if (!getPlayerObj(pendingAdminLogin.name)) {
-        players.push({ name: pendingAdminLogin.name, isRef: false, password: null });
-        saveData();
-      }
-      myPlayerName = pendingAdminLogin.name;
-      localStorage.setItem(myPlayerStorageKey(), myPlayerName);
-      markLoggedInPasswordVersion(myPlayerName);
-      pendingAdminLogin = false;
-      enterAsSpectator();
-    } else {
-      alert('Versuchs erst gar nicht');
-    }
-  } else if (pendingAdminLogin.type === 'player') {
-    const pObj = getPlayerObj(pendingAdminLogin.name);
-    if (pObj && pObj.password === pwd) {
-      myPlayerName = pendingAdminLogin.name;
-      localStorage.setItem(myPlayerStorageKey(), myPlayerName);
-      markLoggedInPasswordVersion(myPlayerName);
-      pendingAdminLogin = false;
-      enterAsSpectator();
-    } else {
-      alert('Falsches Passwort!');
-    }
-  }
+  tournamentEntryHandled = false;
+  if (alertMessage) alert(alertMessage);
+  handleTournamentEntry();
 }
 // Wechselt den sichtbaren Tab (Home/Teams/Gruppen/Spiele/Admin) und rendert ihn neu
 function showTab(tabName) {
@@ -701,19 +752,8 @@ function resetLocalStateToDefaults() {
   draftState = { active: false, currentStep: 0, tempP1: null, tempP2: null, remainingPlayers: [], remainingClubs: [], spinning: false, startTime: null, targetAngle: 0, duration: 4000, lastDrawnItem: null, pairs: [] };
   userBalances = {};
   bets = [];
-}
-// Zeigt bei einem Login-/Sync-Problem des eigenen Spielers wieder die Rollenauswahl an
-// (z.B. weil der eigene Spieler entfernt wurde oder ein neues Passwort gesetzt wurde)
-function forceBackToRoleSelection(alertMessage) {
-  myPlayerName = null;
-  localStorage.removeItem(myPlayerStorageKey());
-  localStorage.removeItem(myPlayerPwvStorageKey());
-  document.getElementById('app-header').style.display = 'none';
-  document.getElementById('app-nav').style.display = 'none';
-  document.getElementById('app-main').style.display = 'none';
-  resetRoleSelection();
-  document.getElementById('role-selection-modal').style.display = 'flex';
-  if (alertMessage) alert(alertMessage);
+  tournamentEntryHandled = false;
+  myPlayerWasPresent = false;
 }
 // Hängt den Live-Sync für EIN bestimmtes Turnier ein (tournaments/{currentTournamentId}).
 // Löst zuerst einen eventuell noch aktiven Listener eines ANDEREN Turniers, damit nicht
@@ -745,21 +785,33 @@ function attachTournamentListener() {
     draftState = data.draftState || { active: false, currentStep: 0, tempP1: null, tempP2: null, remainingPlayers: [], remainingClubs: [], spinning: false, startTime: null, targetAngle: 0, duration: 4000, lastDrawnItem: null, pairs: [] };
     userBalances = data.userBalances || {};
     bets = data.bets || [];
-    // Falls das Turnier zurückgesetzt wurde (oder der eigene Spieler entfernt wurde),
-    // wird man automatisch zurück zum Auswahlbildschirm geschickt.
-    if (myPlayerName && !getPlayerObj(myPlayerName)) {
-      forceBackToRoleSelection(null);
+
+    // Beim allerersten Laden nach dem Betreten entscheidet handleTournamentEntry(), ob man
+    // automatisch angemeldet wird, ein Passwort braucht, oder erst Beitreten/Zuschauen wählen muss.
+    if (!tournamentEntryHandled) {
+      tournamentEntryHandled = true;
+      myPlayerWasPresent = !!(myPlayerName && getPlayerObj(myPlayerName));
+      handleTournamentEntry();
       return;
     }
+    // Wurde man inzwischen aus DIESEM Turnier entfernt (vorher Spieler hier, jetzt nicht mehr)?
+    // Reines Zuschauen (nie Spieler gewesen) löst das bewusst NICHT aus.
+    const amIPresentNow = !!(myPlayerName && getPlayerObj(myPlayerName));
+    if (myPlayerWasPresent && !amIPresentNow) {
+      myPlayerWasPresent = false;
+      forceBackToTournamentEntry('Du wurdest aus diesem Turnier entfernt.');
+      return;
+    }
+    myPlayerWasPresent = amIPresentNow;
     // Wurde für den eigenen Spieler gerade ein Passwort gesetzt/bestätigt (siehe
     // setPlayerPassword/confirmPendingPassword), stimmt die lokal gemerkte Passwort-Version
     // nicht mehr mit der aktuellen überein -> zwingt zur erneuten Anmeldung MIT Passwort.
-    if (myPlayerName) {
+    if (amIPresentNow) {
       const myPObj = getPlayerObj(myPlayerName);
       const currentVersion = (myPObj && myPObj.passwordVersion) || 0;
       const knownVersion = parseInt(localStorage.getItem(myPlayerPwvStorageKey()) || '0', 10);
       if (currentVersion > knownVersion) {
-        forceBackToRoleSelection('🔑 Für dein Konto wurde ein neues Passwort gesetzt/bestätigt. Bitte melde dich erneut damit an.');
+        forceBackToTournamentEntry('🔑 Für dein Konto wurde ein neues Passwort gesetzt/bestätigt. Bitte melde dich erneut damit an.');
         return;
       }
     }
@@ -802,74 +854,126 @@ function saveData() {
   });
 }
 // ============================================================================
-// 4b. TURNIER-AUSWAHL — die Startseite VOR der Rollenauswahl: hier wählt man,
+// 4b. TURNIER-AUSWAHL — die Startseite NACH der globalen Identität: hier wählt man,
 //     welchem Turnier man beitritt (oder erstellt ein neues). Jedes Turnier lebt
 //     komplett getrennt unter tournaments/{id} in Firebase.
 // ============================================================================
-// Lädt fortlaufend die Liste ALLER existierenden Turniere (nur Name + Erstelldatum,
-// nicht die kompletten Turnierdaten) für die Startseite.
+// Lädt fortlaufend die Liste ALLER existierenden Turniere (nur Name + Erstelldatum +
+// Ersteller, nicht die kompletten Turnierdaten) für die Startseite.
 function attachTournamentsMetaListener() {
   db.ref('tournaments_meta').on('value', (snap) => {
     tournamentsList = snap.val() || {};
     renderLandingPage();
   });
 }
-// Baut die Liste der Turniere auf der Startseite auf (neueste zuerst)
+// Baut die Liste der Turniere auf der Startseite auf (neueste zuerst) + das Formular
+// für ein neues Turnier (gesperrt, falls der God das Erstellen deaktiviert hat) + das
+// God-Panel (nur für "tim" sichtbar).
 function renderLandingPage() {
   const container = document.getElementById('landing-page-list');
-  if (!container) return;
-  const ids = Object.keys(tournamentsList).sort((a, b) => (tournamentsList[b].createdAt || 0) - (tournamentsList[a].createdAt || 0));
-  if (ids.length === 0) {
-    container.innerHTML = '<p class="empty-state">Noch keine Turniere vorhanden. Erstelle unten das erste!</p>';
-    return;
+  if (container) {
+    const ids = Object.keys(tournamentsList).sort((a, b) => (tournamentsList[b].createdAt || 0) - (tournamentsList[a].createdAt || 0));
+    if (ids.length === 0) {
+      container.innerHTML = '<p class="empty-state">Noch keine Turniere vorhanden. Erstelle unten das erste!</p>';
+    } else {
+      container.innerHTML = ids.map(id => {
+        const t = tournamentsList[id] || {};
+        const metaParts = [];
+        if (t.createdBy) metaParts.push(`von <strong>${escapeHtml(t.createdBy)}</strong>`);
+        if (t.createdAt) metaParts.push(`am ${new Date(t.createdAt).toLocaleDateString('de-DE')}`);
+        return `
+          <div style="display:flex; align-items:stretch; gap:6px; margin:4px 0;">
+            <button class="btn-secondary role-btn" style="text-align:left; flex:1; margin:0;" onclick="enterTournament('${id}')">
+              🏆 ${escapeHtml(t.name)}
+              ${metaParts.length ? `<div style="font-size:0.75em; opacity:0.7; font-weight:normal; margin-top:2px;">${metaParts.join(' ')}</div>` : ''}
+            </button>
+            ${isGod() ? `
+              <button class="btn-secondary btn-sm" title="Umbenennen" onclick="renameTournamentAsGod('${id}')">✏️</button>
+              <button class="btn-danger btn-sm" title="Löschen" onclick="deleteTournamentAsGod('${id}')">🗑️</button>
+            ` : ''}
+          </div>
+        `;
+      }).join('');
+    }
   }
-  container.innerHTML = ids.map(id => `
-    <button class="btn-secondary role-btn" style="text-align:left;" onclick="enterTournament('${id}')">
-      🏆 ${escapeHtml(tournamentsList[id].name)}
-    </button>
-  `).join('');
+  const newTournamentSection = document.getElementById('new-tournament-section');
+  if (newTournamentSection) {
+    if (globalSettings.lockNewTournaments && !isGod()) {
+      newTournamentSection.innerHTML = '<p class="empty-state">🔒 Das Erstellen neuer Turniere wurde vom God gesperrt.</p>';
+    } else {
+      newTournamentSection.innerHTML = `
+        <input type="text" id="new-tournament-name" placeholder="Name für neues Turnier...">
+        <button class="btn-primary" onclick="startCreateTournament()">+ Neu</button>
+      `;
+    }
+  }
+  renderGodPanel();
 }
-// Legt ein neues, leeres Turnier an und tritt ihm direkt bei
-function createNewTournament() {
+// Schritt 1 der Turniererstellung: Name prüfen, dann Admin-Passwort-Modal für DIESES
+// Turnier zeigen (jedes Turnier bekommt sein eigenes, vom Ersteller gewähltes Passwort).
+function startCreateTournament() {
+  if (globalSettings.lockNewTournaments && !isGod()) return alert('🔒 Der God hat das Erstellen neuer Turniere aktuell gesperrt.');
   const input = document.getElementById('new-tournament-name');
   const name = input ? input.value.trim() : '';
   if (!name) return alert('Bitte einen Namen für das neue Turnier eingeben!');
+  document.getElementById('tournament-create-password-modal').style.display = 'flex';
+  const pwdInput = document.getElementById('new-tournament-password');
+  if (pwdInput) pwdInput.value = '';
+}
+function cancelCreateTournament() {
+  document.getElementById('tournament-create-password-modal').style.display = 'none';
+}
+// Schritt 2: legt das Turnier an, macht die eigene Identität zum Admin dieses einen
+// Turniers (isTournamentOwner) mit dem gerade gewählten Passwort, und tritt direkt bei.
+function confirmCreateTournament() {
+  const nameInput = document.getElementById('new-tournament-name');
+  const name = nameInput ? nameInput.value.trim() : '';
+  const pwdInput = document.getElementById('new-tournament-password');
+  const pwd = pwdInput ? pwdInput.value.trim() : '';
+  if (!name) return alert('Bitte einen Namen für das neue Turnier eingeben!');
+  if (!pwd) return alert('Bitte ein Admin-Passwort für dieses Turnier festlegen!');
   const newRef = db.ref('tournaments_meta').push();
   const id = newRef.key;
-  newRef.set({ name, createdAt: Date.now() }).catch((error) => {
+  newRef.set({ name, createdAt: Date.now(), createdBy: myPlayerName }).catch((error) => {
     alert('⚠️ Turnier konnte nicht erstellt werden:\n' + error.message);
   });
-  enterTournament(id);
+  db.ref('tournaments/' + id).set({
+    players: [{ name: myPlayerName, isRef: false, password: pwd, isTournamentOwner: true, passwordVersion: 1 }]
+  }).catch((error) => {
+    alert('⚠️ Turnier konnte nicht erstellt werden:\n' + error.message);
+  });
+  document.getElementById('tournament-create-password-modal').style.display = 'none';
+  document.getElementById('landing-page').style.display = 'none';
+  resetLocalStateToDefaults();
+  currentTournamentId = id;
+  localStorage.setItem('fifa_current_tournament', id);
+  // Das Passwort wurde gerade selbst festgelegt -> nicht direkt nochmal danach fragen
+  localStorage.setItem(myPlayerPwvStorageKey(), '1');
+  tournamentEntryHandled = true;
+  myPlayerWasPresent = true;
+  attachTournamentListener();
+  enterAsSpectator();
 }
-// Tritt einem Turnier bei (bestehend oder gerade neu erstellt): hängt den Live-Sync
-// dafür ein und zeigt je nachdem, ob man dort schon mal angemeldet war, direkt die
-// App oder die Rollenauswahl.
+// Tritt einem BESTEHENDEN Turnier bei: hängt den Live-Sync dafür ein - handleTournamentEntry()
+// entscheidet dann (sobald die Daten geladen sind) automatisch, ob man direkt angemeldet
+// wird, ein Passwort braucht, oder erst Beitreten/Zuschauen wählen muss.
 function enterTournament(id) {
   resetLocalStateToDefaults(); // verhindert, dass kurz Daten des vorherigen Turniers aufblitzen
   currentTournamentId = id;
   localStorage.setItem('fifa_current_tournament', id);
   document.getElementById('landing-page').style.display = 'none';
   attachTournamentListener();
-  myPlayerName = localStorage.getItem(myPlayerStorageKey()) || null;
-  if (myPlayerName) {
-    enterAsSpectator();
-  } else {
-    resetRoleSelection();
-    document.getElementById('role-selection-modal').style.display = 'flex';
-  }
 }
 // Verlässt das aktuelle Turnier und zeigt wieder die Turnierauswahl-Startseite.
-// Die eigene Rolle in ANDEREN Turnieren bleibt dabei erhalten (pro Turnier eigener
-// localStorage-Schlüssel, siehe myPlayerStorageKey).
+// Die GLOBALE Identität bleibt dabei erhalten (man ist website-weit weiterhin dieselbe Person).
 function goToLandingPage() {
   if (tournamentRef) { tournamentRef.off('value'); tournamentRef = null; }
   currentTournamentId = null;
   localStorage.removeItem('fifa_current_tournament');
-  myPlayerName = null;
   document.getElementById('app-header').style.display = 'none';
   document.getElementById('app-nav').style.display = 'none';
   document.getElementById('app-main').style.display = 'none';
-  document.getElementById('role-selection-modal').style.display = 'none';
+  document.getElementById('tournament-join-modal').style.display = 'none';
   renderLandingPage();
   document.getElementById('landing-page').style.display = 'flex';
 }
@@ -888,14 +992,14 @@ function migrateOldTournamentIfNeeded() {
       if (!oldData || !oldData.players || oldData.players.length === 0) return null;
       const newRef = db.ref('tournaments_meta').push();
       const id = newRef.key;
-      return newRef.set({ name: 'Mein Turnier', createdAt: Date.now() })
+      return newRef.set({ name: 'Mein Turnier', createdAt: Date.now(), createdBy: 'tim' })
         .then(() => db.ref('tournaments/' + id).set(oldData))
         .then(() => {
           // Bestehenden Login (aus der alten, ungebundenen Speicherung) fürs neue,
           // migrierte Turnier übernehmen, damit man sich nicht neu anmelden muss
           const oldPlayer = localStorage.getItem('fifa_my_player');
           const oldPwv = localStorage.getItem('fifa_my_player_pwv');
-          if (oldPlayer) localStorage.setItem('fifa_my_player_' + id, oldPlayer);
+          if (oldPlayer) localStorage.setItem('fifa_global_name', oldPlayer);
           if (oldPwv) localStorage.setItem('fifa_my_player_pwv_' + id, oldPwv);
           return id;
         });
@@ -904,6 +1008,133 @@ function migrateOldTournamentIfNeeded() {
     console.error('Migrations-Fehler:', error);
     return null;
   });
+}
+// ============================================================================
+// 4c. GOD-PANEL — website-weite Steuerung außerhalb jedes einzelnen Turniers: nur für
+//     die Identität "tim" (God) sichtbar. Turniere verwalten, Passwort-Wünsche
+//     turnierübergreifend bestätigen, neue Identitäten/Turniere website-weit sperren.
+// ============================================================================
+// Lädt fortlaufend die website-weite Registry aller bekannten Identitäten (für die
+// "Ich bin schon bekannt"-Liste im globalen Identitäts-Modal)
+function attachGlobalPlayersListener() {
+  db.ref('globalPlayers').on('value', (snap) => {
+    globalPlayers = snap.val() || {};
+  });
+}
+// Lädt fortlaufend die website-weiten God-Sperren (neue Identitäten / neue Turniere)
+function attachGlobalSettingsListener() {
+  db.ref('globalSettings').on('value', (snap) => {
+    globalSettings = snap.val() || { lockNewIdentities: false, lockNewTournaments: false };
+    renderLandingPage();
+  });
+}
+// Nur für den God: lädt ALLE Turniere komplett (nicht nur die Meta-Liste), damit er auf
+// der Startseite z.B. ausstehende Passwort-Wünsche turnierübergreifend sehen/bestätigen kann.
+function attachGodOversightListener() {
+  if (godOversightRef) return; // schon aktiv
+  godOversightRef = db.ref('tournaments');
+  godOversightRef.on('value', (snap) => {
+    const all = snap.val() || {};
+    godOversightData = {};
+    Object.keys(all).forEach((tid) => {
+      const t = all[tid] || {};
+      const rawPlayers = t.players || [];
+      godOversightData[tid] = {
+        name: (tournamentsList[tid] && tournamentsList[tid].name) || tid,
+        players: rawPlayers.map(p => typeof p === 'string' ? { name: p, isRef: false, password: null } : p)
+      };
+    });
+    renderGodPanel();
+  });
+}
+// Baut das God-Panel auf der Startseite auf: Turniere verwalten, ausstehende
+// Passwort-Wünsche (turnierübergreifend) und website-weite Sperren.
+function renderGodPanel() {
+  const container = document.getElementById('god-panel-container');
+  if (!container) return;
+  if (!isGod()) { container.innerHTML = ''; return; }
+  const pendingRows = [];
+  Object.keys(godOversightData).forEach((tid) => {
+    const t = godOversightData[tid];
+    (t.players || []).forEach((p, idx) => {
+      if (p && p.pendingPassword) {
+        pendingRows.push({ tid, tournamentName: t.name || tid, playerIndex: idx, playerName: p.name });
+      }
+    });
+  });
+  container.innerHTML = `
+    <div class="admin-card">
+      <details open>
+        <summary><h3>👑 God-Panel (website-weite Steuerung)</h3></summary>
+        <p style="font-size:0.85em; opacity:0.8;">Nur für dich sichtbar - hier kannst du schon eingreifen, bevor du überhaupt ein Turnier betrittst.</p>
+        <h4 style="margin-bottom:6px;">⏳ Ausstehende Passwort-Wünsche (alle Turniere)</h4>
+        <div style="margin-bottom:16px;">
+          ${pendingRows.length === 0 ? '<p class="empty-state">Aktuell nichts zu bestätigen.</p>' : pendingRows.map(r => `
+            <div style="display:flex; flex-wrap:wrap; justify-content:space-between; align-items:center; background: var(--fal-blue-primary); padding: 8px 12px; border-radius: 8px; margin-bottom: 8px; gap: 8px;">
+              <div style="font-size:0.9em;"><strong>${escapeHtml(r.playerName)}</strong> in <em>${escapeHtml(r.tournamentName)}</em></div>
+              <div style="display:flex; gap:5px;">
+                <button class="btn-primary btn-sm" style="background:#2ecc71; color:#fff;" onclick="godConfirmPendingPassword('${r.tid}', ${r.playerIndex})">✅ Bestätigen</button>
+                <button class="btn-danger btn-sm" onclick="godRejectPendingPassword('${r.tid}', ${r.playerIndex})">❌ Ablehnen</button>
+              </div>
+            </div>
+          `).join('')}
+        </div>
+        <h4 style="margin-bottom:6px;">🔒 Website-weite Sperren</h4>
+        <div style="display:flex; flex-direction:column; gap:8px;">
+          <label style="display:flex; align-items:center; gap:8px; font-size:0.9em;">
+            <input type="checkbox" ${globalSettings.lockNewIdentities ? 'checked' : ''} onchange="toggleGlobalLock('lockNewIdentities')">
+            Neue Identitäten (unbekannte Namen) sperren
+          </label>
+          <label style="display:flex; align-items:center; gap:8px; font-size:0.9em;">
+            <input type="checkbox" ${globalSettings.lockNewTournaments ? 'checked' : ''} onchange="toggleGlobalLock('lockNewTournaments')">
+            Neue Turniere erstellen sperren
+          </label>
+        </div>
+      </details>
+    </div>
+  `;
+}
+// Löscht ein Turnier komplett (Meta + Daten) - nur der God darf das
+function deleteTournamentAsGod(id) {
+  if (!isGod()) return;
+  const name = (tournamentsList[id] && tournamentsList[id].name) || id;
+  if (!confirm(`Turnier "${name}" WIRKLICH unwiderruflich löschen?`)) return;
+  db.ref('tournaments_meta/' + id).remove();
+  db.ref('tournaments/' + id).remove();
+  if (currentTournamentId === id) goToLandingPage();
+}
+// Benennt ein Turnier um - nur der God darf das
+function renameTournamentAsGod(id) {
+  if (!isGod()) return;
+  const current = (tournamentsList[id] && tournamentsList[id].name) || '';
+  const newName = prompt('Neuer Name für dieses Turnier:', current);
+  if (newName === null) return;
+  if (!newName.trim()) return alert('Name darf nicht leer sein.');
+  db.ref('tournaments_meta/' + id + '/name').set(newName.trim());
+}
+// Bestätigt einen Passwort-Wunsch turnierübergreifend, ohne das Turnier selbst zu betreten
+function godConfirmPendingPassword(tid, playerIndex) {
+  if (!isGod()) return;
+  const t = godOversightData[tid];
+  const p = t && t.players && t.players[playerIndex];
+  if (!p || !p.pendingPassword) return;
+  const updatedPlayers = t.players.map((pl, i) => i !== playerIndex ? pl : { ...pl, password: pl.pendingPassword, pendingPassword: null, passwordVersion: (pl.passwordVersion || 0) + 1 });
+  db.ref('tournaments/' + tid + '/players').set(updatedPlayers);
+}
+// Lehnt einen Passwort-Wunsch turnierübergreifend ab
+function godRejectPendingPassword(tid, playerIndex) {
+  if (!isGod()) return;
+  const t = godOversightData[tid];
+  const p = t && t.players && t.players[playerIndex];
+  if (!p) return;
+  const updatedPlayers = t.players.map((pl, i) => i !== playerIndex ? pl : { ...pl, pendingPassword: null });
+  db.ref('tournaments/' + tid + '/players').set(updatedPlayers);
+}
+// Schaltet eine website-weite Sperre um (nur God)
+function toggleGlobalLock(key) {
+  if (!isGod()) return;
+  const updated = { ...globalSettings, [key]: !globalSettings[key] };
+  db.ref('globalSettings').set(updated);
 }
 // ============================================================================
 // 5. PROFI-CLUBS VERWALTUNG — Liste der Vereine, aus denen beim Glücksrad gezogen wird
@@ -937,7 +1168,7 @@ function resetClubsToDefault() {
 // Team kommen, optional mit festem Club. NUR für den echten Admin (nicht Ref) -
 // das ist bewusst geheim und soll nicht jeder mit erweiterten Rechten nutzen können.
 function addDraftCheat() {
-  if (!isAdmin()) return;
+  if (!isGod()) return;
   const p1Sel = document.getElementById('cheat-p1-select');
   const p2Sel = document.getElementById('cheat-p2-select');
   const clubSel = document.getElementById('cheat-club-select');
@@ -953,7 +1184,7 @@ function addDraftCheat() {
 }
 // Entfernt eine Vorgabe wieder
 function removeDraftCheat(index) {
-  if (!isAdmin()) return;
+  if (!isGod()) return;
   draftCheats.splice(index, 1);
   saveData();
   renderAll();
@@ -964,7 +1195,7 @@ function removeDraftCheat(index) {
 function renderDraftCheatPanel() {
   const container = document.getElementById('draft-cheat-container');
   if (!container) return;
-  if (!isAdmin() || teams.length > 0) { container.innerHTML = ''; return; }
+  if (!isGod() || teams.length > 0) { container.innerHTML = ''; return; }
   const usedNames = new Set();
   draftCheats.forEach(c => { usedNames.add(c.p1); if (c.p2) usedNames.add(c.p2); });
   const availablePlayers = players.filter(p => !usedNames.has(p.name));
@@ -2572,6 +2803,7 @@ function renderAdminPanel() {
         <div style="display:flex; flex-wrap:wrap; justify-content:space-between; align-items:center; background: var(--fal-blue-primary); padding: 10px 12px; border-radius: 8px; margin-bottom: 8px; gap: 8px;">
           <div>
             <strong>${index + 1}. ${p.name}</strong>
+            ${p.isTournamentOwner ? '<span style="color:var(--fal-yellow); font-size:0.85em;">[⭐ Ersteller]</span>' : ''}
             ${p.isRef ? '<span style="color:var(--fal-yellow); font-size:0.85em;">[🟨 Ref]</span>' : ''}
             ${hasPW ? '<span style="font-size:0.85em; opacity:0.8;">[🔒 PW]</span>' : ''}
             ${p.pendingPassword ? '<span style="color:var(--fal-yellow); font-size:0.85em;">[⏳ Passwort-Wunsch]</span>' : ''}

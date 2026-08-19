@@ -12,64 +12,98 @@
 </head>
 <body>
 
-  <!-- Turnierauswahl-Startseite: erscheint als Allererstes, noch vor der Rollenauswahl.
+  <!-- Globale Identität: erscheint als Allererstes, noch vor der Turnierauswahl. Die eigene
+       Identität gilt danach website-weit für ALLE Turniere (siehe Abschnitt 3 in script.js). -->
+  <div id="global-identity-modal" class="modal-overlay" style="display: none;">
+    <div class="modal-content">
+      <img src="https://spvgg-fal.de/templates/yootheme/cache/dc/Logo-2017-web-dc30d58a.webp" alt="SpVgg FAL Wappen" class="modal-logo modal-logo-big">
+      <h3>Wer bist du?</h3>
+      <p style="margin: -6px 0 10px 0; font-size:0.85em; opacity:0.8;">Deine Identität gilt für die ganze Website und alle Turniere gleichzeitig.</p>
+
+      <!-- 1. Hauptoptionen -->
+      <div id="global-role-options">
+        <button class="btn-primary" style="width: 100%; margin-bottom: 8px;" onclick="showGlobalNewNameInput()">➕ Neue Identität</button>
+        <button class="btn-secondary" style="width: 100%;" onclick="showGlobalExistingNames()">👤 Ich bin schon bekannt</button>
+      </div>
+
+      <!-- 2. Formular für neue Identität -->
+      <div id="global-new-name-select" style="display: none;">
+        <h4>Neue Identität anlegen</h4>
+        <input type="text" id="global-self-name" placeholder="Dein Name..." style="width: 100%; padding: 8px; margin-bottom: 10px; box-sizing: border-box;">
+        <div style="display: flex; gap: 8px;">
+          <button class="btn-secondary" style="flex: 1;" onclick="resetGlobalIdentitySelection()">Zurück</button>
+          <button class="btn-primary" style="flex: 1;" onclick="registerGlobalIdentity()">Weiter</button>
+        </div>
+      </div>
+
+      <!-- 3. Liste bekannter Identitäten -->
+      <div id="global-existing-select" style="display: none;">
+        <h4>Identität auswählen</h4>
+        <div id="global-existing-list" style="max-height: 200px; overflow-y: auto; margin-bottom: 10px;"></div>
+        <button class="btn-secondary" style="width: 100%;" onclick="resetGlobalIdentitySelection()">Zurück</button>
+      </div>
+
+      <!-- 4. God-Passwort (nur für "tim") -->
+      <div id="global-god-password-select" style="display: none;">
+        <h4>🔒 Zugang gesperrt!</h4>
+        <input type="password" id="global-god-password-input" placeholder="Passwort..." style="width: 100%; padding: 8px; margin-bottom: 10px; box-sizing: border-box;">
+        <div style="display: flex; gap: 8px;">
+          <button class="btn-secondary" style="flex: 1;" onclick="resetGlobalIdentitySelection()">Zurück</button>
+          <button class="btn-primary" style="flex: 1;" onclick="confirmGodPassword()">Bestätigen</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Turnierauswahl-Startseite: erscheint, sobald die globale Identität feststeht.
        Hier wählt man, welchem Turnier man beitritt (oder erstellt ein neues) - so
        lassen sich mehrere Turniere parallel spielen bzw. alte weiterhin einsehen. -->
   <div id="landing-page" class="modal-overlay" style="display: none;">
     <div class="modal-content">
       <img src="https://spvgg-fal.de/templates/yootheme/cache/dc/Logo-2017-web-dc30d58a.webp" alt="SpVgg FAL Wappen" class="modal-logo modal-logo-big">
       <h3>Welches Turnier?</h3>
+      <p style="margin: -6px 0 10px 0;"><a href="#" style="color:var(--fal-yellow); font-size:0.85em; text-decoration:none;" onclick="switchUser(); return false;">‹ Andere Identität</a></p>
       <div id="landing-page-list" style="max-height: 260px; overflow-y: auto; margin: 12px 0;"></div>
-      <div style="display:flex; gap:8px; margin-top:10px;">
-        <input type="text" id="new-tournament-name" placeholder="Name für neues Turnier...">
-        <button class="btn-primary" onclick="createNewTournament()">+ Neu</button>
+      <div id="new-tournament-section" style="display:flex; gap:8px; margin-top:10px;"></div>
+      <div id="god-panel-container" style="margin-top:16px; text-align:left;"></div>
+    </div>
+  </div>
+
+  <!-- Admin-Passwort für ein NEUES Turnier festlegen (Schritt 2 der Turniererstellung) -->
+  <div id="tournament-create-password-modal" class="modal-overlay" style="display: none;">
+    <div class="modal-content">
+      <h3>🔑 Admin-Passwort festlegen</h3>
+      <p style="font-size:0.85em; opacity:0.8;">Dieses Passwort gilt nur für DIESES Turnier und macht dich zu dessen Admin.</p>
+      <input type="password" id="new-tournament-password" placeholder="Admin-Passwort..." style="width: 100%; padding: 8px; margin-bottom: 10px; box-sizing: border-box;">
+      <div style="display: flex; gap: 8px;">
+        <button class="btn-secondary" style="flex: 1;" onclick="cancelCreateTournament()">Zurück</button>
+        <button class="btn-primary" style="flex: 1;" onclick="confirmCreateTournament()">Turnier erstellen</button>
       </div>
     </div>
   </div>
 
-  <!-- Rollenauswahl-Modal: erscheint, sobald ein Turnier ausgewählt wurde -->
-<div id="role-selection-modal" class="modal-overlay" style="display: none;">
-  <div class="modal-content">
-    <img src="https://spvgg-fal.de/templates/yootheme/cache/dc/Logo-2017-web-dc30d58a.webp" alt="SpVgg FAL Wappen" class="modal-logo modal-logo-big">
-    <h3>Willkommen zum FAL FIFA Turnier</h3>
-    <p style="margin: -6px 0 10px 0;"><a href="#" style="color:var(--fal-yellow); font-size:0.85em; text-decoration:none;" onclick="goToLandingPage(); return false;">‹ Anderes Turnier wählen</a></p>
+  <!-- Beitreten/Zuschauen-Modal: erscheint beim (erneuten) Betreten EINES Turniers -->
+  <div id="tournament-join-modal" class="modal-overlay" style="display: none;">
+    <div class="modal-content">
+      <img src="https://spvgg-fal.de/templates/yootheme/cache/dc/Logo-2017-web-dc30d58a.webp" alt="SpVgg FAL Wappen" class="modal-logo modal-logo-big">
+      <h3>Willkommen zum FAL FIFA Turnier</h3>
+      <p style="margin: -6px 0 10px 0;"><a href="#" style="color:var(--fal-yellow); font-size:0.85em; text-decoration:none;" onclick="goToLandingPage(); return false;">‹ Anderes Turnier wählen</a></p>
 
-    <!-- 1. Hauptoptionen -->
-    <div id="role-options">
-      <button class="btn-primary" style="width: 100%; margin-bottom: 8px;" onclick="showNewPlayerInput()">➕ Neuer Spieler</button>
-      <button class="btn-primary" style="width: 100%; margin-bottom: 8px;" onclick="showExistingPlayers()">👤 Spieler auswählen</button>
-      <button class="btn-secondary" style="width: 100%;" onclick="enterAsSpectator()">👀 Als Zuschauer fortfahren</button>
-    </div>
-
-    <!-- 2. Formular für neuen Spieler -->
-    <div id="new-player-select" style="display: none;">
-      <h4>Neuen Spieler registrieren</h4>
-      <input type="text" id="self-player-name" placeholder="Dein Name..." style="width: 100%; padding: 8px; margin-bottom: 10px; box-sizing: border-box;">
-      <div style="display: flex; gap: 8px;">
-        <button class="btn-secondary" style="flex: 1;" onclick="resetRoleSelection()">Zurück</button>
-        <button class="btn-primary" style="flex: 1;" onclick="registerNewPlayer()">Registrieren</button>
+      <!-- 1. Beitreten oder nur zuschauen -->
+      <div id="join-options">
+        <button class="btn-primary" style="width: 100%; margin-bottom: 8px;" onclick="joinCurrentTournamentAsPlayer()">➕ Als Spieler beitreten</button>
+        <button class="btn-secondary" style="width: 100%;" onclick="spectateCurrentTournament()">👀 Nur zuschauen</button>
       </div>
-    </div>
 
-    <!-- 3. Liste für bestehende Spieler -->
-    <div id="existing-players-select" style="display: none;">
-      <h4>Spieler auswählen</h4>
-      <div id="existing-players-list" style="max-height: 200px; overflow-y: auto; margin-bottom: 10px;"></div>
-      <button class="btn-secondary" style="width: 100%;" onclick="resetRoleSelection()">Zurück</button>
-    </div>
-
-    <!-- 4. Passwort-Eingabe (Admin/Gesperrte Spieler) -->
-    <div id="admin-password-select" style="display: none;">
-      <h4 id="password-prompt-text">🔒 Passwort erforderlich</h4>
-      <input type="password" id="admin-password-input" placeholder="Passwort..." style="width: 100%; padding: 8px; margin-bottom: 10px; box-sizing: border-box;">
-      <div style="display: flex; gap: 8px;">
-        <button class="btn-secondary" style="flex: 1;" onclick="resetRoleSelection()">Zurück</button>
-        <button class="btn-primary" style="flex: 1;" onclick="confirmAdminPassword()">Bestätigen</button>
+      <!-- 2. Passwort-Eingabe (falls die eigene Identität hier schon ein geschütztes Konto hat) -->
+      <div id="join-password-select" style="display: none;">
+        <h4 id="tournament-password-prompt-text">🔒 Passwort erforderlich</h4>
+        <input type="password" id="tournament-password-input" placeholder="Passwort..." style="width: 100%; padding: 8px; margin-bottom: 10px; box-sizing: border-box;">
+        <button class="btn-primary" style="width: 100%;" onclick="confirmTournamentPassword()">Bestätigen</button>
       </div>
     </div>
   </div>
-</div>
-  
+
   <!-- INTERAKTIVE AUSLOSUNG SHOW-MODAL (unverändert) -->
   <div id="draft-modal" class="modal-overlay" style="display: none;">
     <div class="modal-content" style="max-width: 520px; padding: 25px;">
@@ -96,7 +130,7 @@
       <span id="user-badge"></span>
       <span id="connection-status-badge" class="connection-badge"></span>
       <span id="user-password-action"></span>
-      <button class="btn-secondary btn-sm" id="btn-switch-user" style="margin-left: 10px;">Wechseln</button>
+      <button class="btn-secondary btn-sm" id="btn-switch-user" style="margin-left: 10px;" onclick="switchUser()">Wechseln</button>
       <button class="btn-secondary btn-sm" style="margin-left: 6px;" onclick="goToLandingPage()">🔄 Turnier wechseln</button>
     </div>
   </header>
