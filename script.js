@@ -104,6 +104,8 @@ window.renameTournamentAsGod = renameTournamentAsGod;
 window.godConfirmPendingPassword = godConfirmPendingPassword;
 window.godRejectPendingPassword = godRejectPendingPassword;
 window.toggleGlobalLock = toggleGlobalLock;
+window.openGodPanel = openGodPanel;
+window.closeGodPanel = closeGodPanel;
 window.deleteGlobalPlayerAsGod = deleteGlobalPlayerAsGod;
 // ============================================================================
 // 1. FIREBASE-KONFIGURATION — Verbindungsdaten zur Online-Datenbank
@@ -998,7 +1000,42 @@ function renderLandingPage() {
       `;
     }
   }
+  renderGodPanelButton();
   renderGodPanel();
+}
+// Baut nur den "God-Panel öffnen"-Knopf (mit Hinweis-Badge bei offenen Passwort-Wünschen)
+// auf der Turnierauswahl-Seite - eigene Funktion statt Teil von renderLandingPage(), damit
+// sie auch bei Live-Updates aus attachGodOversightListener aufgerufen werden kann, OHNE dabei
+// z.B. das "Name für neues Turnier"-Eingabefeld mitten in der Eingabe zu überschreiben.
+function renderGodPanelButton() {
+  const godButtonContainer = document.getElementById('god-panel-button-container');
+  if (!godButtonContainer) return;
+  if (!isGod()) { godButtonContainer.innerHTML = ''; return; }
+  const pendingCount = countPendingPasswordsAcrossTournaments();
+  godButtonContainer.innerHTML = `
+    <button class="btn-secondary" style="width:100%; margin-bottom:12px; display:flex; align-items:center; justify-content:center; gap:8px;" onclick="openGodPanel()">
+      👑 God-Panel öffnen
+      ${pendingCount > 0 ? `<span style="background:var(--fal-yellow); color:#000; border-radius:10px; padding:1px 8px; font-size:0.8em; font-weight:bold;">${pendingCount}</span>` : ''}
+    </button>
+  `;
+}
+// Zählt offene Passwort-Wünsche über alle Turniere hinweg - für das Hinweis-Badge auf
+// dem "God-Panel öffnen"-Knopf, damit man nicht extra reinklicken muss um zu sehen, ob was ansteht.
+function countPendingPasswordsAcrossTournaments() {
+  let count = 0;
+  Object.keys(godOversightData).forEach((tid) => {
+    (godOversightData[tid].players || []).forEach((p) => { if (p && p.pendingPassword) count++; });
+  });
+  return count;
+}
+// Öffnet den eigenen God-Panel-Screen (nur der God selbst)
+function openGodPanel() {
+  if (!isGod()) return;
+  document.getElementById('god-panel-modal').style.display = 'flex';
+}
+// Schließt den God-Panel-Screen wieder, zurück zur Turnierauswahl
+function closeGodPanel() {
+  document.getElementById('god-panel-modal').style.display = 'none';
 }
 // Schritt 1 der Turniererstellung: Name prüfen, dann Admin-Passwort-Modal für DIESES
 // Turnier zeigen (jedes Turnier bekommt sein eigenes, vom Ersteller gewähltes Passwort).
@@ -1166,6 +1203,7 @@ function attachGodOversightListener() {
       };
     });
     renderGodPanel();
+    renderGodPanelButton();
   }, (error) => {
     // Läuft typischerweise auf, wenn die Firebase-Regeln das Lesen des KOMPLETTEN
     // "tournaments"-Wurzelpfads verbieten (z.B. wenn nur "tournaments/$id" erlaubt ist) -
@@ -1192,68 +1230,64 @@ function renderGodPanel() {
   });
   const playerKeys = Object.keys(globalPlayers).sort((a, b) => (globalPlayers[a].name || a).localeCompare(globalPlayers[b].name || b));
   container.innerHTML = `
-    <div class="admin-card">
-      <details open>
-        <summary><h3>👑 God-Panel (website-weite Steuerung)</h3></summary>
-        <p style="font-size:0.85em; opacity:0.8;">
-          Nur für dich sichtbar - hier kannst du schon eingreifen, bevor du überhaupt<br>
-          ein Turnier betrittst.
-        </p>
+    <h2 style="margin-top:0;">👑 God-Panel</h2>
+    <p style="font-size:0.85em; opacity:0.8;">
+      Nur für dich sichtbar - hier kannst du schon eingreifen, bevor du überhaupt<br>
+      ein Turnier betrittst.
+    </p>
 
-        <h4 style="margin-bottom:6px;">⏳ Ausstehende Passwort-Wünsche (alle Turniere)</h4>
-        <div style="margin-bottom:16px;">
-          ${pendingRows.length === 0 ? '<p class="empty-state">Aktuell nichts zu bestätigen.</p>' : pendingRows.map(r => `
-            <div style="display:flex; flex-wrap:wrap; justify-content:space-between; align-items:center; background: var(--fal-blue-primary); padding: 8px 12px; border-radius: 8px; margin-bottom: 8px; gap: 8px;">
-              <div style="font-size:0.9em;">
-                <strong>${escapeHtml(r.playerName)}</strong><br>
-                <span style="opacity:0.75; font-size:0.9em;">in ${escapeHtml(r.tournamentName)}</span>
-              </div>
-              <div style="display:flex; gap:5px;">
-                <button class="btn-primary btn-sm" style="background:#2ecc71; color:#fff;" onclick="godConfirmPendingPassword('${r.tid}', ${r.playerIndex})">✅ Bestätigen</button>
-                <button class="btn-danger btn-sm" onclick="godRejectPendingPassword('${r.tid}', ${r.playerIndex})">❌ Ablehnen</button>
-              </div>
-            </div>
-          `).join('')}
+    <h4 style="margin-bottom:6px;">⏳ Ausstehende Passwort-Wünsche (alle Turniere)</h4>
+    <div style="margin-bottom:16px;">
+      ${pendingRows.length === 0 ? '<p class="empty-state">Aktuell nichts zu bestätigen.</p>' : pendingRows.map(r => `
+        <div style="display:flex; flex-wrap:wrap; justify-content:space-between; align-items:center; background: var(--fal-blue-primary); padding: 8px 12px; border-radius: 8px; margin-bottom: 8px; gap: 8px;">
+          <div style="font-size:0.9em;">
+            <strong>${escapeHtml(r.playerName)}</strong><br>
+            <span style="opacity:0.75; font-size:0.9em;">in ${escapeHtml(r.tournamentName)}</span>
+          </div>
+          <div style="display:flex; gap:5px;">
+            <button class="btn-primary btn-sm" style="background:#2ecc71; color:#fff;" onclick="godConfirmPendingPassword('${r.tid}', ${r.playerIndex})">✅ Bestätigen</button>
+            <button class="btn-danger btn-sm" onclick="godRejectPendingPassword('${r.tid}', ${r.playerIndex})">❌ Ablehnen</button>
+          </div>
         </div>
+      `).join('')}
+    </div>
 
-        <h4 style="margin-bottom:6px;">👥 Alle Spieler (website-weit, ${playerKeys.length})</h4>
-        <div style="max-height:260px; overflow-y:auto; margin-bottom:16px;">
-          ${playerKeys.length === 0 ? '<p class="empty-state">Noch keine Identitäten bekannt.</p>' : playerKeys.map(key => {
-            const name = globalPlayers[key].name || key;
-            // Sucht in ALLEN Turnieren nach einem Spieler-Eintrag mit diesem Namen, damit man
-            // hier auf einen Blick sieht, wo jemand überall mitspielt (und in welcher Rolle).
-            const memberships = [];
-            Object.keys(godOversightData).forEach((tid) => {
-              const t = godOversightData[tid];
-              const match = (t.players || []).find(p => p && p.name && p.name.toLowerCase() === name.toLowerCase());
-              if (match) {
-                const role = match.isTournamentOwner ? 'Admin' : (match.isRef ? 'Ref' : 'Spieler');
-                memberships.push(`${escapeHtml(t.name || tid)} (${role})`);
-              }
-            });
-            return `
-            <div style="background: var(--fal-blue-primary); padding: 6px 12px; border-radius: 8px; margin-bottom: 6px;">
-              <div style="display:flex; flex-wrap:wrap; justify-content:space-between; align-items:center; gap:8px;">
-                <span style="font-size:0.9em;">${escapeHtml(name)}${key === 'tim' ? ' 👑' : ''}</span>
-                ${key === 'tim' ? '' : `<button class="btn-danger btn-sm" title="Aus der Liste löschen" onclick="deleteGlobalPlayerAsGod('${key}')">🗑️</button>`}
-              </div>
-              ${memberships.length ? `<div style="font-size:0.78em; opacity:0.7; margin-top:3px;">${memberships.join(' · ')}</div>` : '<div style="font-size:0.78em; opacity:0.55; margin-top:3px;">In keinem Turnier registriert</div>'}
-            </div>
-          `; }).join('')}
+    <h4 style="margin-bottom:6px;">👥 Alle Spieler (website-weit, ${playerKeys.length})</h4>
+    <div style="max-height:260px; overflow-y:auto; margin-bottom:16px;">
+      ${playerKeys.length === 0 ? '<p class="empty-state">Noch keine Identitäten bekannt.</p>' : playerKeys.map(key => {
+        const name = globalPlayers[key].name || key;
+        // Sucht in ALLEN Turnieren nach einem Spieler-Eintrag mit diesem Namen, damit man
+        // hier auf einen Blick sieht, wo jemand überall mitspielt (und in welcher Rolle).
+        const memberships = [];
+        Object.keys(godOversightData).forEach((tid) => {
+          const t = godOversightData[tid];
+          const match = (t.players || []).find(p => p && p.name && p.name.toLowerCase() === name.toLowerCase());
+          if (match) {
+            const role = match.isTournamentOwner ? 'Admin' : (match.isRef ? 'Ref' : 'Spieler');
+            memberships.push(`${escapeHtml(t.name || tid)} (${role})`);
+          }
+        });
+        return `
+        <div style="background: var(--fal-blue-primary); padding: 6px 12px; border-radius: 8px; margin-bottom: 6px;">
+          <div style="display:flex; flex-wrap:wrap; justify-content:space-between; align-items:center; gap:8px;">
+            <span style="font-size:0.9em;">${escapeHtml(name)}${key === 'tim' ? ' 👑' : ''}</span>
+            ${key === 'tim' ? '' : `<button class="btn-danger btn-sm" title="Aus der Liste löschen" onclick="deleteGlobalPlayerAsGod('${key}')">🗑️</button>`}
+          </div>
+          ${memberships.length ? `<div style="font-size:0.78em; opacity:0.7; margin-top:3px;">${memberships.join(' · ')}</div>` : '<div style="font-size:0.78em; opacity:0.55; margin-top:3px;">In keinem Turnier registriert</div>'}
         </div>
+      `; }).join('')}
+    </div>
 
-        <h4 style="margin-bottom:6px;">🔒 Website-weite Sperren</h4>
-        <div style="display:flex; flex-direction:column; gap:10px;">
-          <label style="display:flex; align-items:flex-start; gap:8px; font-size:0.9em;">
-            <input type="checkbox" style="margin-top:3px; flex-shrink:0;" ${globalSettings.lockNewIdentities ? 'checked' : ''} onchange="toggleGlobalLock('lockNewIdentities')">
-            <span>Neue Identitäten (unbekannte Namen)<br>sperren - niemand Neues kann sich mehr registrieren</span>
-          </label>
-          <label style="display:flex; align-items:flex-start; gap:8px; font-size:0.9em;">
-            <input type="checkbox" style="margin-top:3px; flex-shrink:0;" ${globalSettings.lockNewTournaments ? 'checked' : ''} onchange="toggleGlobalLock('lockNewTournaments')">
-            <span>Neue Turniere erstellen<br>sperren (du als God kannst weiterhin welche anlegen)</span>
-          </label>
-        </div>
-      </details>
+    <h4 style="margin-bottom:6px;">🔒 Website-weite Sperren</h4>
+    <div style="display:flex; flex-direction:column; gap:10px;">
+      <label style="display:flex; align-items:flex-start; gap:8px; font-size:0.9em;">
+        <input type="checkbox" style="margin-top:3px; flex-shrink:0;" ${globalSettings.lockNewIdentities ? 'checked' : ''} onchange="toggleGlobalLock('lockNewIdentities')">
+        <span>Neue Identitäten (unbekannte Namen)<br>sperren - niemand Neues kann sich mehr registrieren</span>
+      </label>
+      <label style="display:flex; align-items:flex-start; gap:8px; font-size:0.9em;">
+        <input type="checkbox" style="margin-top:3px; flex-shrink:0;" ${globalSettings.lockNewTournaments ? 'checked' : ''} onchange="toggleGlobalLock('lockNewTournaments')">
+        <span>Neue Turniere erstellen<br>sperren (du als God kannst weiterhin welche anlegen)</span>
+      </label>
     </div>
   `;
 }

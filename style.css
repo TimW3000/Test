@@ -55,11 +55,9 @@ body {
   border: 1px solid var(--fal-yellow);
 }
 
-/* Die Turnierauswahl-Startseite ist etwas breiter als die übrigen Modals, damit das
-   God-Panel (Checkboxen, Passwort-Wünsche) darin genug Platz hat */
-#landing-page-content { max-width: 480px; }
-#god-panel-container:not(:empty) { margin-bottom: 16px; }
-#god-panel-container .admin-card { text-align: left; border-color: var(--fal-yellow); }
+/* Das God-Panel ist ein eigener, breiterer Screen (nicht Teil der schlanken
+   Turnierauswahl) - siehe openGodPanel()/#god-panel-modal in script.js */
+#god-panel-modal-content { text-align: left; }
 
 .modal-logo {
   height: 65px;
