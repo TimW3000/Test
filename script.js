@@ -68,6 +68,9 @@ window.resetClubsToDefault = resetClubsToDefault;
 window.setClubLogo = setClubLogo;
 window.triggerClubLogoUpload = triggerClubLogoUpload;
 window.handleClubLogoFileSelected = handleClubLogoFileSelected;
+window.triggerTeamPhotoUpload = triggerTeamPhotoUpload;
+window.handleTeamPhotoFileSelected = handleTeamPhotoFileSelected;
+window.setTeamDisplayMode = setTeamDisplayMode;
 window.startInteractiveDraft = startInteractiveDraft;
 window.addDraftCheat = addDraftCheat;
 window.removeDraftCheat = removeDraftCheat;
@@ -256,6 +259,26 @@ function escapeHtml(str) {
 function getClubLogoUrl(clubName) {
   return (clubName && clubLogos[clubName]) ? clubLogos[clubName] : '';
 }
+// Liefert die Bild-URL, die für ein Team angezeigt werden soll: entweder das eigene,
+// von den Spielern hochgeladene Team-Foto (falls vorhanden UND ausgewählt), sonst das
+// Wappen des zugelosten Vereins. Siehe triggerTeamPhotoUpload/setTeamDisplayMode.
+function getTeamDisplayImageUrl(team) {
+  if (!team) return '';
+  if (team.displayMode === 'photo' && team.photo) return team.photo;
+  return getClubLogoUrl(team.club);
+}
+// Kleines Icon-<img> für ein Team - zeigt Foto (rund) oder Vereinswappen (eckig),
+// je nachdem was gerade für dieses Team eingestellt ist.
+function teamCrestImg(team, size) {
+  size = size || 18;
+  if (!team) return '';
+  const usingPhoto = team.displayMode === 'photo' && !!team.photo;
+  const url = usingPhoto ? team.photo : getClubLogoUrl(team.club);
+  if (!url) return '';
+  const fit = usingPhoto ? 'cover' : 'contain';
+  const radius = usingPhoto ? '50%' : '3px';
+  return `<img src="${url}" alt="" style="height:${size}px; width:${size}px; object-fit:${fit}; vertical-align:middle; border-radius:${radius}; margin-right:5px; background:#fff;">`;
+}
 // Liefert eine feste Farbe für einen Club: bekannte Vereinsfarbe, sonst eine
 // aus der 18er-Palette abgeleitete Farbe, die für den gleichen Namen immer gleich bleibt.
 function getClubColor(clubName) {
@@ -357,6 +380,48 @@ function resizeImageFile(file, maxSize, callback) {
     img.src = e.target.result;
   };
   reader.readAsDataURL(file);
+}
+// Merkt sich, für welches Team gerade ein eigenes Foto hochgeladen wird
+let pendingTeamPhotoUploadId = null;
+// Prüft, ob jemand ein Team-Foto hochladen/die Anzeige umschalten darf: die beiden
+// Team-Mitglieder selbst, oder Admin/Ref
+function canEditTeamPhoto(team) {
+  if (!team) return false;
+  const isMyTeam = !!(myPlayerName && (team.p1 === myPlayerName || team.p2 === myPlayerName));
+  return isMyTeam || hasElevated();
+}
+// Öffnet die Datei-/Kameraauswahl fürs eigene Team-Foto
+function triggerTeamPhotoUpload(teamId) {
+  const team = teams.find(t => t.id === teamId);
+  if (!canEditTeamPhoto(team)) return;
+  pendingTeamPhotoUploadId = teamId;
+  const input = document.getElementById('team-photo-file-input');
+  if (input) input.click();
+}
+// Wird aufgerufen, sobald im Datei-Dialog ein Team-Foto ausgewählt/fotografiert wurde
+function handleTeamPhotoFileSelected(event) {
+  const file = event.target.files && event.target.files[0];
+  event.target.value = '';
+  const teamId = pendingTeamPhotoUploadId;
+  pendingTeamPhotoUploadId = null;
+  if (!file || teamId === null) return;
+  const team = teams.find(t => t.id === teamId);
+  if (!canEditTeamPhoto(team)) return;
+  if (!file.type.startsWith('image/')) return alert('Bitte eine Bilddatei auswählen!');
+  resizeImageFile(file, 300, (dataUrl) => {
+    team.photo = dataUrl;
+    team.displayMode = 'photo'; // nach dem Hochladen direkt aufs neue Foto umstellen
+    saveData();
+    renderAll();
+  });
+}
+// Wechselt für ein Team zwischen Vereinswappen und eigenem Foto (nur Team-Mitglieder/Admin/Ref)
+function setTeamDisplayMode(teamId, mode) {
+  const team = teams.find(t => t.id === teamId);
+  if (!canEditTeamPhoto(team)) return;
+  team.displayMode = mode;
+  saveData();
+  renderAll();
 }
 document.addEventListener('DOMContentLoaded', () => {
   const btnShowNew = document.getElementById('btn-show-new');
@@ -879,45 +944,49 @@ function addDraftCheat() {
   const p1 = p1Sel ? p1Sel.value : '';
   const p2 = p2Sel ? p2Sel.value : '';
   const club = clubSel ? clubSel.value : '';
-  if (!p1 || !p2 || p1 === p2) return alert('Bitte zwei unterschiedliche Spieler auswählen!');
-  draftCheats.push({ p1, p2, club: club || null });
+  if (!p1) return alert('Bitte mindestens einen Spieler auswählen!');
+  if (p2 && p2 === p1) return alert('Bitte zwei unterschiedliche Spieler auswählen (oder den 2. auf "egal" lassen)!');
+  if (!p2 && !club) return alert('Ohne festgelegten Partner brauchst du mindestens einen festgelegten Verein, sonst bewirkt die Vorgabe nichts!');
+  draftCheats.push({ p1, p2: p2 || null, club: club || null });
   saveData();
   renderAll();
 }
-// Entfernt eine Cheat-Vorauswahl wieder
+// Entfernt eine Vorgabe wieder
 function removeDraftCheat(index) {
   if (!isAdmin()) return;
   draftCheats.splice(index, 1);
   saveData();
   renderAll();
 }
-// Baut die Cheat-Vorauswahl-UI im Admin-Panel auf (Formular + Liste). Nur der echte
-// Admin sieht das überhaupt - für alle anderen bleibt diese Funktion komplett unsichtbar.
+// Baut die Auslosungs-Vorgaben-UI im Admin-Panel auf (Formular + Liste). Nur der echte
+// Admin sieht das überhaupt, und auch nur, solange noch keine Teams gelost wurden -
+// danach sind Vorgaben ohnehin hinfällig und die Box verschwindet automatisch wieder.
 function renderDraftCheatPanel() {
   const container = document.getElementById('draft-cheat-container');
   if (!container) return;
-  if (!isAdmin()) { container.innerHTML = ''; return; }
+  if (!isAdmin() || teams.length > 0) { container.innerHTML = ''; return; }
   const usedNames = new Set();
-  draftCheats.forEach(c => { usedNames.add(c.p1); usedNames.add(c.p2); });
+  draftCheats.forEach(c => { usedNames.add(c.p1); if (c.p2) usedNames.add(c.p2); });
   const availablePlayers = players.filter(p => !usedNames.has(p.name));
   const playerOptions = availablePlayers.map(p => `<option value="${escapeHtml(p.name)}">${escapeHtml(p.name)}</option>`).join('');
-  const clubOptions = '<option value="">(Club zufällig)</option>' + availableClubs.map(c => `<option value="${escapeHtml(c)}">${escapeHtml(c)}</option>`).join('');
+  const partnerOptions = '<option value="">(Partner egal)</option>' + playerOptions;
+  const clubOptions = '<option value="">(Verein zufällig)</option>' + availableClubs.map(c => `<option value="${escapeHtml(c)}">${escapeHtml(c)}</option>`).join('');
   const list = draftCheats.length ? draftCheats.map((c, i) => `
     <div style="display:flex; justify-content:space-between; align-items:center; background:rgba(0,0,0,0.25); padding:6px 10px; border-radius:6px; margin-bottom:4px; font-size:0.85em;">
-      <span><strong>${escapeHtml(c.p1)}</strong> &amp; <strong>${escapeHtml(c.p2)}</strong>${c.club ? ` → ${escapeHtml(c.club)}` : ' (Club zufällig)'}</span>
+      <span><strong>${escapeHtml(c.p1)}</strong>${c.p2 ? ` &amp; <strong>${escapeHtml(c.p2)}</strong>` : ' (Partner egal)'}${c.club ? ` → ${escapeHtml(c.club)}` : ' (Verein zufällig)'}</span>
       <span style="cursor:pointer; color:#ff4d4d; font-weight:bold;" onclick="removeDraftCheat(${i})">×</span>
     </div>
-  `).join('') : '<p style="font-size:0.85em; opacity:0.7; margin:0 0 8px 0;">Noch keine Vorauswahl - alles bleibt komplett zufällig.</p>';
+  `).join('') : '<p style="font-size:0.85em; opacity:0.7; margin:0 0 8px 0;">Noch keine Vorgaben - alles bleibt komplett zufällig.</p>';
 
   container.innerHTML = `
     <div style="margin-top:14px; padding-top:12px; border-top:1px solid rgba(255,255,255,0.1);">
-      <p style="font-size:0.9em; font-weight:bold; margin:0 0 4px 0;">🎭 Cheat-Vorauswahl (nur für dich als Admin sichtbar)</p>
-      <p style="font-size:0.8em; opacity:0.75; margin:0 0 8px 0;">Lege optional fest, welche Spieler garantiert zusammen ins selbe Team kommen (und welchen Club sie bekommen). Alles ohne Vorauswahl bleibt echt zufällig - das Rad sieht für alle anderen trotzdem ganz normal aus.</p>
+      <p style="font-size:0.9em; font-weight:bold; margin:0 0 4px 0;">⚙️ Auslosungs-Voreinstellungen (optional)</p>
+      <p style="font-size:0.8em; opacity:0.75; margin:0 0 8px 0;">Hier kannst du vor der Auslosung festlegen, welcher Spieler mit wem zusammen ins Team soll und/oder welchen Verein er bekommt. Den Partner kannst du auch offen lassen ("egal") und nur den Verein festlegen. Ohne Vorgabe bleibt alles zufällig.</p>
       ${list}
-      ${availablePlayers.length >= 2 ? `
+      ${availablePlayers.length >= 1 ? `
         <div style="display:flex; gap:6px; flex-wrap:wrap; margin-top:4px;">
           <select id="cheat-p1-select">${playerOptions}</select>
-          <select id="cheat-p2-select">${playerOptions}</select>
+          <select id="cheat-p2-select">${partnerOptions}</select>
           <select id="cheat-club-select">${clubOptions}</select>
           <button class="btn-secondary btn-sm" onclick="addDraftCheat()">+ Hinzufügen</button>
         </div>
@@ -1186,24 +1255,33 @@ function spinWheel() {
   if (!currentPool || currentPool.length === 0) {
     return alert("Keine Elemente mehr zum Auslosen im aktuellen Pool!");
   }
-  // Cheat-Vorauswahl prüfen: Spieler 1 bleibt IMMER ehrlich zufällig (schließlich muss
+  // Voreinstellungen prüfen: Spieler 1 bleibt IMMER ehrlich zufällig (schließlich muss
   // irgendwer als erstes gezogen werden) - erst bei Spieler 2 (dem Partner) und beim
-  // Club wird geschaut, ob der Admin für dieses Duo etwas vorausgewählt hat. Das Rad
-  // dreht sich optisch trotzdem ganz normal, landet aber gezielt auf dem passenden Feld.
+  // Verein wird geschaut, ob dafür eine Vorgabe hinterlegt ist. Eine Vorgabe kann einen
+  // festen Partner haben ODER den Partner offen lassen ("egal") und nur den Verein
+  // festlegen. Das Rad dreht sich optisch trotzdem ganz normal, landet aber gezielt
+  // auf dem passenden Feld.
   let targetIndex = null;
   if (draftState.currentStep === 1 && draftState.tempP1) {
-    const cheat = draftCheats.find(c => c.p1 === draftState.tempP1 || c.p2 === draftState.tempP1);
+    // Nur Vorgaben mit festem Partner sind hier relevant (Partner "egal" wirkt erst beim Verein)
+    const cheat = draftCheats.find(c => c.p2 && (c.p1 === draftState.tempP1 || c.p2 === draftState.tempP1));
     if (cheat) {
       const partner = cheat.p1 === draftState.tempP1 ? cheat.p2 : cheat.p1;
       const idx = currentPool.indexOf(partner);
       if (idx !== -1) targetIndex = idx;
     }
   } else if (draftState.currentStep === 2 && draftState.tempP1 && draftState.tempP2) {
-    const cheat = draftCheats.find(c =>
-      (c.p1 === draftState.tempP1 && c.p2 === draftState.tempP2) ||
-      (c.p1 === draftState.tempP2 && c.p2 === draftState.tempP1)
-    );
-    if (cheat && cheat.club) {
+    const cheat = draftCheats.find(c => {
+      if (!c.club) return false;
+      if (c.p2) {
+        // Vorgabe mit festem Partner: muss exakt zu diesem Duo passen
+        return (c.p1 === draftState.tempP1 && c.p2 === draftState.tempP2) ||
+               (c.p1 === draftState.tempP2 && c.p2 === draftState.tempP1);
+      }
+      // Vorgabe ohne festen Partner: reicht, wenn der eine festgelegte Spieler dabei ist
+      return c.p1 === draftState.tempP1 || c.p1 === draftState.tempP2;
+    });
+    if (cheat) {
       const idx = currentPool.indexOf(cheat.club);
       if (idx !== -1) targetIndex = idx;
     }
@@ -2241,9 +2319,13 @@ function renderTeams() {
   container.innerHTML = teams.map(t => {
     const isMyTeam = (myPlayerName && (t.p1 === myPlayerName || t.p2 === myPlayerName));
     const canEditName = hasElevated() || isMyTeam;
-    // Hier wird das Wappen sauber gerendert:
-    const clubBadgeHtml = t.club ? `<div class="club-badge">${renderClubNameWithBadge(t.club)}</div>` : '';
-    
+    const canEditPhoto = canEditTeamPhoto(t);
+    // Zeigt entweder das Vereinswappen (mit Namen) oder, falls eingestellt, das eigene Team-Foto
+    const usingPhoto = t.displayMode === 'photo' && !!t.photo;
+    const crestHtml = usingPhoto
+      ? `<img src="${t.photo}" alt="Team-Foto" style="width:44px; height:44px; object-fit:cover; border-radius:50%; border:2px solid var(--fal-yellow);">`
+      : (t.club ? `<div class="club-badge">${renderClubNameWithBadge(t.club)}</div>` : '');
+
     return `
       <div class="admin-card ${isMyTeam ? 'highlight-me' : ''}">
         <div style="display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap;">
@@ -2251,10 +2333,23 @@ function renderTeams() {
                  ${canEditName ? '' : 'disabled'}
                  onchange="updateTeamName(${t.id}, this.value)"
                  style="font-weight: bold; font-size: 1.1em; max-width: 180px;">
-          ${clubBadgeHtml}
+          ${crestHtml}
         </div>
         ${isMyTeam ? '<div style="color:var(--fal-yellow); font-size:0.85em; font-weight:bold; margin-top:4px;">⭐ (Dein Team)</div>' : ''}
         <p style="margin-top: 8px; margin-bottom:0;">Mitglieder: <strong>${t.p1}</strong> & <strong>${t.p2}</strong></p>
+        ${canEditPhoto ? `
+          <div style="margin-top:8px; padding-top:8px; border-top:1px solid rgba(255,255,255,0.08); display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
+            <button class="btn-secondary btn-sm" onclick="triggerTeamPhotoUpload(${t.id})">📷 ${t.photo ? 'Neues Team-Foto' : 'Team-Foto hochladen'}</button>
+            ${t.photo ? `
+              <label style="font-size:0.8em; display:flex; align-items:center; gap:4px;">
+                <input type="radio" name="team-display-${t.id}" ${!usingPhoto ? 'checked' : ''} onchange="setTeamDisplayMode(${t.id}, 'club')"> Wappen
+              </label>
+              <label style="font-size:0.8em; display:flex; align-items:center; gap:4px;">
+                <input type="radio" name="team-display-${t.id}" ${usingPhoto ? 'checked' : ''} onchange="setTeamDisplayMode(${t.id}, 'photo')"> Foto
+              </label>
+            ` : ''}
+          </div>
+        ` : ''}
       </div>
     `;
   }).join('');
@@ -2306,7 +2401,7 @@ function renderGroups() {
             ${g.rankings.map((r, idx) => `
               <tr style="${idx === 2 ? 'opacity: 0.9;' : ''}">
                 <td>${idx + 1}</td>
-                <td>${clubLogoImg(r.club, 20)}<strong>${escapeHtml(r.name)}</strong></td>
+                <td>${teamCrestImg(teams.find(t => t.id === r.teamId), 20)}<strong>${escapeHtml(r.name)}</strong></td>
                 <td>${r.played}</td>
                 <td>${r.gf}:${r.ga}</td>
                 <td>${r.diff > 0 ? '+' + r.diff : r.diff}</td>
@@ -2333,7 +2428,7 @@ function renderGroups() {
               ${thirdPlaces.map((r, idx) => `
                 <tr style="${idx < 2 ? 'background: rgba(0, 255, 100, 0.1);' : 'background: rgba(255, 0, 0, 0.1);'}">
                   <td>${idx + 1}</td>
-                  <td>${clubLogoImg(r.club, 20)}<strong>${escapeHtml(r.name)}</strong> (${escapeHtml(r.group)})</td>
+                  <td>${teamCrestImg(teams.find(t => t.id === r.teamId), 20)}<strong>${escapeHtml(r.name)}</strong> (${escapeHtml(r.group)})</td>
                   <td>${r.played}</td>
                   <td>${r.gf}:${r.ga}</td>
                   <td>${r.diff > 0 ? '+' + r.diff : r.diff}</td>
@@ -2384,11 +2479,11 @@ function renderMatchBlock(m, isKO) {
       </div>
       <div style="margin: 6px 0;">
         <div style="font-size:1.05em; font-weight:bold;">
-          ${clubLogoImg(t1.club, 22)}${t1.name} <small style="opacity:0.8;">(${t1.p1} & ${t1.p2})</small>
+          ${teamCrestImg(t1, 22)}${t1.name} <small style="opacity:0.8;">(${t1.p1} & ${t1.p2})</small>
         </div>
         <div style="font-size:0.8em; opacity:0.6; margin:2px 0;">vs</div>
         <div style="font-size:1.05em; font-weight:bold;">
-          ${clubLogoImg(t2.club, 22)}${t2.name} <small style="opacity:0.8;">(${t2.p1} & ${t2.p2})</small>
+          ${teamCrestImg(t2, 22)}${t2.name} <small style="opacity:0.8;">(${t2.p1} & ${t2.p2})</small>
         </div>
       </div>
       <div style="display:flex; flex-direction:column; gap:8px;">
@@ -2551,9 +2646,9 @@ function renderBettingSystem() {
         <div style="background: rgba(255,255,255,0.05); padding: 12px; border-radius: 8px; margin-bottom: 10px; border: 1px solid rgba(255,255,255,0.1);">
           <div style="font-size: 0.85em; opacity: 0.8; margin-bottom: 5px;">${m.isKO ? m.round : m.group}</div>
           <div style="display: flex; justify-content: space-between; align-items: center; font-weight: bold; margin-bottom: 10px; flex-wrap:wrap; gap:6px;">
-            <span>${clubLogoImg(t1.club, 20)}${t1.name}</span>
+            <span>${teamCrestImg(t1, 20)}${t1.name}</span>
             <span style="color: var(--fal-yellow);">VS</span>
-            <span>${clubLogoImg(t2.club, 20)}${t2.name}</span>
+            <span>${teamCrestImg(t2, 20)}${t2.name}</span>
           </div>
           ${myExistingBet ? `
             <div style="text-align:center; font-size: 0.9em; color: var(--fal-yellow); background: rgba(0,0,0,0.2); padding: 5px; border-radius: 5px;">

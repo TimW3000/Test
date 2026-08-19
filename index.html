@@ -161,6 +161,9 @@
     <section id="tab-teams" class="tab-content">
       <h2>Angemeldete Teams</h2>
       <div id="teams-container" class="grid-container"></div>
+      <!-- Verstecktes Datei-Input fürs Team-Foto-Upload; wird per JS für das jeweils
+           gewünschte Team angeklickt (siehe triggerTeamPhotoUpload in script.js) -->
+      <input type="file" id="team-photo-file-input" accept="image/*" style="display:none;" onchange="handleTeamPhotoFileSelected(event)">
     </section>
 
     <!-- GRUPPEN TAB -->
