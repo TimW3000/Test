@@ -44,6 +44,7 @@ window.addPlayer = addPlayer;
 window.addTestPlayers = addTestPlayers;
 window.removePlayer = removePlayer;
 window.toggleRef = toggleRef;
+window.renamePlayer = renamePlayer;
 window.setPlayerPassword = setPlayerPassword;
 window.removePlayerPassword = removePlayerPassword;
 window.requestOwnPassword = requestOwnPassword;
@@ -211,10 +212,14 @@ let bets = [];          // { matchId, isKO, playerName, chosenTeamId, amount }
 let draftState = { active: false, currentStep: 0, tempP1: null, tempP2: null, remainingPlayers: [], remainingClubs: [], spinning: false, startTime: null, targetAngle: 0, duration: 4000, lastDrawnItem: null, pairs: [] };
 let animFrameId = null;
 // localStorage-Schlüssel, um sich zu merken, mit welcher Passwort-Version man zuletzt IN
-// DIESEM Turnier erfolgreich angemeldet war - weiterhin pro Turnier, weil ein Passwort
-// (falls überhaupt gesetzt) pro Turnier separat vom Ersteller/Admin vergeben wird.
+// DIESEM Turnier ALS DIESE IDENTITÄT erfolgreich angemeldet war. Wichtig: MUSS auch den
+// Spielernamen enthalten, nicht nur die Turnier-ID! Sonst würde auf einem geteilten Gerät
+// z.B. Annas erfolgreicher Login in Turnier X auch Bob automatisch (OHNE Passwort-Abfrage)
+// in genau dasselbe Turnier X einloggen, sobald er per "Wechseln" die Identität übernimmt -
+// das war die Ursache für "Admin-Passwort wird nicht abgefragt / wirkt überschrieben".
 function myPlayerPwvStorageKey() {
-  return 'fifa_my_player_pwv_' + (currentTournamentId || 'none');
+  const name = myPlayerName ? myPlayerName.trim().toLowerCase() : 'none';
+  return 'fifa_my_player_pwv_' + (currentTournamentId || 'none') + '_' + name;
 }
 // Sucht das Spieler-Objekt zu einem Namen (Groß-/Kleinschreibung egal)
 function getPlayerObj(name) {
@@ -584,6 +589,14 @@ function finalizeGlobalIdentity(name) {
 function switchUser() {
   localStorage.removeItem('fifa_global_name');
   myPlayerName = null;
+  // WICHTIG: Alle gemerkten "auf diesem Gerät schon erfolgreich angemeldet"-Flags für
+  // JEDES Turnier löschen. Sonst könnte auf einem geteilten Gerät jeder, der einfach nur
+  // den richtigen NAMEN kennt, sich ohne Passwort als diese Person ausgeben, sobald diese
+  // Person selbst vorher einmal erfolgreich eingeloggt war - "Wechseln" muss ein echter,
+  // sauberer Neustart der Anmeldung sein.
+  Object.keys(localStorage)
+    .filter(k => k.startsWith('fifa_my_player_pwv_'))
+    .forEach(k => localStorage.removeItem(k));
   if (godOversightRef) { godOversightRef.off('value'); godOversightRef = null; }
   document.getElementById('app-header').style.display = 'none';
   document.getElementById('app-nav').style.display = 'none';
@@ -620,6 +633,12 @@ function toggleHeaderDetails() {
 // Zeigt den Namens-Badge im Header + (falls zutreffend) den "Passwort vorschlagen"-Button
 // bzw. den Hinweis, dass ein Passwort-Wunsch schon auf Bestätigung wartet.
 function renderUserBadge() {
+  // Name des aktuell geöffneten Turniers - im Header (klein unter dem Titel) und im
+  // Browsertab-Titel, "und auch sonst an den passenden Stellen" wie gewünscht.
+  const tournamentName = (currentTournamentId && tournamentsList[currentTournamentId]) ? tournamentsList[currentTournamentId].name : '';
+  const tnameEl = document.getElementById('header-tournament-name');
+  if (tnameEl) tnameEl.textContent = tournamentName ? '🏆 ' + tournamentName : '';
+  document.title = tournamentName ? `${tournamentName} — FAL FIFA Turnier` : 'FAL FIFA Turnier';
   const userBadge = document.getElementById('user-badge');
   if (userBadge) {
     let roleTag = '';
@@ -892,6 +911,9 @@ function attachTournamentsMetaListener() {
   db.ref('tournaments_meta').on('value', (snap) => {
     tournamentsList = snap.val() || {};
     renderLandingPage();
+  }, (error) => {
+    console.error('Firebase Lese-Fehler (tournaments_meta):', error);
+    alert('⚠️ Turnierliste konnte nicht geladen werden!\n\n' + error.message + '\n\nBitte die Firebase-Datenbankregeln für den Pfad "tournaments_meta" prüfen.');
   });
 }
 // Baut die Liste der Turniere auf der Startseite auf (neueste zuerst) + das Formular
@@ -1047,6 +1069,9 @@ function migrateOldTournamentIfNeeded() {
 function attachGlobalPlayersListener() {
   db.ref('globalPlayers').on('value', (snap) => {
     globalPlayers = snap.val() || {};
+  }, (error) => {
+    console.error('Firebase Lese-Fehler (globalPlayers):', error);
+    alert('⚠️ Bekannte Identitäten konnten nicht geladen werden!\n\n' + error.message + '\n\nBitte die Firebase-Datenbankregeln für den Pfad "globalPlayers" prüfen.');
   });
 }
 // Lädt fortlaufend die website-weiten God-Sperren (neue Identitäten / neue Turniere)
@@ -1054,6 +1079,9 @@ function attachGlobalSettingsListener() {
   db.ref('globalSettings').on('value', (snap) => {
     globalSettings = snap.val() || { lockNewIdentities: false, lockNewTournaments: false };
     renderLandingPage();
+  }, (error) => {
+    console.error('Firebase Lese-Fehler (globalSettings):', error);
+    alert('⚠️ Website-weite Sperren konnten nicht geladen werden!\n\n' + error.message + '\n\nBitte die Firebase-Datenbankregeln für den Pfad "globalSettings" prüfen.');
   });
 }
 // Nur für den God: lädt ALLE Turniere komplett (nicht nur die Meta-Liste), damit er auf
@@ -1073,6 +1101,13 @@ function attachGodOversightListener() {
       };
     });
     renderGodPanel();
+  }, (error) => {
+    // Läuft typischerweise auf, wenn die Firebase-Regeln das Lesen des KOMPLETTEN
+    // "tournaments"-Wurzelpfads verbieten (z.B. wenn nur "tournaments/$id" erlaubt ist) -
+    // dann bleibt das God-Panel leer, ohne dass man den Grund sieht. Deshalb hier explizit.
+    console.error('Firebase Lese-Fehler (tournaments, God-Übersicht):', error);
+    alert('⚠️ God-Panel: Turnierübersicht konnte nicht geladen werden!\n\n' + error.message + '\n\nBitte die Firebase-Datenbankregeln prüfen - der Pfad "tournaments" (nicht nur "tournaments/$id") muss für den God lesbar sein.');
+    godOversightRef = null;
   });
 }
 // Baut das God-Panel auf der Startseite auf: Turniere verwalten, ausstehende
@@ -1127,8 +1162,8 @@ function deleteTournamentAsGod(id) {
   if (!isGod()) return;
   const name = (tournamentsList[id] && tournamentsList[id].name) || id;
   if (!confirm(`Turnier "${name}" WIRKLICH unwiderruflich löschen?`)) return;
-  db.ref('tournaments_meta/' + id).remove();
-  db.ref('tournaments/' + id).remove();
+  db.ref('tournaments_meta/' + id).remove().catch((error) => alert('⚠️ Löschen fehlgeschlagen:\n' + error.message));
+  db.ref('tournaments/' + id).remove().catch((error) => alert('⚠️ Löschen fehlgeschlagen:\n' + error.message));
   if (currentTournamentId === id) goToLandingPage();
 }
 // Benennt ein Turnier um - nur der God darf das
@@ -1138,7 +1173,7 @@ function renameTournamentAsGod(id) {
   const newName = prompt('Neuer Name für dieses Turnier:', current);
   if (newName === null) return;
   if (!newName.trim()) return alert('Name darf nicht leer sein.');
-  db.ref('tournaments_meta/' + id + '/name').set(newName.trim());
+  db.ref('tournaments_meta/' + id + '/name').set(newName.trim()).catch((error) => alert('⚠️ Umbenennen fehlgeschlagen:\n' + error.message));
 }
 // Bestätigt einen Passwort-Wunsch turnierübergreifend, ohne das Turnier selbst zu betreten
 function godConfirmPendingPassword(tid, playerIndex) {
@@ -1147,7 +1182,7 @@ function godConfirmPendingPassword(tid, playerIndex) {
   const p = t && t.players && t.players[playerIndex];
   if (!p || !p.pendingPassword) return;
   const updatedPlayers = t.players.map((pl, i) => i !== playerIndex ? pl : { ...pl, password: pl.pendingPassword, pendingPassword: null, passwordVersion: (pl.passwordVersion || 0) + 1 });
-  db.ref('tournaments/' + tid + '/players').set(updatedPlayers);
+  db.ref('tournaments/' + tid + '/players').set(updatedPlayers).catch((error) => alert('⚠️ Bestätigen fehlgeschlagen:\n' + error.message));
 }
 // Lehnt einen Passwort-Wunsch turnierübergreifend ab
 function godRejectPendingPassword(tid, playerIndex) {
@@ -1156,13 +1191,61 @@ function godRejectPendingPassword(tid, playerIndex) {
   const p = t && t.players && t.players[playerIndex];
   if (!p) return;
   const updatedPlayers = t.players.map((pl, i) => i !== playerIndex ? pl : { ...pl, pendingPassword: null });
-  db.ref('tournaments/' + tid + '/players').set(updatedPlayers);
+  db.ref('tournaments/' + tid + '/players').set(updatedPlayers).catch((error) => alert('⚠️ Ablehnen fehlgeschlagen:\n' + error.message));
 }
 // Schaltet eine website-weite Sperre um (nur God)
 function toggleGlobalLock(key) {
   if (!isGod()) return;
   const updated = { ...globalSettings, [key]: !globalSettings[key] };
-  db.ref('globalSettings').set(updated);
+  db.ref('globalSettings').set(updated).catch((error) => alert('⚠️ Sperre konnte nicht geändert werden:\n' + error.message));
+}
+// Benennt einen Spieler in DIESEM Turnier um - God darf das in JEDEM Turnier, ein normaler
+// Turnier-Admin nur in seinem eigenen (siehe isAdmin()). Ändert nur den Anzeigenamen in
+// diesem einen Turnier - meldet sich der umbenannte Spieler danach woanders erneut an,
+// muss er sich ggf. neu zuordnen/beitreten. AUSNAHME: Benennt sich der Admin SELBST um,
+// wird auch seine eigene (globale) Identität mit umbenannt, damit seine aktuelle Sitzung
+// nicht mitten in der Bearbeitung abbricht (siehe renamingMyself weiter unten).
+function renamePlayer(index) {
+  if (!isAdmin()) return;
+  const p = players[index];
+  if (!p) return;
+  const newName = prompt(`Neuer Name für "${p.name}" (nur in diesem Turnier):`, p.name);
+  if (newName === null) return;
+  const trimmed = newName.trim();
+  if (!trimmed) return alert('Name darf nicht leer sein.');
+  if (players.some((pl, i) => i !== index && pl.name.toLowerCase() === trimmed.toLowerCase())) {
+    return alert('Dieser Name wird in diesem Turnier bereits verwendet.');
+  }
+  const oldName = p.name;
+  p.name = trimmed;
+  // Team- und Wett-Zuordnungen laufen über den Namen -> überall mit umziehen, sonst
+  // verliert der Spieler sein Team, seine Wetten, seinen Kontostand und seinen Tipp.
+  teams.forEach(t => {
+    if (t.p1 === oldName) t.p1 = trimmed;
+    if (t.p2 === oldName) t.p2 = trimmed;
+  });
+  bets.forEach(b => { if (b.playerName === oldName) b.playerName = trimmed; });
+  if (tips[oldName]) { tips[trimmed] = tips[oldName]; delete tips[oldName]; }
+  if (userBalances[oldName] !== undefined) { userBalances[trimmed] = userBalances[oldName]; delete userBalances[oldName]; }
+  // Benennt sich der Admin gerade SELBST um, muss die eigene (globale) Sitzung mit
+  // umgezogen werden - sonst hält ihn attachTournamentListener beim nächsten Sync
+  // fälschlich für "aus dem Turnier entfernt" (siehe myPlayerWasPresent-Check).
+  const renamingMyself = myPlayerName && myPlayerName.trim().toLowerCase() === oldName.trim().toLowerCase();
+  if (renamingMyself) {
+    const oldPwvKey = myPlayerPwvStorageKey();
+    const oldPwv = localStorage.getItem(oldPwvKey);
+    myPlayerName = trimmed;
+    localStorage.setItem('fifa_global_name', trimmed);
+    if (oldPwv !== null) { localStorage.setItem(myPlayerPwvStorageKey(), oldPwv); localStorage.removeItem(oldPwvKey); }
+    if (!globalPlayers[trimmed.toLowerCase()]) {
+      db.ref('globalPlayers/' + trimmed.toLowerCase()).set({ name: trimmed, createdAt: Date.now() });
+    }
+  }
+  saveData();
+  renderAll();
+  alert(renamingMyself
+    ? `✅ Du heißt in diesem Turnier jetzt "${trimmed}".`
+    : `✅ "${oldName}" heißt in diesem Turnier jetzt "${trimmed}". Falls ${oldName} gerade angemeldet war, muss er sich unter dem neuen Namen neu zuordnen.`);
 }
 // ============================================================================
 // 5. PROFI-CLUBS VERWALTUNG — Liste der Vereine, aus denen beim Glücksrad gezogen wird
@@ -2846,6 +2929,7 @@ function renderAdminPanel() {
               <button class="btn-primary btn-sm" style="background:#2ecc71; color:#fff;" onclick="confirmPendingPassword(${index})">✅ PW-Wunsch bestätigen</button>
               <button class="btn-danger btn-sm" onclick="rejectPendingPassword(${index})">❌ Ablehnen</button>
             ` : ''}
+            ${isAdmin() ? `<button class="btn-secondary btn-sm" onclick="renamePlayer(${index})">✏️ Umbenennen</button>` : ''}
             ${isAdmin() ? `<button class="${isRefBtnClass} btn-sm" onclick="toggleRef(${index})">${p.isRef ? '🟨 Ref (Aktiv)' : 'Ref vergeben'}</button>` : ''}
             ${hasPW
               ? `<button class="btn-danger btn-sm" onclick="removePlayerPassword(${index})">PW löschen</button>`

@@ -48,6 +48,12 @@ body {
   border: 1px solid var(--fal-yellow);
 }
 
+/* Die Turnierauswahl-Startseite ist etwas breiter als die übrigen Modals, damit das
+   God-Panel (Checkboxen, Passwort-Wünsche) darin genug Platz hat */
+#landing-page-content { max-width: 480px; }
+#god-panel-container:not(:empty) { margin-bottom: 16px; }
+#god-panel-container .admin-card { text-align: left; border-color: var(--fal-yellow); }
+
 .modal-logo {
   height: 65px;
   width: auto;
@@ -102,6 +108,14 @@ header h1 {
   margin: 0;
   font-size: 1.2rem;
   color: var(--fal-yellow);
+}
+
+/* Name des aktuell geöffneten Turniers, klein unter dem "FAL FIFA Turnier"-Titel */
+#header-tournament-name {
+  font-size: 0.75rem;
+  color: var(--fal-white);
+  opacity: 0.85;
+  margin-top: 1px;
 }
 
 /* Aufklapp-Icon oben rechts im Header: 2 parallele weiße Striche */
