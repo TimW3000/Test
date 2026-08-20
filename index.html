@@ -202,6 +202,14 @@
     </div>
   </div>
 
+  <!-- DARTS-LIVE-SCORING MODAL: Wurf-für-Wurf-Erfassung eines Darts-Matches, siehe
+       openDartsMatch()/renderDartsMatch() in script.js -->
+  <div id="darts-modal" class="modal-overlay" style="display: none;">
+    <div class="modal-content" style="max-width: 400px; padding: 18px;">
+      <div id="darts-stage"></div>
+    </div>
+  </div>
+
   <!-- HEADER & APP CONTAINER -->
   <!-- Header + Nav stecken gemeinsam in #app-topbar, damit die GANZE Leiste (nicht nur
        das Home/Teams/...-Menü) oben am Bildschirmrand kleben bleibt (siehe position:sticky
@@ -363,6 +371,7 @@
         <details open>
           <summary><h3>Turnier-Steuerung</h3></summary>
           <div id="sport-toggle-container" style="margin-bottom:10px;"></div>
+          <div id="darts-settings-container" style="margin-bottom:10px;"></div>
           <div id="team-step-container" style="display: flex; flex-wrap: wrap; gap: 10px;"></div>
           <div id="draft-cheat-container"></div>
           <div style="display: flex; flex-wrap: wrap; gap: 10px;">

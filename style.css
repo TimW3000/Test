@@ -573,3 +573,105 @@ th { color: var(--fal-yellow); font-size: 0.8rem; text-transform: uppercase; }
   animation: fal-coin-fireworks-sparkle 0.8s linear infinite;
   pointer-events: none;
 }
+
+/* Darts-Live-Overlay (siehe #darts-modal / renderDartsMatch() in script.js) - Wurf-für-Wurf-
+   Erfassung: zwei Punktzahl-Karten (aktiver Spieler hervorgehoben), Multiplikator-Umschalter,
+   Zahlenpad 1-20 + Bull. */
+.darts-score-row {
+  display: flex;
+  gap: 10px;
+  margin: 10px 0;
+}
+.darts-score-card {
+  flex: 1;
+  padding: 10px 6px;
+  border-radius: 10px;
+  background: rgba(0,0,0,0.25);
+  border: 2px solid transparent;
+  transition: border-color 0.2s, background 0.2s;
+}
+.darts-score-card.active {
+  border-color: var(--fal-yellow);
+  background: rgba(255,200,0,0.12);
+}
+.darts-score-card .dsc-name {
+  font-size: 0.85em;
+  opacity: 0.85;
+  font-weight: bold;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.darts-score-card .dsc-remaining {
+  font-size: 2.4em;
+  font-weight: 800;
+  line-height: 1.1;
+  font-variant-numeric: tabular-nums;
+}
+.darts-score-card .dsc-legs {
+  font-size: 0.8em;
+  opacity: 0.75;
+  margin-top: 2px;
+}
+.darts-multiplier-row {
+  display: flex;
+  gap: 6px;
+  margin: 10px 0 8px;
+}
+.darts-multiplier-row button {
+  flex: 1;
+  padding: 8px 4px;
+  border-radius: 8px;
+  border: 1px solid rgba(255,255,255,0.25);
+  background: rgba(0,0,0,0.2);
+  color: var(--fal-white);
+  font-weight: bold;
+  cursor: pointer;
+}
+.darts-multiplier-row button.active {
+  background: var(--fal-yellow);
+  color: #000;
+  border-color: var(--fal-yellow);
+}
+.dart-pad-grid {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 6px;
+  margin: 8px 0;
+}
+.dart-pad-grid button {
+  padding: 10px 0;
+  border-radius: 8px;
+  border: 1px solid rgba(255,255,255,0.2);
+  background: rgba(255,255,255,0.06);
+  color: var(--fal-white);
+  font-weight: bold;
+  font-size: 0.95em;
+  cursor: pointer;
+}
+.dart-pad-grid button:active { transform: scale(0.94); }
+.dart-pad-grid button.dart-bull {
+  grid-column: span 5;
+  background: rgba(255,77,77,0.18);
+  border-color: var(--fal-red);
+}
+.dart-pad-grid button:disabled { opacity: 0.35; cursor: not-allowed; }
+.darts-visit-darts {
+  display: flex;
+  gap: 6px;
+  justify-content: center;
+  min-height: 26px;
+  margin: 4px 0 2px;
+}
+.darts-visit-darts span {
+  font-size: 0.8em;
+  background: rgba(0,0,0,0.3);
+  border-radius: 6px;
+  padding: 3px 8px;
+}
+.darts-bust-banner {
+  color: var(--fal-red);
+  font-weight: bold;
+  font-size: 0.95em;
+  margin: 4px 0;
+}

@@ -78,6 +78,15 @@ window.addDraftCheat = addDraftCheat;
 window.removeDraftCheat = removeDraftCheat;
 window.quickDrawTeams = quickDrawTeams;
 window.createDartsTeamsFromPlayers = createDartsTeamsFromPlayers;
+window.setDartsStartScore = setDartsStartScore;
+window.setDartsLegsToWin = setDartsLegsToWin;
+window.setDartsCheckoutRule = setDartsCheckoutRule;
+window.openDartsMatch = openDartsMatch;
+window.closeDartsMatch = closeDartsMatch;
+window.setDartsMultiplier = setDartsMultiplier;
+window.throwDart = throwDart;
+window.resetDartsMatch = resetDartsMatch;
+window.undoDartsClick = undoDartsClick;
 window.spinWheel = spinWheel;
 window.skipWheelSpin = skipWheelSpin;
 window.nextDraftStep = nextDraftStep;
@@ -215,6 +224,13 @@ let tournamentMode = 'duo';
 // sein eigenes "Team" - siehe createDartsTeamsFromPlayers). Läuft technisch als tournamentMode
 // 'solo' weiter (1 Spieler pro Team, kein Partner), nur eben zusätzlich OHNE Verein.
 let tournamentSport = 'fifa';
+// Turnier-weite Darts-Regeln (nur relevant bei tournamentSport === 'darts'), im Admin-Panel
+// änderbar (siehe renderDartsSettingsPanel) - gelten für alle NEU gestarteten Matches; ein
+// bereits laufendes Live-Match friert seine eigenen Werte beim Start ein (siehe dartsMatch.rules
+// in openDartsMatch), damit eine Änderung mittendrin kein Match verfälscht.
+let dartsStartScore = 501;   // z.B. 301/501/701 - Startpunktzahl pro Leg
+let dartsLegsToWin = 3;      // "Sätze" bis zum Matchsieg (best-of über ungerade Zahl empfohlen)
+let dartsCheckoutRule = 'double'; // 'double' = Leg-Ende MUSS mit Doppel/Bullseye(50) getroffen werden, 'straight' = jeder Wurf auf exakt 0 gewinnt
 let plannedPlayerCount = null; // rein informative Ziel-Spieleranzahl aus der Freitext-Beschreibung, siehe openFormatWizard()
 let numGroups = 3;       // Wie viele Gruppen wurden zuletzt ausgelost? (beliebige Zahl ab 2, siehe generateGroupLetters)
 // Wie viele Teams insgesamt in die KO-Runde einziehen (admin-/text-wählbar, siehe advanceKORound).
@@ -276,6 +292,13 @@ let draftSpinTimeoutId = null; // laufender setTimeout-Handle der aktuellen Dreh
 // sich aber dasselbe #draft-modal/#draft-stage-Overlay, siehe handleLiveDraftUI().
 let groupDraftState = { active: false, spinning: false, remainingTeams: [], groupLetters: [], targetGroupIndex: 0, assignments: {}, lastDrawnItem: null, lastAssignedGroup: null, startTime: null, targetAngle: 0, duration: 4000, pendingTarget: null };
 let groupSpinTimeoutId = null;
+// Welches Darts-Match hat GERADE (nur lokal, auf DIESEM Gerät) das Live-Scoring-Overlay
+// geöffnet - unabhängig davon, ob man selbst wirft oder nur zuschaut (siehe openDartsMatch/
+// renderDartsMatch). Der eigentliche Spielstand (m.dartsMatch) ist Teil des synchronisierten
+// Match-Objekts, nicht dieser rein lokalen "welches Fenster ist offen"-Markierung.
+let openDartsMatchId = null;
+let openDartsMatchIsKO = false;
+let dartsSelectedMultiplier = 'single'; // nur lokale Eingabehilfe, nicht synchronisiert
 // localStorage-Schlüssel, um sich zu merken, mit welcher Passwort-Version man zuletzt ALS
 // DIESE IDENTITÄT erfolgreich angemeldet war. Das Passwort gilt jetzt identitätsweit (für
 // ALLE Turniere gemeinsam) statt pro Turnier - deshalb NUR nach dem Namen geschlüsselt,
@@ -950,6 +973,9 @@ function resetLocalStateToDefaults() {
   teams = [];
   tournamentMode = 'duo';
   tournamentSport = 'fifa';
+  dartsStartScore = 501;
+  dartsLegsToWin = 3;
+  dartsCheckoutRule = 'double';
   plannedPlayerCount = null;
   numGroups = 3;
   koQualifiersTotal = null;
@@ -991,6 +1017,9 @@ function attachTournamentListener() {
     teams = data.teams || [];
     tournamentMode = data.tournamentMode || 'duo';
     tournamentSport = data.tournamentSport || 'fifa';
+    dartsStartScore = data.dartsStartScore || 501;
+    dartsLegsToWin = data.dartsLegsToWin || 3;
+    dartsCheckoutRule = data.dartsCheckoutRule || 'double';
     plannedPlayerCount = data.plannedPlayerCount || null;
     numGroups = data.numGroups || 3;
     koQualifiersTotal = data.koQualifiersTotal || null;
@@ -1050,6 +1079,9 @@ function saveData() {
     teams,
     tournamentMode,
     tournamentSport,
+    dartsStartScore,
+    dartsLegsToWin,
+    dartsCheckoutRule,
     plannedPlayerCount,
     numGroups,
     koQualifiersTotal,
@@ -3952,6 +3984,301 @@ function resetTournament() {
   }
 }
 // ============================================================================
+// 8c. DARTS-LIVE-SCORING — echte Wurf-für-Wurf-Erfassung für Darts-Matches (1v1, siehe
+//     tournamentSport==='darts'): Startpunktzahl runter bis 0, Bust-Regeln, automatischer
+//     Wechsel nach 3 Würfen/Leg-Ende, Undo. Der Live-Zustand hängt direkt am Match-Objekt
+//     (m.dartsMatch) und wird wie alles andere über saveData() synchron gehalten - so sehen
+//     beide Spieler (und alle Zuschauer) jeden Wurf sofort live auf ihrem eigenen Gerät.
+//     Bewusst als reine, DOM-freie Funktionen gebaut (leicht test- und wiederverwendbar für
+//     spätere Statistiken), siehe openDartsMatch()/renderDartsMatch() weiter unten fürs UI.
+// ============================================================================
+// Punktwert eines einzelnen Wurfs. segment: 1-20 oder 'bull'. multiplier: 'single'/'double'/'triple'.
+// Bull kennt kein Triple (25 einfach, 50 = Bullseye/"Doppel-Bull") - siehe dartMultiplierOptionsFor().
+function dartSegmentValue(segment, multiplier) {
+  if (segment === 'bull') return multiplier === 'double' ? 50 : 25;
+  const n = parseInt(segment, 10);
+  const factor = multiplier === 'triple' ? 3 : (multiplier === 'double' ? 2 : 1);
+  return n * factor;
+}
+// Legt fest, ob ein Wurf als gültiger CHECKOUT-Treffer zählt (für die Doppel-Out-Regel) -
+// jedes Doppel-Feld (inkl. Bullseye/50, das technisch "Doppel-Bull" ist) zählt.
+function isDartCheckoutShot(segment, multiplier) {
+  return multiplier === 'double';
+}
+// Erzeugt den Startzustand eines neuen Darts-Matches (1 Leg, beide auf Startpunktzahl).
+function createDartsMatchState(startScore, legsToWin, checkoutRule) {
+  return {
+    active: true,
+    startScore, legsToWin, checkoutRule,
+    legsWon: [0, 0],
+    legNumber: 1,
+    startingPlayerIndex: 0,
+    currentPlayerIndex: 0,
+    remaining: [startScore, startScore],
+    visitDarts: [],
+    visitStartScore: startScore,
+    finished: false,
+    winnerIndex: null,
+    history: [],
+    undoStack: []
+  };
+}
+// Schnappschuss aller veränderlichen Felder (OHNE undoStack selbst, sonst würde der Stack
+// sich rekursiv aufblähen) - wird vor JEDEM Wurf auf den undoStack gelegt, siehe recordDartsThrow.
+function snapshotDartsState(state) {
+  return {
+    legsWon: [...state.legsWon],
+    legNumber: state.legNumber,
+    startingPlayerIndex: state.startingPlayerIndex,
+    currentPlayerIndex: state.currentPlayerIndex,
+    remaining: [...state.remaining],
+    visitDarts: state.visitDarts.map(d => ({ ...d })),
+    visitStartScore: state.visitStartScore,
+    finished: state.finished,
+    winnerIndex: state.winnerIndex,
+    history: state.history.map(h => ({ ...h }))
+  };
+}
+function restoreDartsSnapshot(state, snap) {
+  state.legsWon = snap.legsWon;
+  state.legNumber = snap.legNumber;
+  state.startingPlayerIndex = snap.startingPlayerIndex;
+  state.currentPlayerIndex = snap.currentPlayerIndex;
+  state.remaining = snap.remaining;
+  state.visitDarts = snap.visitDarts;
+  state.visitStartScore = snap.visitStartScore;
+  state.finished = snap.finished;
+  state.winnerIndex = snap.winnerIndex;
+  state.history = snap.history;
+}
+// Verarbeitet EINEN Wurf: zieht ab, erkennt Bust/Checkout, wechselt nach 3 Würfen automatisch
+// den Spieler, startet bei Leg-Gewinn automatisch das nächste Leg (Anwurf wechselt pro Leg) und
+// erkennt den Matchgewinn. Mutiert "state" direkt (wie applyGroupDraw() den groupDraftState).
+function recordDartsThrow(state, segment, multiplier) {
+  if (!state.active || state.finished) return { bust: false, checkout: false };
+  state.undoStack.push(snapshotDartsState(state));
+  if (state.undoStack.length > 60) state.undoStack.shift();
+  const cur = state.currentPlayerIndex;
+  const points = dartSegmentValue(segment, multiplier);
+  const newRemaining = state.remaining[cur] - points;
+  const isCheckout = isDartCheckoutShot(segment, multiplier);
+  const bust = newRemaining < 0 || (newRemaining === 0 && state.checkoutRule === 'double' && !isCheckout);
+  if (bust) {
+    state.history.push({ leg: state.legNumber, player: cur, segment, multiplier, points, remainingAfter: state.remaining[cur], bust: true, checkout: false });
+    // Bust: der GESAMTE Aufnahme-Score (auch schon vorher in dieser Aufnahme geworfene Darts)
+    // verfällt, die Punktzahl springt zurück auf den Stand vor dieser Aufnahme.
+    state.remaining[cur] = state.visitStartScore;
+    endDartsVisit(state);
+    return { bust: true, checkout: false };
+  }
+  if (newRemaining === 0) {
+    state.remaining[cur] = 0;
+    state.legsWon[cur] += 1;
+    state.history.push({ leg: state.legNumber, player: cur, segment, multiplier, points, remainingAfter: 0, bust: false, checkout: true });
+    if (state.legsWon[cur] >= state.legsToWin) {
+      state.finished = true;
+      state.winnerIndex = cur;
+      return { bust: false, checkout: true, legWon: true, matchFinished: true };
+    }
+    state.legNumber += 1;
+    state.startingPlayerIndex = 1 - state.startingPlayerIndex;
+    state.currentPlayerIndex = state.startingPlayerIndex;
+    state.remaining = [state.startScore, state.startScore];
+    state.visitDarts = [];
+    state.visitStartScore = state.startScore;
+    return { bust: false, checkout: true, legWon: true, matchFinished: false };
+  }
+  state.remaining[cur] = newRemaining;
+  state.visitDarts.push({ segment, multiplier, points });
+  state.history.push({ leg: state.legNumber, player: cur, segment, multiplier, points, remainingAfter: newRemaining, bust: false, checkout: false });
+  if (state.visitDarts.length >= 3) endDartsVisit(state);
+  return { bust: false, checkout: false };
+}
+// Beendet die aktuelle 3-Wurf-Aufnahme (regulär nach 3 Würfen ODER sofort bei Bust) und
+// übergibt an den anderen Spieler.
+function endDartsVisit(state) {
+  state.currentPlayerIndex = 1 - state.currentPlayerIndex;
+  state.visitDarts = [];
+  state.visitStartScore = state.remaining[state.currentPlayerIndex];
+}
+// Macht den letzten Wurf rückgängig (Fehlbedienung beim Antippen) - stellt exakt den
+// Zustand vor diesem Wurf wieder her, auch über Leg-Enden/Matchende/Bust hinweg.
+function undoLastDartsThrow(state) {
+  if (!state.undoStack || state.undoStack.length === 0) return false;
+  const snap = state.undoStack.pop();
+  restoreDartsSnapshot(state, snap);
+  return true;
+}
+// Öffnet das Live-Scoring-Overlay für ein Darts-Match. Existiert noch kein Live-Zustand,
+// wird er JETZT mit den AKTUELL gültigen Turnier-Einstellungen "eingefroren" erzeugt (siehe
+// renderDartsSettingsPanel) - eine spätere Regel-Änderung wirkt sich dann nur auf künftig neu
+// gestartete Matches aus, nicht rückwirkend auf dieses hier.
+function openDartsMatch(matchId, isKO) {
+  const matchArray = getMatchArray(isKO);
+  const match = matchArray.find(m => m.id === matchId);
+  if (!match) return;
+  if (!match.dartsMatch) {
+    const myTeam = getMyTeam();
+    const canEdit = hasElevated() || (myTeam && (match.t1Id === myTeam.id || match.t2Id === myTeam.id));
+    if (!canEdit) return alert('Nur die beiden Spieler (oder ein Admin/Ref) können ein Darts-Match starten.');
+    match.dartsMatch = createDartsMatchState(dartsStartScore, dartsLegsToWin, dartsCheckoutRule);
+    saveData();
+  }
+  openDartsMatchId = matchId;
+  openDartsMatchIsKO = isKO;
+  dartsSelectedMultiplier = 'single';
+  const modal = document.getElementById('darts-modal');
+  if (modal) modal.style.display = 'flex';
+  renderDartsMatch();
+}
+// Schließt nur das lokale Overlay-Fenster - der Spielstand selbst bleibt (synchronisiert)
+// bestehen und kann jederzeit über "🎯 Darts erfassen" wieder geöffnet/fortgesetzt werden.
+function closeDartsMatch() {
+  openDartsMatchId = null;
+  openDartsMatchIsKO = false;
+  const modal = document.getElementById('darts-modal');
+  if (modal) modal.style.display = 'none';
+}
+function setDartsMultiplier(m) {
+  dartsSelectedMultiplier = m;
+  renderDartsMatch();
+}
+// Verarbeitet einen per Klick erfassten Wurf und übernimmt bei Matchende automatisch das
+// Ergebnis (Sätze) ins Match-Objekt, exakt wie ein manuell eingetragenes Solo-Ergebnis.
+function throwDart(segment) {
+  const match = getMatchArray(openDartsMatchIsKO).find(m => m.id === openDartsMatchId);
+  if (!match || !match.dartsMatch) return;
+  const myTeam = getMyTeam();
+  const canEdit = hasElevated() || (myTeam && (match.t1Id === myTeam.id || match.t2Id === myTeam.id));
+  if (!canEdit) return;
+  const ds = match.dartsMatch;
+  if (ds.finished) return;
+  // Bull kennt kein Triple - dann fällt die Auswahl automatisch auf "Single" (25) zurück.
+  const mult = (segment === 'bull' && dartsSelectedMultiplier === 'triple') ? 'single' : dartsSelectedMultiplier;
+  recordDartsThrow(ds, segment, mult);
+  if (ds.finished) finalizeDartsMatch(match);
+  saveData();
+  renderAll();
+}
+// Übernimmt den fertig gespielten Satz-Stand ins Match (wie ein manuell eingetragenes
+// Solo-Ergebnis) - bleibt wie überall sonst "vorläufig", bis ein Admin/Ref bestätigt.
+function finalizeDartsMatch(match) {
+  const ds = match.dartsMatch;
+  ds.active = false;
+  match.score1_h = ds.legsWon[0]; match.score2_h = ds.legsWon[1];
+  match.score1 = ds.legsWon[0]; match.score2 = ds.legsWon[1];
+  match.played = true;
+}
+// Setzt ein Darts-Match komplett zurück (z.B. nach einer Verwechslung, die das normale
+// Wurf-Undo nicht mehr abdeckt) - beginnt wieder bei Satz 0:0 mit den aktuell gültigen Regeln.
+function resetDartsMatch() {
+  if (!hasElevated()) return;
+  const match = getMatchArray(openDartsMatchIsKO).find(m => m.id === openDartsMatchId);
+  if (!match) return;
+  if (!confirm('Dieses Darts-Match wirklich komplett neu starten (0:0, alle Würfe gelöscht)?')) return;
+  match.dartsMatch = createDartsMatchState(dartsStartScore, dartsLegsToWin, dartsCheckoutRule);
+  match.score1_h = null; match.score2_h = null; match.score1 = null; match.score2 = null; match.played = false;
+  saveData();
+  renderAll();
+}
+// Baut das Live-Scoring-Overlay auf: zwei Punktzahl-Karten (aktiver Spieler hervorgehoben),
+// Multiplikator-Umschalter + Zahlenpad (nur für die beiden Spieler/Admin/Ref bedienbar - alle
+// anderen sehen exakt denselben Stand rein lesend, live mit jedem Wurf aktualisiert).
+function renderDartsMatch() {
+  const stage = document.getElementById('darts-stage');
+  if (!stage) return;
+  const match = getMatchArray(openDartsMatchIsKO).find(m => m.id === openDartsMatchId);
+  if (!match || !match.dartsMatch) { closeDartsMatch(); return; }
+  const ds = match.dartsMatch;
+  const t1 = teams.find(t => t.id === match.t1Id) || { p1: 'Spieler 1' };
+  const t2 = teams.find(t => t.id === match.t2Id) || { p1: 'Spieler 2' };
+  const names = [t1.p1, t2.p1];
+  const myTeam = getMyTeam();
+  const canEdit = hasElevated() || (myTeam && (match.t1Id === myTeam.id || match.t2Id === myTeam.id));
+  const lastThrow = ds.history.length ? ds.history[ds.history.length - 1] : null;
+  const justBusted = !ds.finished && lastThrow && lastThrow.bust;
+
+  if (ds.finished) {
+    stage.innerHTML = `
+      <h2 style="color: var(--fal-yellow); margin-top:0;">🎯 Match beendet!</h2>
+      <p style="font-size:1.2em;">🏆 <strong>${escapeHtml(names[ds.winnerIndex])}</strong> gewinnt!</p>
+      <div class="darts-score-row">
+        ${[0, 1].map(i => `
+          <div class="darts-score-card ${i === ds.winnerIndex ? 'active' : ''}">
+            <div class="dsc-name">${escapeHtml(names[i])}</div>
+            <div class="dsc-remaining">${ds.legsWon[i]}</div>
+            <div class="dsc-legs">Sätze</div>
+          </div>
+        `).join('')}
+      </div>
+      <p style="font-size:0.85em; opacity:0.75;">Ergebnis wurde übernommen - noch von einem Admin/Ref zu bestätigen.</p>
+      <div style="display:flex; gap:8px; margin-top:10px;">
+        ${hasElevated() ? `<button class="btn-secondary role-btn" style="flex:1; border-color:var(--fal-red); color:var(--fal-red);" onclick="resetDartsMatch()">🔄 Neu starten</button>` : ''}
+        <button class="btn-primary role-btn" style="flex:1;" onclick="closeDartsMatch()">Schließen</button>
+      </div>
+    `;
+    return;
+  }
+
+  const multBtn = (val, label) => `<button class="${dartsSelectedMultiplier === val ? 'active' : ''}" onclick="setDartsMultiplier('${val}')" ${!canEdit ? 'disabled' : ''}>${label}</button>`;
+  const numPad = Array.from({ length: 20 }, (_, i) => i + 1)
+    .map(n => `<button onclick="throwDart(${n})" ${!canEdit ? 'disabled' : ''}>${n}</button>`).join('');
+  const dartLabel = (d) => {
+    if (d.segment === 'bull') return d.multiplier === 'double' ? 'Bullseye' : 'Bull';
+    if (d.points === 0) return 'Fehlwurf';
+    const pre = d.multiplier === 'triple' ? 'T' : (d.multiplier === 'double' ? 'D' : '');
+    return `${pre}${d.segment}`;
+  };
+
+  stage.innerHTML = `
+    <h2 style="color: var(--fal-yellow); margin-top:0;">🎯 Darts — Satz ${ds.legNumber} (bis ${ds.legsToWin} Sätze, ${ds.checkoutRule === 'double' ? 'Doppel-Out' : 'Straight-Out'})</h2>
+    <div class="darts-score-row">
+      ${[0, 1].map(i => `
+        <div class="darts-score-card ${ds.currentPlayerIndex === i ? 'active' : ''}">
+          <div class="dsc-name">${escapeHtml(names[i])}${ds.currentPlayerIndex === i ? ' 🎯' : ''}</div>
+          <div class="dsc-remaining">${ds.remaining[i]}</div>
+          <div class="dsc-legs">${ds.legsWon[i]} Sätze</div>
+        </div>
+      `).join('')}
+    </div>
+    <div class="darts-visit-darts">
+      ${ds.visitDarts.map(d => `<span>${dartLabel(d)} (${d.points})</span>`).join('')}
+    </div>
+    ${justBusted ? `<div class="darts-bust-banner">💥 BUST! Aufnahme verfällt, ${escapeHtml(names[ds.currentPlayerIndex])} ist dran.</div>` : ''}
+    ${canEdit ? `
+      <div class="darts-multiplier-row">
+        ${multBtn('single', 'Single')}
+        ${multBtn('double', 'Double')}
+        ${multBtn('triple', 'Triple')}
+      </div>
+      <div class="dart-pad-grid">
+        ${numPad}
+        <button class="dart-bull" onclick="throwDart('bull')" ${dartsSelectedMultiplier === 'triple' ? 'disabled' : ''}>Bull (${dartsSelectedMultiplier === 'double' ? '50' : '25'})</button>
+      </div>
+      <div style="display:flex; gap:8px; margin-top:6px;">
+        <button class="btn-secondary role-btn" style="flex:1;" onclick="throwDart(0)">❌ Fehlwurf</button>
+        <button class="btn-secondary role-btn" style="flex:1;" ${ds.undoStack.length === 0 ? 'disabled' : ''} onclick="undoDartsClick()">↩️ Zurück</button>
+      </div>
+    ` : `<p style="font-size:0.9em; opacity:0.8; margin-top:10px;">👀 Nur Zuschauen — ${escapeHtml(names[ds.currentPlayerIndex])} ist am Zug.</p>`}
+    <div style="display:flex; gap:8px; margin-top:10px;">
+      ${(hasElevated() && ds.history.length > 0) ? `<button class="btn-secondary role-btn" style="border-color:var(--fal-red); color:var(--fal-red);" onclick="resetDartsMatch()">🔄 Neu starten</button>` : ''}
+      <button class="btn-secondary role-btn" style="flex:1;" onclick="closeDartsMatch()">Schließen</button>
+    </div>
+  `;
+}
+// Undo-Klick (eigene Funktion statt direkt undoLastDartsThrow im onclick, damit danach auch
+// gespeichert und neu gerendert wird - siehe throwDart für dasselbe Muster).
+function undoDartsClick() {
+  const match = getMatchArray(openDartsMatchIsKO).find(m => m.id === openDartsMatchId);
+  if (!match || !match.dartsMatch) return;
+  const myTeam = getMyTeam();
+  const canEdit = hasElevated() || (myTeam && (match.t1Id === myTeam.id || match.t2Id === myTeam.id));
+  if (!canEdit) return;
+  if (!undoLastDartsThrow(match.dartsMatch)) return;
+  saveData();
+  renderAll();
+}
+// ============================================================================
 // 9. TEAM- & MATCH-UPDATES — Team-Namen ändern, Ergebnisse eintragen/bestätigen,
 //    Spiele als "gestartet" markieren (schließt automatisch die Wetten dafür)
 // ============================================================================
@@ -4102,6 +4429,9 @@ function renderAll() {
   renderMatches();
   renderAdminPanel();
   renderBettingSystem();
+  // Hat man gerade ein Darts-Live-Overlay offen (egal ob selbst werfend oder nur zuschauend),
+  // hier live mit aktualisieren - genau wie handleLiveDraftUI() es fürs Glücksrad tut.
+  if (openDartsMatchId != null) renderDartsMatch();
 }
 // ---- 10a. HOME-TAB: Regeln, Tippspiel, Dashboard ----
 function renderHome() {
@@ -4602,7 +4932,22 @@ function renderMatchBlock(m, isKO) {
         </div>
       </div>
       <div style="display:flex; flex-direction:column; gap:8px;">
-        ${solo ? `
+        ${tournamentSport === 'darts' ? `
+        <div style="padding:8px; border-radius:5px; ${hinLegColor}; display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:6px;">
+          <span style="font-size:0.85em;"><strong>${t1.p1}</strong> vs. <strong>${t2.p1}</strong>${m.played ? ` — Sätze <strong>${m.score1}:${m.score2}</strong>` : ''}</span>
+          ${(canEdit && !locked) ? `<button class="btn-primary btn-sm" onclick="openDartsMatch(${m.id}, ${isKO})">🎯 ${m.played ? 'Weiter/Ansehen' : 'Darts erfassen'}</button>` : (m.played ? '' : `<button class="btn-secondary btn-sm" onclick="openDartsMatch(${m.id}, ${isKO})">👀 Zuschauen</button>`)}
+        </div>
+        ${(canEdit && !locked) ? `
+        <details style="font-size:0.82em; opacity:0.85;">
+          <summary style="cursor:pointer;">Manuell eintragen (nur Sätze-Endstand, ohne Wurf-Erfassung)</summary>
+          <div style="display:flex; gap:5px; align-items:center; margin-top:6px;">
+            <input type="number" id="${prefix}h1" min="0" style="width:40px; text-align:center;" ${(!canEdit || locked) ? 'disabled' : ''} value="${m.score1_h !== null && m.score1_h !== undefined ? m.score1_h : ''}">
+            :
+            <input type="number" id="${prefix}h2" min="0" style="width:40px; text-align:center;" ${(!canEdit || locked) ? 'disabled' : ''} value="${m.score2_h !== null && m.score2_h !== undefined ? m.score2_h : ''}">
+          </div>
+        </details>
+        ` : ''}
+        ` : solo ? `
         <div style="padding:8px; border-radius:5px; ${hinLegColor}; display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:6px;">
           <span style="font-size:0.85em;"><strong>Ergebnis:</strong> ${t1.p1} vs. ${t2.p1}</span>
           <div style="display:flex; gap:5px; align-items:center;">
@@ -4683,6 +5028,50 @@ function renderSportToggle() {
     </div>
   `;
 }
+// Zeigt die Darts-Regel-Einstellungen im Admin-Panel (Startpunktzahl, Sätze bis zum Sieg,
+// Checkout-Regel) - nur sichtbar bei tournamentSport==='darts'. Ein bereits laufendes Live-
+// Match übernimmt die Werte einmalig beim Start (siehe openDartsMatch) und bleibt davon
+// unberührt, falls hier mittendrin etwas geändert wird - nur NEU gestartete Matches nutzen
+// die dann aktuellen Werte.
+function renderDartsSettingsPanel() {
+  const el = document.getElementById('darts-settings-container');
+  if (!el) return;
+  if (tournamentSport !== 'darts') { el.innerHTML = ''; return; }
+  el.innerHTML = `
+    <div style="background:rgba(0,0,0,0.2); padding:10px 12px; border-radius:8px; display:flex; flex-direction:column; gap:8px;">
+      <strong style="font-size:0.9em;">🎯 Darts-Regeln (gelten für neu gestartete Matches)</strong>
+      <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+        <label style="font-size:0.85em;">Startpunktzahl:</label>
+        <select id="darts-start-score-select" onchange="setDartsStartScore(this.value)">
+          ${[301, 501, 701].map(v => `<option value="${v}" ${dartsStartScore === v ? 'selected' : ''}>${v}</option>`).join('')}
+        </select>
+        <label style="font-size:0.85em;">Sätze bis zum Sieg:</label>
+        <input type="number" id="darts-legs-input" min="1" max="21" value="${dartsLegsToWin}" style="width:55px; text-align:center;" onchange="setDartsLegsToWin(this.value)">
+        <label style="font-size:0.85em;">Checkout:</label>
+        <select id="darts-checkout-select" onchange="setDartsCheckoutRule(this.value)">
+          <option value="double" ${dartsCheckoutRule === 'double' ? 'selected' : ''}>Doppel-Out</option>
+          <option value="straight" ${dartsCheckoutRule === 'straight' ? 'selected' : ''}>Straight-Out</option>
+        </select>
+      </div>
+    </div>
+  `;
+}
+function setDartsStartScore(v) {
+  if (!hasElevated()) return;
+  dartsStartScore = parseInt(v, 10) || 501;
+  saveData();
+}
+function setDartsLegsToWin(v) {
+  if (!hasElevated()) return;
+  const n = parseInt(v, 10);
+  dartsLegsToWin = (n && n > 0) ? n : 3;
+  saveData();
+}
+function setDartsCheckoutRule(v) {
+  if (!hasElevated()) return;
+  dartsCheckoutRule = v === 'straight' ? 'straight' : 'double';
+  saveData();
+}
 // Baut den Team-Erstellungs-Schritt im Admin-Panel auf - bei FIFA das gewohnte Team-
 // Glücksrad (mit Vereinen), bei Darts einen einzigen "Teilnehmer übernehmen"-Button ohne
 // jegliches Vereins-/Auslosungs-Konzept (siehe createDartsTeamsFromPlayers).
@@ -4735,6 +5124,7 @@ function renderAdminPanel() {
   }
   renderInvitePanel();
   renderSportToggle();
+  renderDartsSettingsPanel();
   renderTeamStepPanel();
   renderDraftCheatPanel();
   renderKOControlPanel();
