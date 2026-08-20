@@ -212,7 +212,7 @@
         <div id="header-brand">
           <img src="https://spvgg-fal.de/templates/yootheme/cache/dc/Logo-2017-web-dc30d58a.webp" id="header-logo" alt="SpVgg FAL Logo">
           <div>
-            <h1>FAL FIFA Turnier</h1>
+            <h1 id="app-title">FAL FIFA Turnier</h1>
             <div id="header-tournament-name"></div>
           </div>
         </div>
@@ -362,10 +362,8 @@
       <div class="admin-card">
         <details open>
           <summary><h3>Turnier-Steuerung</h3></summary>
-          <div style="display: flex; flex-wrap: wrap; gap: 10px;">
-            <button class="btn-primary" style="background-color:#ffc800; color:#000;" onclick="startInteractiveDraft()">🎰 1. Teams & Clubs per Glücksrad auslosen</button>
-            <button class="btn-secondary" onclick="quickDrawTeams()">⚡ 1b. Sofort auslosen (ohne Show/Animation)</button>
-          </div>
+          <div id="sport-toggle-container" style="margin-bottom:10px;"></div>
+          <div id="team-step-container" style="display: flex; flex-wrap: wrap; gap: 10px;"></div>
           <div id="draft-cheat-container"></div>
           <div style="display: flex; flex-wrap: wrap; gap: 10px;">
             <button class="btn-primary" style="background-color:#ffc800; color:#000;" onclick="startGroupDraft('teams')">📊 2. Gruppen per Glücksrad auslosen (Anzahl wählbar)</button>

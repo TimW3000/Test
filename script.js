@@ -53,6 +53,7 @@ window.confirmPendingPassword = confirmPendingPassword;
 window.rejectPendingPassword = rejectPendingPassword;
 window.toggleRegistrationLock = toggleRegistrationLock;
 window.toggleTournamentMode = toggleTournamentMode;
+window.toggleTournamentSport = toggleTournamentSport;
 window.updateMatchInterval = updateMatchInterval;
 window.resetTournament = resetTournament;
 window.resetKOPhase = resetKOPhase;
@@ -76,6 +77,7 @@ window.startInteractiveDraft = startInteractiveDraft;
 window.addDraftCheat = addDraftCheat;
 window.removeDraftCheat = removeDraftCheat;
 window.quickDrawTeams = quickDrawTeams;
+window.createDartsTeamsFromPlayers = createDartsTeamsFromPlayers;
 window.spinWheel = spinWheel;
 window.skipWheelSpin = skipWheelSpin;
 window.nextDraftStep = nextDraftStep;
@@ -209,6 +211,10 @@ let teams = [];
 // bekommt seinen EIGENEN Club, kein Partner) - wird beim Turniererstellen festgelegt (siehe
 // parseTournamentFormatText/openFormatWizard), vor der Auslosung im Admin-Panel noch änderbar.
 let tournamentMode = 'duo';
+// 'fifa' (Standard, mit Vereinen/Clubs) oder 'darts' (kein Verein, jeder Spieler ist direkt
+// sein eigenes "Team" - siehe createDartsTeamsFromPlayers). Läuft technisch als tournamentMode
+// 'solo' weiter (1 Spieler pro Team, kein Partner), nur eben zusätzlich OHNE Verein.
+let tournamentSport = 'fifa';
 let plannedPlayerCount = null; // rein informative Ziel-Spieleranzahl aus der Freitext-Beschreibung, siehe openFormatWizard()
 let numGroups = 3;       // Wie viele Gruppen wurden zuletzt ausgelost? (beliebige Zahl ab 2, siehe generateGroupLetters)
 // Wie viele Teams insgesamt in die KO-Runde einziehen (admin-/text-wählbar, siehe advanceKORound).
@@ -746,7 +752,11 @@ function renderUserBadge() {
   const tournamentName = (currentTournamentId && tournamentsList[currentTournamentId]) ? tournamentsList[currentTournamentId].name : '';
   const tnameEl = document.getElementById('header-tournament-name');
   if (tnameEl) tnameEl.textContent = tournamentName ? '🏆 ' + tournamentName : '';
-  document.title = tournamentName ? `${tournamentName} — FAL FIFA Turnier` : 'FAL FIFA Turnier';
+  // Titel im Header (und im Browsertab) passt sich der Sportart DIESES Turniers an (siehe tournamentSport)
+  const appTitle = tournamentSport === 'darts' ? 'FAL Darts Turnier' : 'FAL FIFA Turnier';
+  const titleEl = document.getElementById('app-title');
+  if (titleEl) titleEl.textContent = appTitle;
+  document.title = tournamentName ? `${tournamentName} — ${appTitle}` : appTitle;
   const userBadge = document.getElementById('user-badge');
   if (userBadge) {
     let roleTag = '';
@@ -922,6 +932,7 @@ function resetLocalStateToDefaults() {
   clubLogos = { ...DEFAULT_CLUB_LOGOS };
   teams = [];
   tournamentMode = 'duo';
+  tournamentSport = 'fifa';
   plannedPlayerCount = null;
   numGroups = 3;
   koQualifiersTotal = null;
@@ -962,6 +973,7 @@ function attachTournamentListener() {
     clubLogos = data.clubLogos || { ...DEFAULT_CLUB_LOGOS };
     teams = data.teams || [];
     tournamentMode = data.tournamentMode || 'duo';
+    tournamentSport = data.tournamentSport || 'fifa';
     plannedPlayerCount = data.plannedPlayerCount || null;
     numGroups = data.numGroups || 3;
     koQualifiersTotal = data.koQualifiersTotal || null;
@@ -1020,6 +1032,7 @@ function saveData() {
     clubLogos,
     teams,
     tournamentMode,
+    tournamentSport,
     plannedPlayerCount,
     numGroups,
     koQualifiersTotal,
@@ -1208,10 +1221,17 @@ function parseTournamentFormatText(text) {
     /ohne\s+partner/i,
     /jeder\s+(spieler\s+)?(f(ü|ue)r sich|allein(e)?|solo)/i
   ];
-  const mode = soloPatterns.some(re => re.test(text)) ? 'solo' : 'duo';
-  notes.push(mode === 'solo'
-    ? '👤 Einzel-Modus erkannt: jeder Spieler bekommt seinen eigenen Verein (kein Partner).'
-    : '👬 Standard-Modus: 2er-Teams, die sich einen Verein teilen.');
+  // Sportart erkennen: "Darts"/"Dart-Turnier" -> kein Verein, automatisch Einzel-Modus
+  // (bei Darts gibt's kein Partner-Konzept, siehe createDartsTeamsFromPlayers).
+  const sport = /\bdarts?\b/i.test(text) ? 'darts' : 'fifa';
+  const mode = sport === 'darts' ? 'solo' : (soloPatterns.some(re => re.test(text)) ? 'solo' : 'duo');
+  if (sport === 'darts') {
+    notes.push('🎯 Darts-Turnier erkannt: läuft automatisch im Einzel-Modus, ganz ohne Vereine.');
+  } else {
+    notes.push(mode === 'solo'
+      ? '👤 Einzel-Modus erkannt: jeder Spieler bekommt seinen eigenen Verein (kein Partner).'
+      : '👬 Standard-Modus: 2er-Teams, die sich einen Verein teilen.');
+  }
 
   // Rein informative Notiz zu ungleichen Gruppengrößen ("4 bzw 5", "4 oder 5") - wird nicht
   // gesondert gespeichert, weil die bestehende Auslosung Restspieler ohnehin automatisch
@@ -1219,7 +1239,7 @@ function parseTournamentFormatText(text) {
   const unevenMatch = text.match(/(\d+)\s*(?:bzw\.?|oder|-)\s*(\d+)\s*(?:er)?\s*(pro\s+gruppe|spieler|teams?)?/i);
   if (unevenMatch) notes.push(`Hinweis: unterschiedliche Gruppengrößen (${unevenMatch[1]}/${unevenMatch[2]}) werden bei der Auslosung automatisch möglichst gleichmäßig verteilt.`);
 
-  return { playerCount, numGroups, koQualifiers, mode, notes };
+  return { playerCount, numGroups, koQualifiers, mode, sport, notes };
 }
 // Öffnet den Format-Assistenten (Schritt 1: Name + optionale Freitext-Beschreibung)
 function openFormatWizard() {
@@ -1260,7 +1280,7 @@ function analyzeFormatWizardText() {
   wizardTournamentName = name;
   const textInput = document.getElementById('wizard-format-text');
   const text = textInput ? textInput.value.trim() : '';
-  if (!text) { proceedFromFormatWizard({ mode: 'duo', numGroups: null, playerCount: null, koQualifiers: null }); return; }
+  if (!text) { proceedFromFormatWizard({ mode: 'duo', sport: 'fifa', numGroups: null, playerCount: null, koQualifiers: null }); return; }
   renderFormatWizardPreview(parseTournamentFormatText(text));
 }
 // Zeigt die editierbare Vorschau des erkannten Formats (Schritt 2)
@@ -1273,7 +1293,16 @@ function renderFormatWizardPreview(parsed) {
     <div style="font-size:0.8em; opacity:0.75; margin-bottom:12px; background:rgba(0,0,0,0.2); padding:8px; border-radius:8px;">${parsed.notes.map(n => `• ${escapeHtml(n)}`).join('<br>')}</div>
     <label style="display:block; font-size:0.85em; margin-bottom:4px;">Erwartete Spieleranzahl (nur zur eigenen Orientierung):</label>
     <input type="number" id="wizard-player-count" min="1" value="${parsed.playerCount || ''}" placeholder="unbekannt" style="width:100%; box-sizing:border-box; padding:8px; margin-bottom:10px;">
-    <label style="display:block; font-size:0.85em; margin-bottom:4px;">Modus:</label>
+    <label style="display:block; font-size:0.85em; margin-bottom:4px;">Sportart:</label>
+    <div style="display:flex; gap:10px; margin-bottom:10px;">
+      <label style="flex:1; display:flex; align-items:center; gap:6px; background:rgba(0,0,0,0.2); padding:8px; border-radius:8px; cursor:pointer;">
+        <input type="radio" name="wizard-sport" value="fifa" ${parsed.sport !== 'darts' ? 'checked' : ''}> ⚽ FIFA
+      </label>
+      <label style="flex:1; display:flex; align-items:center; gap:6px; background:rgba(0,0,0,0.2); padding:8px; border-radius:8px; cursor:pointer;">
+        <input type="radio" name="wizard-sport" value="darts" ${parsed.sport === 'darts' ? 'checked' : ''}> 🎯 Darts
+      </label>
+    </div>
+    <label style="display:block; font-size:0.85em; margin-bottom:4px;">Modus (bei Darts immer Einzel):</label>
     <div style="display:flex; gap:10px; margin-bottom:10px;">
       <label style="flex:1; display:flex; align-items:center; gap:6px; background:rgba(0,0,0,0.2); padding:8px; border-radius:8px; cursor:pointer;">
         <input type="radio" name="wizard-mode" value="duo" ${parsed.mode === 'duo' ? 'checked' : ''}> 👬 2er-Teams
@@ -1297,8 +1326,11 @@ function confirmFormatWizardPreview() {
   const numGroupsInput = document.getElementById('wizard-num-groups');
   const koQualifiersInput = document.getElementById('wizard-ko-qualifiers');
   const modeInput = document.querySelector('input[name="wizard-mode"]:checked');
+  const sportInput = document.querySelector('input[name="wizard-sport"]:checked');
+  const sport = sportInput ? sportInput.value : 'fifa';
   proceedFromFormatWizard({
-    mode: modeInput ? modeInput.value : 'duo',
+    mode: sport === 'darts' ? 'solo' : (modeInput ? modeInput.value : 'duo'),
+    sport,
     numGroups: numGroupsInput && numGroupsInput.value ? parseInt(numGroupsInput.value, 10) : null,
     playerCount: playerCountInput && playerCountInput.value ? parseInt(playerCountInput.value, 10) : null,
     koQualifiers: koQualifiersInput && koQualifiersInput.value ? parseInt(koQualifiersInput.value, 10) : null
@@ -1399,6 +1431,7 @@ function finalizeCreateTournament(joinPwd) {
     players: [{ name: myPlayerName, isRef: false, isTournamentOwner: true }],
     joinPassword: joinPwd,
     tournamentMode: format.mode === 'solo' ? 'solo' : 'duo',
+    tournamentSport: format.sport === 'darts' ? 'darts' : 'fifa',
     numGroups: format.numGroups || 3,
     plannedPlayerCount: format.playerCount || null,
     koQualifiersTotal: format.koQualifiers || null
@@ -2146,6 +2179,88 @@ function computeAchievements(playerKey, stats, ratingEntry, allRatings) {
   }
   return badges;
 }
+// Ermittelt die direkte Bilanz zweier Spieler gegeneinander (nur Spiele, in denen sie auf
+// GEGNERISCHEN Teams standen) aus der bereits gesammelten Match-Liste (siehe
+// collectAllConfirmedMatches) - inkl. größtem Sieg für jede Seite und aktueller Serie.
+function computeHeadToHead(nameA, nameB, matches) {
+  const keyA = nameA.trim().toLowerCase();
+  const keyB = nameB.trim().toLowerCase();
+  const result = { winsA: 0, winsB: 0, draws: 0, games: [], biggestA: null, biggestB: null, displayA: nameA, displayB: nameB };
+  matches.forEach(m => {
+    const aInTeam1 = m.team1.some(n => n.toLowerCase() === keyA);
+    const aInTeam2 = m.team2.some(n => n.toLowerCase() === keyA);
+    const bInTeam1 = m.team1.some(n => n.toLowerCase() === keyB);
+    const bInTeam2 = m.team2.some(n => n.toLowerCase() === keyB);
+    if (!((aInTeam1 && bInTeam2) || (aInTeam2 && bInTeam1))) return;
+    const aIsTeam1 = aInTeam1;
+    const scoreA = aIsTeam1 ? m.score1 : m.score2;
+    const scoreB = aIsTeam1 ? m.score2 : m.score1;
+    // Echte Namensschreibweise aus den tatsächlichen Match-Daten übernehmen (statt der evtl.
+    // anders großgeschriebenen Eingabe), damit die Anzeige immer korrekt aussieht.
+    result.displayA = (aIsTeam1 ? m.team1 : m.team2).find(n => n.toLowerCase() === keyA) || nameA;
+    result.displayB = (aIsTeam1 ? m.team2 : m.team1).find(n => n.toLowerCase() === keyB) || nameB;
+    const diff = scoreA - scoreB;
+    let outcome;
+    if (diff > 0) { result.winsA++; outcome = 'A'; if (!result.biggestA || diff > result.biggestA.diff) result.biggestA = { scoreA, scoreB, diff, tournamentName: m.tournamentName }; }
+    else if (diff < 0) { result.winsB++; outcome = 'B'; if (!result.biggestB || -diff > result.biggestB.diff) result.biggestB = { scoreA, scoreB, diff: -diff, tournamentName: m.tournamentName }; }
+    else { result.draws++; outcome = 'draw'; }
+    result.games.push({ scoreA, scoreB, outcome, tournamentName: m.tournamentName, round: m.round, time: m.time });
+  });
+  result.games.sort((a, b) => (b.time || 0) - (a.time || 0));
+  // Aktuelle Serie: wie viele der letzten Spiele in Folge dieselbe Seite gewonnen hat
+  let streakOutcome = null, streakCount = 0;
+  for (const g of result.games) {
+    if (g.outcome === 'draw') break;
+    if (streakOutcome === null) { streakOutcome = g.outcome; streakCount = 1; }
+    else if (g.outcome === streakOutcome) streakCount++;
+    else break;
+  }
+  result.streak = streakCount > 0 ? { outcome: streakOutcome, count: streakCount } : null;
+  return result;
+}
+// Baut das HTML für die Kopf-an-Kopf-Bilanz zwischen dem eigenen Profil und dem gerade
+// angesehenen fremden Profil auf (siehe computeHeadToHead)
+function renderHeadToHeadHtml(h2h) {
+  const total = h2h.winsA + h2h.winsB + h2h.draws;
+  if (total === 0) {
+    return `<hr style="margin:16px 0; opacity:0.3;"><h4 style="margin-bottom:6px;">⚔️ Kopf-an-Kopf gegen ${escapeHtml(h2h.displayB)}</h4><p class="empty-state">Ihr wart in noch keinem bestätigten Spiel direkte Gegner.</p>`;
+  }
+  const streakText = h2h.streak
+    ? (h2h.streak.outcome === 'A' ? `🔥 ${h2h.streak.count}x in Folge gegen ${escapeHtml(h2h.displayB)} gewonnen` : `❄️ ${h2h.streak.count}x in Folge gegen ${escapeHtml(h2h.displayB)} verloren`)
+    : '';
+  return `
+    <hr style="margin:16px 0; opacity:0.3;">
+    <h4 style="margin-bottom:6px;">⚔️ Kopf-an-Kopf gegen ${escapeHtml(h2h.displayB)}</h4>
+    <div style="display:grid; grid-template-columns:1fr 1fr 1fr; gap:8px; text-align:center; margin-bottom:10px;">
+      <div style="background:var(--fal-blue-primary); border-radius:8px; padding:8px;">
+        <div style="font-size:1.3em; font-weight:bold; color:#2ecc71;">${h2h.winsA}</div>
+        <div style="font-size:0.75em; opacity:0.75;">Deine Siege</div>
+      </div>
+      <div style="background:var(--fal-blue-primary); border-radius:8px; padding:8px;">
+        <div style="font-size:1.3em; font-weight:bold; opacity:0.8;">${h2h.draws}</div>
+        <div style="font-size:0.75em; opacity:0.75;">Unentschieden</div>
+      </div>
+      <div style="background:var(--fal-blue-primary); border-radius:8px; padding:8px;">
+        <div style="font-size:1.3em; font-weight:bold; color:var(--fal-red);">${h2h.winsB}</div>
+        <div style="font-size:0.75em; opacity:0.75;">Siege ${escapeHtml(h2h.displayB)}</div>
+      </div>
+    </div>
+    ${streakText ? `<p style="font-size:0.9em; margin-bottom:8px;">${streakText}</p>` : ''}
+    ${h2h.biggestA ? `<p style="font-size:0.85em; opacity:0.85; margin:2px 0;">Höchster Sieg: <strong>${h2h.biggestA.scoreA}:${h2h.biggestA.scoreB}</strong> (${escapeHtml(h2h.biggestA.tournamentName)})</p>` : ''}
+    ${h2h.biggestB ? `<p style="font-size:0.85em; opacity:0.85; margin:2px 0;">Höchste Niederlage: <strong>${h2h.biggestB.scoreA}:${h2h.biggestB.scoreB}</strong> (${escapeHtml(h2h.biggestB.tournamentName)})</p>` : ''}
+    <details style="margin-top:8px;">
+      <summary style="cursor:pointer; font-size:0.85em; opacity:0.8;">Alle ${total} direkten Duelle anzeigen</summary>
+      <div style="margin-top:6px;">
+        ${h2h.games.map(g => `
+          <div style="display:flex; justify-content:space-between; background:rgba(0,0,0,0.2); padding:5px 10px; border-radius:6px; margin-bottom:4px; font-size:0.85em;">
+            <span>${escapeHtml(g.tournamentName)}${g.round ? ` · ${escapeHtml(g.round)}` : ''}</span>
+            <strong style="color:${g.outcome === 'A' ? '#2ecc71' : (g.outcome === 'B' ? 'var(--fal-red)' : 'inherit')};">${g.scoreA}:${g.scoreB}</strong>
+          </div>
+        `).join('')}
+      </div>
+    </details>
+  `;
+}
 // Lädt (asynchron) alle Turniere und rendert daraus den Statistik-Abschnitt EINES Profils -
 // bewusst getrennt von renderProfile(), damit Live-Updates der Identitätskarte (Bio,
 // Freunde) nicht jedes Mal alle Turniere neu nachladen müssen.
@@ -2163,7 +2278,14 @@ function renderProfileStatsSection(key) {
     const ratings = computeGlobalRatings(matches);
     const ratingEntry = ratings[key];
     const badges = computeAchievements(key, stats, ratingEntry, ratings);
-    container.innerHTML = renderStatsHtml(stats, ratingEntry, ratings, badges);
+    let html = renderStatsHtml(stats, ratingEntry, ratings, badges);
+    // Kopf-an-Kopf-Bilanz nur beim Ansehen eines FREMDEN Profils (nicht des eigenen) -
+    // nutzt dieselben schon geladenen Match-Daten, kein zusätzlicher Netzwerk-Roundtrip.
+    const myKey = myPlayerName ? myPlayerName.trim().toLowerCase() : null;
+    if (myKey && myKey !== key) {
+      html += renderHeadToHeadHtml(computeHeadToHead(myPlayerName, key, matches));
+    }
+    container.innerHTML = html;
   });
 }
 // Baut das HTML für den Statistik-Abschnitt eines Profils auf
@@ -2325,7 +2447,7 @@ function removeDraftCheat(index) {
 function renderDraftCheatPanel() {
   const container = document.getElementById('draft-cheat-container');
   if (!container) return;
-  if (!isGod() || teams.length > 0) { container.innerHTML = ''; return; }
+  if (!isGod() || teams.length > 0 || tournamentSport === 'darts') { container.innerHTML = ''; return; }
   const solo = tournamentMode === 'solo';
   const usedNames = new Set();
   draftCheats.forEach(c => { usedNames.add(c.p1); if (c.p2) usedNames.add(c.p2); });
@@ -2509,6 +2631,26 @@ function quickDrawTeams() {
   showTab('teams');
   renderAll();
   alert('⚡ Teams & Clubs wurden sofort ausgelost!');
+}
+// Darts-Turniere brauchen kein Team-Glücksrad: es gibt keine Partner und keine Vereine,
+// jeder Spieler IST direkt sein eigenes "Team" (Datenmodell bleibt dasselbe wie im
+// Solo-Modus, nur eben mit club:null überall) - deshalb reicht ein einziger Klick.
+function createDartsTeamsFromPlayers() {
+  if (!hasElevated()) return;
+  if (players.length < 2) return alert(`Du benötigst mindestens 2 Spieler (aktuell: ${players.length}).`);
+  if (!confirm(`${players.length} Spieler direkt als Darts-Teilnehmer übernehmen (kein Verein, keine Auslosung nötig)?`)) return;
+  const shuffled = [...players].sort(() => Math.random() - 0.5);
+  teams = shuffled.map((p, i) => ({ id: i + 1, name: p.name, p1: p.name, p2: null, club: null }));
+  groups = [];
+  groupMatches = [];
+  koMatches = [];
+  koByeTeamIds = [];
+  tips = {};
+  tipsEvaluated = false;
+  saveData();
+  showTab('teams');
+  renderAll();
+  alert('🎯 Teilnehmer übernommen! Weiter geht’s mit der Gruppen- oder KO-Auslosung.');
 }
 
 // Zeigt/versteckt das Auslosungs-Modal je nach draftState und rendert den aktuellen Schritt
@@ -3026,6 +3168,17 @@ function toggleTournamentMode() {
   if (!hasElevated()) return;
   if (teams.length > 0) return alert('Der Modus kann nach der Auslosung nicht mehr geändert werden!');
   tournamentMode = tournamentMode === 'solo' ? 'duo' : 'solo';
+  saveData();
+  renderAll();
+}
+// Wechselt zwischen ⚽ FIFA (mit Vereinen) und 🎯 Darts (kein Verein, jeder Spieler ist sein
+// eigenes Team) - nur solange noch keine Teams existieren. Darts erzwingt automatisch den
+// Solo-Modus (kein Partner-Konzept bei Darts).
+function toggleTournamentSport() {
+  if (!hasElevated()) return;
+  if (teams.length > 0) return alert('Die Sportart kann nach der Auslosung nicht mehr geändert werden!');
+  tournamentSport = tournamentSport === 'darts' ? 'fifa' : 'darts';
+  if (tournamentSport === 'darts') tournamentMode = 'solo';
   saveData();
   renderAll();
 }
@@ -4326,13 +4479,14 @@ function renderGroups() {
     return;
   }
   const standings = calculateGroupStandings();
+  const scoreColLabel = tournamentSport === 'darts' ? 'Sätze' : 'Tore';
   let html = standings.map(g => `
     <div class="admin-card">
       <h3 style="color:var(--fal-yellow); margin-top:0;">Gruppe ${g.letter}</h3>
       <div class="table-container">
         <table>
           <thead>
-            <tr><th>#</th><th>Team</th><th>Sp</th><th>Tore</th><th>Diff</th><th>Pkt</th></tr>
+            <tr><th>#</th><th>Team</th><th>Sp</th><th>${scoreColLabel}</th><th>Diff</th><th>Pkt</th></tr>
           </thead>
           <tbody>
             ${g.rankings.map((r, idx) => `
@@ -4365,7 +4519,7 @@ function renderGroups() {
           <h3 style="color:var(--fal-yellow); margin-top:0;">📊 Quervergleich der Gruppen-${ordinalWord} (${wildcards} kommen zusätzlich weiter)</h3>
           <div class="table-container">
             <table>
-              <thead><tr><th>Platz</th><th>Team (Gruppe)</th><th>Sp</th><th>Tore</th><th>Diff</th><th>Pkt</th><th>Status</th></tr></thead>
+              <thead><tr><th>Platz</th><th>Team (Gruppe)</th><th>Sp</th><th>${scoreColLabel}</th><th>Diff</th><th>Pkt</th><th>Status</th></tr></thead>
               <tbody>
                 ${candidatePool.map((r, idx) => `
                   <tr style="${idx < wildcards ? 'background: rgba(0, 255, 100, 0.1);' : 'background: rgba(255, 0, 0, 0.1);'}">
@@ -4500,6 +4654,31 @@ function renderMatches() {
     }
   }
 }
+// Zeigt den ⚽/🎯-Umschalter für die Sportart (nur solange noch keine Teams existieren)
+function renderSportToggle() {
+  const el = document.getElementById('sport-toggle-container');
+  if (!el) return;
+  if (teams.length > 0) { el.innerHTML = ''; return; }
+  el.innerHTML = `
+    <div style="display:flex; align-items:center; justify-content:space-between; background:rgba(0,0,0,0.2); padding:8px 12px; border-radius:8px; flex-wrap:wrap; gap:8px;">
+      <span style="font-size:0.9em;">${tournamentSport === 'darts' ? '🎯 Darts-Turnier (kein Verein, jeder Spieler ist sein eigenes Team)' : '⚽ FIFA-Turnier (mit Vereinen)'}</span>
+      <button class="btn-secondary btn-sm" onclick="toggleTournamentSport()">Umschalten</button>
+    </div>
+  `;
+}
+// Baut den Team-Erstellungs-Schritt im Admin-Panel auf - bei FIFA das gewohnte Team-
+// Glücksrad (mit Vereinen), bei Darts einen einzigen "Teilnehmer übernehmen"-Button ohne
+// jegliches Vereins-/Auslosungs-Konzept (siehe createDartsTeamsFromPlayers).
+function renderTeamStepPanel() {
+  const el = document.getElementById('team-step-container');
+  if (!el) return;
+  el.innerHTML = tournamentSport === 'darts'
+    ? `<button class="btn-primary" style="background-color:#ffc800; color:#000;" onclick="createDartsTeamsFromPlayers()">🎯 1. Teilnehmer übernehmen (kein Verein nötig)</button>`
+    : `
+      <button class="btn-primary" style="background-color:#ffc800; color:#000;" onclick="startInteractiveDraft()">🎰 1. Teams & Clubs per Glücksrad auslosen</button>
+      <button class="btn-secondary" onclick="quickDrawTeams()">⚡ 1b. Sofort auslosen (ohne Show/Animation)</button>
+    `;
+}
 // Baut den kompletten Admin-Bereich auf: Spielerverwaltung, Test-Spieler-Button, Club-Liste, Registrierungssperre
 // Zeigt im Admin-Panel EINEN dynamischen Button für die KO-Phase, statt fixer
 // Viertel-/Halbfinale/Finale-Schritte - der Text passt sich dem aktuellen Fortschritt an
@@ -4538,6 +4717,8 @@ function renderAdminPanel() {
       : '';
   }
   renderInvitePanel();
+  renderSportToggle();
+  renderTeamStepPanel();
   renderDraftCheatPanel();
   renderKOControlPanel();
   // Zeitabstand-Eingabefeld mit dem aktuellen Wert synchron halten - aber nicht, während
