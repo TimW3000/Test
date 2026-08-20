@@ -555,6 +555,23 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   });
 });
+// Die Selbstheilung der Glücksräder (siehe renderDraftStep()/renderGroupDraftStep()) greift
+// nur, wenn IRGENDWANN erneut gerendert wird - normalerweise der lokale setTimeout nach der
+// ~4s-Animation. Sperrt sich aber z.B. das Handy-Display mitten in der Animation oder wechselt
+// man kurz die App, pausiert/verwirft der Browser diesen Timer OHNE dass danach von selbst noch
+// ein Render passiert (Firebase feuert ja nur bei echten Datenänderungen) - das Rad bliebe dann
+// für immer beim zuletzt gezogenen Team hängen. Deshalb zusätzlich: bei jeder Rückkehr in den
+// Tab UND als Sicherheitsnetz alle 2s (nur wirksam, während wirklich gerade gedreht wird) einen
+// Render erzwingen, damit die längst vorhandene Recovery-Logik zuverlässig greift.
+function recoverStuckWheelsIfAny() {
+  if ((draftState && draftState.active && draftState.spinning) ||
+      (groupDraftState && groupDraftState.active && groupDraftState.spinning)) {
+    handleLiveDraftUI();
+  }
+}
+document.addEventListener('visibilitychange', () => { if (!document.hidden) recoverStuckWheelsIfAny(); });
+window.addEventListener('pageshow', recoverStuckWheelsIfAny);
+setInterval(recoverStuckWheelsIfAny, 2000);
 // ============================================================================
 // 3. ROLLEN & AUTH — Globale Identität (website-weit), Turnier-Beitritt, Passwörter
 // ============================================================================
