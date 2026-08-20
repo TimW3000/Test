@@ -1029,6 +1029,13 @@ function attachTournamentListener() {
     groups = data.groups || [];
     groupMatches = data.groupMatches || [];
     koMatches = data.koMatches || [];
+    // Echtes Firebase RTDB entfernt leere Arrays/Objekte beim Speichern komplett (statt sie
+    // als leeren Container zu behalten) - trifft z.B. IMMER visitDarts/history/undoStack eines
+    // frisch gestarteten Darts-Matches, da die alle mit [] beginnen. Ohne diese Nachbehandlung
+    // wären sie nach dem ersten Speichern "undefined" statt [], und renderDartsMatch() würde
+    // beim nächsten Aufruf mit einem Fehler abstürzen (".map ist keine Funktion" etc.) - das
+    // gemeldete "es öffnet sich kein richtiges Fenster".
+    [...groupMatches, ...koMatches].forEach(m => { if (m.dartsMatch) normalizeDartsMatchState(m.dartsMatch); });
     rules = data.rules || DEFAULT_RULES;
     tips = data.tips || {};
     tipsEvaluated = data.tipsEvaluated || false;
@@ -4022,6 +4029,29 @@ function createDartsMatchState(startScore, legsToWin, checkoutRule) {
     history: [],
     undoStack: []
   };
+}
+// Repariert einen Darts-Live-Zustand, der gerade frisch aus Firebase geladen wurde: echtes
+// Firebase RTDB entfernt leere Arrays/Objekte beim Speichern komplett statt sie als leeren
+// Container zu behalten - visitDarts/history/undoStack starten aber alle bei [] und würden
+// nach dem allerersten Speichern zu "undefined" statt [] werden. Ohne diese Nachbehandlung
+// stürzt renderDartsMatch() beim nächsten Aufruf ab (".map ist keine Funktion" etc.) - das war
+// der gemeldete "es öffnet sich kein richtiges Fenster"-Bug. Betrifft auch jeden einzelnen
+// Snapshot im undoStack selbst, aus demselben Grund.
+function normalizeDartsMatchState(ds) {
+  if (!ds) return;
+  if (!ds.visitDarts) ds.visitDarts = [];
+  if (!ds.history) ds.history = [];
+  if (!ds.undoStack) ds.undoStack = [];
+  if (!ds.legsWon) ds.legsWon = [0, 0];
+  if (!ds.remaining) ds.remaining = [ds.startScore, ds.startScore];
+  if (ds.winnerIndex === undefined) ds.winnerIndex = null;
+  ds.undoStack.forEach(snap => {
+    if (!snap.visitDarts) snap.visitDarts = [];
+    if (!snap.history) snap.history = [];
+    if (!snap.legsWon) snap.legsWon = [0, 0];
+    if (!snap.remaining) snap.remaining = [ds.startScore, ds.startScore];
+    if (snap.winnerIndex === undefined) snap.winnerIndex = null;
+  });
 }
 // Schnappschuss aller veränderlichen Felder (OHNE undoStack selbst, sonst würde der Stack
 // sich rekursiv aufblähen) - wird vor JEDEM Wurf auf den undoStack gelegt, siehe recordDartsThrow.
