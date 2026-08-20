@@ -261,17 +261,15 @@ let isFirebaseConnected = null; // null = noch unbekannt, true/false = Verbindun
 let userBalances = {};  // { "Name": 100 }
 let bets = [];          // { matchId, isKO, playerName, chosenTeamId, amount }
 // Status-Variablen für das Auslosungs-System (Duo-Draft) - UNVERÄNDERT
-let draftState = { active: false, currentStep: 0, tempP1: null, tempP2: null, remainingPlayers: [], remainingClubs: [], spinning: false, startTime: null, targetAngle: 0, duration: 4000, lastDrawnItem: null, pairs: [] };
+let draftState = { active: false, currentStep: 0, tempP1: null, tempP2: null, remainingPlayers: [], remainingClubs: [], spinning: false, startTime: null, targetAngle: 0, duration: 4000, lastDrawnItem: null, pairs: [], pendingTarget: null };
 let animFrameId = null;
 let draftSpinTimeoutId = null; // laufender setTimeout-Handle der aktuellen Dreh-Animation, siehe spinWheel()/skipWheelSpin()
-let pendingSpinResult = null; // bereits feststehendes, aber noch nicht übernommenes Ergebnis der laufenden Drehung
 // Eigene, EINFACHERE Draft-State-Machine fürs Gruppen-Glücksrad (welches Team kommt in
 // welche Gruppe) - bewusst getrennt von draftState (Team-Auslosung), weil hier nur ein
 // einziger Ziehungs-Schritt existiert (kein Cheat-System, kein Duo/Solo-Unterschied). Teilt
 // sich aber dasselbe #draft-modal/#draft-stage-Overlay, siehe handleLiveDraftUI().
-let groupDraftState = { active: false, spinning: false, remainingTeams: [], groupLetters: [], targetGroupIndex: 0, assignments: {}, lastDrawnItem: null, lastAssignedGroup: null, startTime: null, targetAngle: 0, duration: 4000 };
+let groupDraftState = { active: false, spinning: false, remainingTeams: [], groupLetters: [], targetGroupIndex: 0, assignments: {}, lastDrawnItem: null, lastAssignedGroup: null, startTime: null, targetAngle: 0, duration: 4000, pendingTarget: null };
 let groupSpinTimeoutId = null;
-let pendingGroupSpinResult = null;
 // localStorage-Schlüssel, um sich zu merken, mit welcher Passwort-Version man zuletzt ALS
 // DIESE IDENTITÄT erfolgreich angemeldet war. Das Passwort gilt jetzt identitätsweit (für
 // ALLE Turniere gemeinsam) statt pro Turnier - deshalb NUR nach dem Namen geschlüsselt,
@@ -939,8 +937,8 @@ function resetLocalStateToDefaults() {
   registrationLocked = false;
   joinPassword = null;
   coinAnimation = 'none';
-  draftState = { active: false, currentStep: 0, tempP1: null, tempP2: null, remainingPlayers: [], remainingClubs: [], spinning: false, startTime: null, targetAngle: 0, duration: 4000, lastDrawnItem: null, pairs: [] };
-  groupDraftState = { active: false, spinning: false, remainingTeams: [], groupLetters: [], targetGroupIndex: 0, assignments: {}, lastDrawnItem: null, lastAssignedGroup: null, startTime: null, targetAngle: 0, duration: 4000 };
+  draftState = { active: false, currentStep: 0, tempP1: null, tempP2: null, remainingPlayers: [], remainingClubs: [], spinning: false, startTime: null, targetAngle: 0, duration: 4000, lastDrawnItem: null, pairs: [], pendingTarget: null };
+  groupDraftState = { active: false, spinning: false, remainingTeams: [], groupLetters: [], targetGroupIndex: 0, assignments: {}, lastDrawnItem: null, lastAssignedGroup: null, startTime: null, targetAngle: 0, duration: 4000, pendingTarget: null };
   userBalances = {};
   bets = [];
   tournamentEntryHandled = false;
@@ -2482,7 +2480,8 @@ function startInteractiveDraft() {
       targetAngle: 0,
       duration: 4000,
       lastDrawnItem: null,
-      pairs: []
+      pairs: [],
+      pendingTarget: null
     };
     saveData();
     handleLiveDraftUI();
@@ -2505,7 +2504,7 @@ function quickDrawTeams() {
   koMatches = [];
   tips = {};
   tipsEvaluated = false;
-  draftState = { active: false, currentStep: 0, tempP1: null, tempP2: null, remainingPlayers: [], remainingClubs: [], spinning: false, startTime: null, targetAngle: 0, duration: 4000, lastDrawnItem: null, pairs: [] };
+  draftState = { active: false, currentStep: 0, tempP1: null, tempP2: null, remainingPlayers: [], remainingClubs: [], spinning: false, startTime: null, targetAngle: 0, duration: 4000, lastDrawnItem: null, pairs: [], pendingTarget: null };
   saveData();
   showTab('teams');
   renderAll();
@@ -2536,6 +2535,18 @@ function renderDraftStep() {
   if (!stage) return;
   const solo = draftState.mode === 'solo';
   const clubStep = solo ? 1 : 2;
+  // Recovery: Die Animation sollte laut startTime/duration längst fertig sein, aber
+  // spinning ist noch true (z.B. weil der lokale setTimeout durch einen Tab-Reload oder
+  // Hintergrund-Drosselung verloren ging) - dann JETZT aus dem (in Firebase gespeicherten)
+  // pendingTarget auflösen, statt für immer "spinning" hängen zu bleiben.
+  if (hasElevated() && draftState.spinning && draftState.startTime && draftState.pendingTarget != null) {
+    const elapsed = Date.now() - draftState.startTime;
+    if (elapsed >= (draftState.duration || 4000)) {
+      if (draftSpinTimeoutId) { clearTimeout(draftSpinTimeoutId); draftSpinTimeoutId = null; }
+      applyDrawnDraftItem(draftState.pendingTarget, solo, clubStep);
+      return;
+    }
+  }
   const noPlayersLeft = !draftState.remainingPlayers || draftState.remainingPlayers.length === 0;
   const noDuoPending = !draftState.tempP1 && !draftState.tempP2 && !draftState.lastDrawnItem;
   if (noPlayersLeft && noDuoPending) {
@@ -2587,7 +2598,7 @@ function renderDraftStep() {
             🎰 Rad drehen
           </button>
         ` : ''}
-        ${draftState.spinning && pendingSpinResult !== null ? `
+        ${draftState.spinning && draftState.pendingTarget != null ? `
           <button class="btn-primary role-btn" onclick="skipWheelSpin()">
             ⏭️ Überspringen
           </button>
@@ -2714,6 +2725,7 @@ function drawWheelCanvas(angleOffset) {
 // spinWheel() (nach der Dreh-Animation) und dem Ein-Element-Sonderfall (siehe dort).
 function applyDrawnDraftItem(item, solo, clubStep) {
   draftState.spinning = false;
+  draftState.pendingTarget = null;
   draftState.lastDrawnItem = item;
   if (draftState.currentStep === 0) {
     draftState.tempP1 = item;
@@ -2806,15 +2818,15 @@ function spinWheel() {
   draftState.targetAngle = totalRotation;
   draftState.duration = 4000;
   draftState.lastDrawnItem = null;
+  // Ergebnis steht schon fest (nur die Animation läuft noch) - im draftState (also in
+  // Firebase) gemerkt statt nur in einer lokalen JS-Variable. Sonst bliebe das Rad für immer
+  // hängen, falls der Tab während der ~4s Animation neu lädt oder in den Hintergrund gerät
+  // (z.B. Bildschirm sperrt sich) und der lokale setTimeout dadurch verloren geht.
+  draftState.pendingTarget = targetItem;
   saveData();
-  // Ergebnis steht schon fest (nur die Animation läuft noch) - lokal (NICHT in Firebase)
-  // gemerkt, damit skipWheelSpin() bei Bedarf sofort dasselbe Ergebnis übernehmen kann,
-  // ohne die vollen ~4s Dreh-Animation abwarten zu müssen.
-  pendingSpinResult = targetItem;
   if (draftSpinTimeoutId) clearTimeout(draftSpinTimeoutId);
   draftSpinTimeoutId = setTimeout(() => {
     draftSpinTimeoutId = null;
-    pendingSpinResult = null;
     if (hasElevated() && draftState.spinning) {
       applyDrawnDraftItem(targetItem, solo, clubStep);
     }
@@ -2824,13 +2836,11 @@ function spinWheel() {
 // übernimmt sofort dasselbe (schon feststehende) Ergebnis, das der reguläre Timer ohnehin
 // geliefert hätte.
 function skipWheelSpin() {
-  if (!hasElevated() || !draftState.spinning || pendingSpinResult === null) return;
+  if (!hasElevated() || !draftState.spinning || draftState.pendingTarget == null) return;
   if (draftSpinTimeoutId) { clearTimeout(draftSpinTimeoutId); draftSpinTimeoutId = null; }
   const solo = draftState.mode === 'solo';
   const clubStep = solo ? 1 : 2;
-  const result = pendingSpinResult;
-  pendingSpinResult = null;
-  applyDrawnDraftItem(result, solo, clubStep);
+  applyDrawnDraftItem(draftState.pendingTarget, solo, clubStep);
 }
 
 // Übernimmt das zuletzt gezogene Element (Spieler/Club) und schaltet zum nächsten Auslosungs-Schritt
@@ -2880,11 +2890,10 @@ function cancelDraft() {
     // Auslosung zugreifen - sonst könnte er nach einem sofortigen Neustart der Auslosung
     // versehentlich ein Ergebnis in die neue, gerade erst begonnene Runde schreiben.
     if (draftSpinTimeoutId) { clearTimeout(draftSpinTimeoutId); draftSpinTimeoutId = null; }
-    pendingSpinResult = null;
     draftState = {
       active: false, spinning: false, currentStep: 0,
       tempP1: null, tempP2: null, lastDrawnItem: null,
-      remainingPlayers: [], remainingClubs: [], pairs: []
+      remainingPlayers: [], remainingClubs: [], pairs: [], pendingTarget: null
     };
     saveData();
     const modal = document.getElementById('draft-modal');
@@ -3158,10 +3167,15 @@ function generateGroupLetters(n) {
 // Prüft, ob eine gewünschte Gruppenanzahl mit der aktuellen Team-Anzahl grundsätzlich
 // möglich ist (mind. 2 Teams pro Gruppe, max. 26 Gruppen wegen A-Z). Gibt bei Erfolg
 // null zurück, sonst eine Fehlermeldung.
-function validateGroupCount(n) {
+// itemLabel/minPerGroup generisch gehalten, damit dieselbe Prüfung auch für die "nur Namen,
+// ohne Verein"-Gruppenauslosung (siehe startGroupDraft) mit min. 1 Person pro Gruppe passt.
+function validateGroupCount(n, poolSize, itemLabel, minPerGroup) {
+  if (poolSize === undefined) poolSize = teams ? teams.length : 0;
+  if (itemLabel === undefined) itemLabel = 'Teams';
+  if (minPerGroup === undefined) minPerGroup = 2;
   if (isNaN(n) || n < 2) return 'Bitte eine Zahl ab 2 als Gruppenanzahl eingeben!';
   if (n > 26) return 'Maximal 26 Gruppen werden unterstützt (Gruppe A bis Gruppe Z).';
-  if (!teams || teams.length < n * 2) return `Für ${n} Gruppen benötigst du mindestens ${n * 2} Teams (aktuell: ${teams ? teams.length : 0}), damit jede Gruppe mindestens 2 Teams hat.`;
+  if (poolSize < n * minPerGroup) return `Für ${n} Gruppen benötigst du mindestens ${n * minPerGroup} ${itemLabel} (aktuell: ${poolSize}), damit jede Gruppe mindestens ${minPerGroup} bekommt.`;
   return null;
 }
 // Baut aus den fertig befüllten "groups" (letter + teams[]) den kompletten Gruppen-
@@ -3232,29 +3246,37 @@ function quickDrawGroups() {
 //     und verteilt sie reihum auf die Gruppen (Team 1 -> Gruppe A, Team 2 -> Gruppe B, ...,
 //     dann wieder von vorn). Eigene, bewusst einfachere Draft-State-Machine (groupDraftState),
 //     siehe deren Deklaration weiter oben - teilt sich aber dasselbe #draft-modal-Overlay.
+//     Kann wahlweise TEAMS (Standard, mit Verein/Spielplan danach) oder direkt SPIELER-NAMEN
+//     lostopf-artig verteilen (source='players', z.B. für Zimmer-/Ausflugsauslosung ganz ohne
+//     Fußball-Bezug) - dann gibt's hinterher keinen Spielplan, nur die fertigen Namenslisten.
 // ============================================================================
-// Startet die Live-Gruppen-Auslosungs-Show
-function startGroupDraft() {
+// Startet die Live-Gruppen-Auslosungs-Show. source: 'teams' (Standard) oder 'players'
+// (lost die Spielerliste direkt in Gruppen, ganz ohne Team/Verein-Konzept).
+function startGroupDraft(source) {
   if (!hasElevated()) return;
-  if (!teams || teams.length < 4) {
-    return alert(`Du benötigst mindestens 4 Teams (aktuell: ${teams ? teams.length : 0}).`);
+  const isPlayers = source === 'players';
+  const pool = isPlayers ? players.map(p => p.name) : (teams ? teams.map(t => t.name) : []);
+  const itemLabel = isPlayers ? 'Spieler' : 'Teams';
+  const minPerGroup = isPlayers ? 1 : 2;
+  if (pool.length < (isPlayers ? 2 : 4)) {
+    return alert(`Du benötigst mindestens ${isPlayers ? 2 : 4} ${itemLabel} (aktuell: ${pool.length}).`);
   }
-  const input = prompt('Wie viele Gruppen sollen ausgelost werden?', String(numGroups || Math.max(2, Math.round(teams.length / 4))));
+  const input = prompt('Wie viele Gruppen sollen ausgelost werden?', String(numGroups || Math.max(2, Math.round(pool.length / 4))));
   if (input === null) return;
   const n = parseInt(input, 10);
-  const err = validateGroupCount(n);
+  const err = validateGroupCount(n, pool.length, itemLabel, minPerGroup);
   if (err) return alert(err);
-  if (!confirm(`Soll die Gruppen-Auslosungs-Show jetzt LIVE gestartet werden? ${teams.length} Teams werden nacheinander per Glücksrad auf ${n} Gruppen verteilt.`)) return;
+  if (!confirm(`Soll die Gruppen-Auslosungs-Show jetzt LIVE gestartet werden? ${pool.length} ${itemLabel} werden nacheinander per Glücksrad auf ${n} Gruppen verteilt.`)) return;
   numGroups = n;
   const groupLetters = generateGroupLetters(n);
   const assignments = {};
   groupLetters.forEach(l => { assignments[l] = []; });
   groupDraftState = {
-    active: true, spinning: false,
-    remainingTeams: teams.map(t => t.name),
+    active: true, spinning: false, source: isPlayers ? 'players' : 'teams',
+    remainingTeams: pool,
     groupLetters, targetGroupIndex: 0, assignments,
     lastDrawnItem: null, lastAssignedGroup: null,
-    startTime: null, targetAngle: 0, duration: 4000
+    startTime: null, targetAngle: 0, duration: 4000, pendingTarget: null
   };
   saveData();
   renderAll();
@@ -3286,12 +3308,16 @@ function spinGroupWheel() {
   groupDraftState.targetAngle = totalRotation;
   groupDraftState.duration = 4000;
   groupDraftState.lastDrawnItem = null;
+  // Das Ergebnis steht schon fest (nur die Animation läuft noch) - wird hier IM
+  // draftState (also in Firebase) gemerkt statt nur in einer lokalen JS-Variable. Sonst
+  // bliebe das Rad für immer hängen, falls der Tab während der ~4s Animation neu lädt
+  // oder in den Hintergrund gerät (z.B. Bildschirm sperrt sich) und der lokale
+  // setTimeout dadurch verloren geht - der gemeldete "Rad dreht nicht mehr weiter"-Bug.
+  groupDraftState.pendingTarget = targetItem;
   saveData();
-  pendingGroupSpinResult = targetItem;
   if (groupSpinTimeoutId) clearTimeout(groupSpinTimeoutId);
   groupSpinTimeoutId = setTimeout(() => {
     groupSpinTimeoutId = null;
-    pendingGroupSpinResult = null;
     if (hasElevated() && groupDraftState.spinning) {
       applyGroupDraw(targetItem);
     }
@@ -3300,24 +3326,27 @@ function spinGroupWheel() {
 // Admin/God kann die laufende Dreh-Animation überspringen - übernimmt sofort das
 // schon feststehende Ergebnis (siehe skipWheelSpin() beim Team-Glücksrad, analog)
 function skipGroupWheelSpin() {
-  if (!hasElevated() || !groupDraftState.spinning || pendingGroupSpinResult === null) return;
+  if (!hasElevated() || !groupDraftState.spinning || groupDraftState.pendingTarget == null) return;
   if (groupSpinTimeoutId) { clearTimeout(groupSpinTimeoutId); groupSpinTimeoutId = null; }
-  const result = pendingGroupSpinResult;
-  pendingGroupSpinResult = null;
-  applyGroupDraw(result);
+  applyGroupDraw(groupDraftState.pendingTarget);
 }
-// Übernimmt das gezogene Team: weist es der aktuellen Ziel-Gruppe zu und rückt die
-// Ziel-Gruppe eins weiter (reihum A, B, C, ..., wieder A, ...)
-function applyGroupDraw(teamName) {
+// Übernimmt das gezogene Element (Team oder - im source='players'-Modus - direkt ein
+// Spielername) und weist es der aktuellen Ziel-Gruppe zu; rückt die Ziel-Gruppe eins
+// weiter (reihum A, B, C, ..., wieder A, ...)
+function applyGroupDraw(itemName) {
+  const isPlayers = groupDraftState.source === 'players';
   groupDraftState.spinning = false;
-  groupDraftState.lastDrawnItem = teamName;
-  const idx = groupDraftState.remainingTeams.indexOf(teamName);
+  groupDraftState.pendingTarget = null;
+  groupDraftState.lastDrawnItem = itemName;
+  const idx = groupDraftState.remainingTeams.indexOf(itemName);
   if (idx !== -1) groupDraftState.remainingTeams.splice(idx, 1);
   const letter = groupDraftState.groupLetters[groupDraftState.targetGroupIndex];
-  const team = teams.find(t => t.name === teamName);
-  if (team) {
-    if (!groupDraftState.assignments[letter]) groupDraftState.assignments[letter] = [];
-    groupDraftState.assignments[letter].push(team.id);
+  if (!groupDraftState.assignments[letter]) groupDraftState.assignments[letter] = [];
+  if (isPlayers) {
+    groupDraftState.assignments[letter].push(itemName);
+  } else {
+    const team = teams.find(t => t.name === itemName);
+    if (team) groupDraftState.assignments[letter].push(team.id);
   }
   groupDraftState.lastAssignedGroup = letter;
   groupDraftState.targetGroupIndex = (groupDraftState.targetGroupIndex + 1) % groupDraftState.groupLetters.length;
@@ -3328,12 +3357,26 @@ function applyGroupDraw(teamName) {
 function renderGroupDraftStep() {
   const stage = document.getElementById('draft-stage');
   if (!stage) return;
+  // Recovery: Die Animation sollte laut startTime/duration längst fertig sein, aber
+  // spinning ist noch true (z.B. weil der lokale setTimeout durch einen Tab-Reload oder
+  // Hintergrund-Drosselung verloren ging) - dann JETZT aus dem (in Firebase gespeicherten)
+  // pendingTarget auflösen, statt für immer "spinning" hängen zu bleiben.
+  if (hasElevated() && groupDraftState.spinning && groupDraftState.startTime && groupDraftState.pendingTarget != null) {
+    const elapsed = Date.now() - groupDraftState.startTime;
+    if (elapsed >= (groupDraftState.duration || 4000)) {
+      if (groupSpinTimeoutId) { clearTimeout(groupSpinTimeoutId); groupSpinTimeoutId = null; }
+      applyGroupDraw(groupDraftState.pendingTarget);
+      return;
+    }
+  }
+  const isPlayers = groupDraftState.source === 'players';
+  const itemLabel = isPlayers ? 'Namen' : 'Team(s)';
   if (!groupDraftState.remainingTeams || groupDraftState.remainingTeams.length === 0) {
     stage.innerHTML = `
-      <h3 style="color:#4CAF50; margin-bottom: 10px;">🎉 Alle Teams wurden auf die Gruppen verteilt! 🎉</h3>
+      <h3 style="color:#4CAF50; margin-bottom: 10px;">🎉 Alle ${isPlayers ? 'Namen wurden' : 'Teams wurden'} auf die Gruppen verteilt! 🎉</h3>
       ${hasElevated() ? `
         <button class="btn-primary role-btn" style="margin-top:15px;" onclick="finishGroupDraft()">
-          💾 Gruppen speichern & Spielplan erstellen
+          💾 Gruppen speichern${isPlayers ? '' : ' & Spielplan erstellen'}
         </button>
       ` : '<p style="color:var(--fal-yellow);">Warte auf Admin-Bestätigung...</p>'}
       <button class="btn-secondary role-btn" style="margin-top:10px;" onclick="goToLandingPage()">🔄 Turnier wechseln</button>
@@ -3342,8 +3385,8 @@ function renderGroupDraftStep() {
   }
   const nextLetter = groupDraftState.groupLetters[groupDraftState.targetGroupIndex];
   stage.innerHTML = `
-    <p style="font-size:0.9em; opacity:0.8;">Noch ${groupDraftState.remainingTeams.length} Team(s) übrig</p>
-    <h3 style="margin:5px 0; color:var(--fal-yellow);">🎰 Lose Team für <strong>${nextLetter}</strong></h3>
+    <p style="font-size:0.9em; opacity:0.8;">Noch ${groupDraftState.remainingTeams.length} ${itemLabel} übrig</p>
+    <h3 style="margin:5px 0; color:var(--fal-yellow);">🎰 Lose ${isPlayers ? 'Name' : 'Team'} für <strong>${nextLetter}</strong></h3>
     <div class="wheel-container" style="position:relative; width:260px; margin:0 auto;">
       <div class="wheel-pointer" style="position:absolute; top:-10px; left:50%; transform:translateX(-50%); width:0; height:0; border-left:10px solid transparent; border-right:10px solid transparent; border-top:15px solid red; z-index:10;"></div>
       <canvas id="wheel-canvas" width="260" height="260"></canvas>
@@ -3361,7 +3404,7 @@ function renderGroupDraftStep() {
             🎰 Rad drehen
           </button>
         ` : ''}
-        ${groupDraftState.spinning && pendingGroupSpinResult !== null ? `
+        ${groupDraftState.spinning && groupDraftState.pendingTarget != null ? `
           <button class="btn-primary role-btn" onclick="skipGroupWheelSpin()">
             ⏭️ Überspringen
           </button>
@@ -3449,8 +3492,7 @@ function cancelGroupDraft() {
   if (confirm("Möchtest du die Gruppen-Auslosung wirklich abbrechen und zurücksetzen?")) {
     if (animFrameId) cancelAnimationFrame(animFrameId);
     if (groupSpinTimeoutId) { clearTimeout(groupSpinTimeoutId); groupSpinTimeoutId = null; }
-    pendingGroupSpinResult = null;
-    groupDraftState = { active: false, spinning: false, remainingTeams: [], groupLetters: [], targetGroupIndex: 0, assignments: {}, lastDrawnItem: null, lastAssignedGroup: null, startTime: null, targetAngle: 0, duration: 4000 };
+    groupDraftState = { active: false, spinning: false, remainingTeams: [], groupLetters: [], targetGroupIndex: 0, assignments: {}, lastDrawnItem: null, lastAssignedGroup: null, startTime: null, targetAngle: 0, duration: 4000, pendingTarget: null };
     saveData();
     const modal = document.getElementById('draft-modal');
     if (modal) modal.style.display = 'none';
@@ -3461,6 +3503,18 @@ function cancelGroupDraft() {
 // Übernimmt die fertig gelosten Gruppen und erstellt daraus den kompletten Spielplan
 function finishGroupDraft() {
   if (!hasElevated()) return;
+  const isPlayers = groupDraftState.source === 'players';
+  if (isPlayers) {
+    // "Nur Namen"-Modus (z.B. Zimmer-/Ausflugsauslosung): keine Teams/Vereine/Spielplan
+    // beteiligt - members ist eine einfache Liste von Namen statt Team-IDs, siehe renderGroups().
+    groups = groupDraftState.groupLetters.map(letter => ({ letter, members: groupDraftState.assignments[letter] || [] }));
+    groupDraftState.active = false;
+    saveData();
+    renderAll();
+    showTab('groups');
+    alert('🎉 Gruppen wurden gespeichert!');
+    return;
+  }
   groups = groupDraftState.groupLetters.map(letter => ({ letter, teams: groupDraftState.assignments[letter] || [] }));
   groupDraftState.active = false;
   buildGroupScheduleAndSave();
@@ -3686,8 +3740,8 @@ function resetTeamDraft() {
   });
   tips = {};
   tipsEvaluated = false;
-  draftState = { active: false, currentStep: 0, tempP1: null, tempP2: null, remainingPlayers: [], remainingClubs: [], spinning: false, startTime: null, targetAngle: 0, duration: 4000, lastDrawnItem: null, pairs: [] };
-  groupDraftState = { active: false, spinning: false, remainingTeams: [], groupLetters: [], targetGroupIndex: 0, assignments: {}, lastDrawnItem: null, lastAssignedGroup: null, startTime: null, targetAngle: 0, duration: 4000 };
+  draftState = { active: false, currentStep: 0, tempP1: null, tempP2: null, remainingPlayers: [], remainingClubs: [], spinning: false, startTime: null, targetAngle: 0, duration: 4000, lastDrawnItem: null, pairs: [], pendingTarget: null };
+  groupDraftState = { active: false, spinning: false, remainingTeams: [], groupLetters: [], targetGroupIndex: 0, assignments: {}, lastDrawnItem: null, lastAssignedGroup: null, startTime: null, targetAngle: 0, duration: 4000, pendingTarget: null };
   saveData();
   renderAll();
   alert('✅ Team-Auslosung wurde zurückgesetzt.');
@@ -3721,7 +3775,7 @@ function resetTournament() {
     tips = {};
     tipsEvaluated = false;
     registrationLocked = false;
-    draftState = { active: false, currentStep: 0, tempP1: null, tempP2: null, remainingPlayers: [], remainingClubs: [], spinning: false, startTime: null, targetAngle: 0, duration: 4000, lastDrawnItem: null, pairs: [] };
+    draftState = { active: false, currentStep: 0, tempP1: null, tempP2: null, remainingPlayers: [], remainingClubs: [], spinning: false, startTime: null, targetAngle: 0, duration: 4000, lastDrawnItem: null, pairs: [], pendingTarget: null };
     userBalances = {};
     bets = [];
     saveData();
@@ -4255,6 +4309,20 @@ function renderGroups() {
   if (!container) return;
   if (groups.length === 0) {
     container.innerHTML = '<p class="empty-state">Noch keine Gruppen gelost.</p>';
+    return;
+  }
+  // "Nur Namen"-Modus (siehe startGroupDraft(source='players')/finishGroupDraft): einfache
+  // Namenslisten statt Team-Tabellen, kein Spielplan/Quervergleich - z.B. für Zimmer-/
+  // Ausflugsauslosungen ganz ohne Fußball-Bezug.
+  if (groups[0] && groups[0].members !== undefined) {
+    container.innerHTML = groups.map(g => `
+      <div class="admin-card">
+        <h3 style="color:var(--fal-yellow); margin-top:0;">Gruppe ${g.letter}</h3>
+        <ul style="margin:0; padding-left:20px;">
+          ${g.members.map(name => `<li>${escapeHtml(name)}</li>`).join('') || '<li style="opacity:0.6;">leer</li>'}
+        </ul>
+      </div>
+    `).join('');
     return;
   }
   const standings = calculateGroupStandings();
