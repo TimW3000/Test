@@ -4775,10 +4775,9 @@ function renderTeams() {
     return `
       <div class="admin-card ${isMyTeam ? 'highlight-me' : ''}">
         <div style="display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap;">
-          <input type="text" value="${t.name}"
-                 ${canEditName ? '' : 'disabled'}
-                 onchange="updateTeamName(${t.id}, this.value)"
-                 style="font-weight: bold; font-size: 1.1em; max-width: 180px;">
+          ${canEditName
+            ? `<input type="text" value="${t.name}" onchange="updateTeamName(${t.id}, this.value)" style="font-weight: bold; font-size: 1.1em; max-width: 180px;">`
+            : `<span style="font-weight: bold; font-size: 1.1em;">${escapeHtml(t.name)}</span>`}
           ${crestHtml}
         </div>
         ${isMyTeam ? '<div style="color:var(--fal-yellow); font-size:0.85em; font-weight:bold; margin-top:4px;">⭐ (Dein Team)</div>' : ''}
@@ -4918,6 +4917,17 @@ function renderGroups() {
   }
   container.innerHTML = html;
 }
+// Zeigt ein Ergebnis-Zahlenfeld nur für Leute, die es auch wirklich bearbeiten dürfen -
+// alle anderen (Zuschauer, Spieler außerhalb dieser Partie) sehen nur den reinen Wert als
+// Text statt eines funktionslosen ausgegrauten Eingabefelds ("so einfach wie möglich" für
+// Mitspieler, siehe renderMatchBlock).
+function scoreFieldOrText(id, val, canEdit, locked, max) {
+  const shown = (val !== null && val !== undefined) ? val : '';
+  if (canEdit && !locked) {
+    return `<input type="number" id="${id}" min="0" ${max ? `max="${max}"` : ''} style="width:40px; text-align:center;" value="${shown}">`;
+  }
+  return `<span style="width:40px; display:inline-block; text-align:center; font-weight:bold;">${shown !== '' ? shown : '–'}</span>`;
+}
 // SPIELE: gemeinsame Karten-Darstellung für Gruppen- & KO-Spiele
 function renderMatchBlock(m, isKO) {
   const t1 = teams.find(t => t.id === m.t1Id) || { name: 'Team ?', p1: 'P1', p2: 'P2', club: '' };
@@ -4971,9 +4981,9 @@ function renderMatchBlock(m, isKO) {
         <details style="font-size:0.82em; opacity:0.85;">
           <summary style="cursor:pointer;">Manuell eintragen (nur Sätze-Endstand, ohne Wurf-Erfassung)</summary>
           <div style="display:flex; gap:5px; align-items:center; margin-top:6px;">
-            <input type="number" id="${prefix}h1" min="0" style="width:40px; text-align:center;" ${(!canEdit || locked) ? 'disabled' : ''} value="${m.score1_h !== null && m.score1_h !== undefined ? m.score1_h : ''}">
+            ${scoreFieldOrText(`${prefix}h1`, m.score1_h, canEdit, locked)}
             :
-            <input type="number" id="${prefix}h2" min="0" style="width:40px; text-align:center;" ${(!canEdit || locked) ? 'disabled' : ''} value="${m.score2_h !== null && m.score2_h !== undefined ? m.score2_h : ''}">
+            ${scoreFieldOrText(`${prefix}h2`, m.score2_h, canEdit, locked)}
           </div>
         </details>
         ` : ''}
@@ -4981,26 +4991,26 @@ function renderMatchBlock(m, isKO) {
         <div style="padding:8px; border-radius:5px; ${hinLegColor}; display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:6px;">
           <span style="font-size:0.85em;"><strong>Ergebnis:</strong> ${t1.p1} vs. ${t2.p1}</span>
           <div style="display:flex; gap:5px; align-items:center;">
-            <input type="number" id="${prefix}h1" min="0" max="20" style="width:40px; text-align:center;" ${(!canEdit || locked) ? 'disabled' : ''} value="${m.score1_h !== null && m.score1_h !== undefined ? m.score1_h : ''}">
+            ${scoreFieldOrText(`${prefix}h1`, m.score1_h, canEdit, locked, 20)}
             :
-            <input type="number" id="${prefix}h2" min="0" max="20" style="width:40px; text-align:center;" ${(!canEdit || locked) ? 'disabled' : ''} value="${m.score2_h !== null && m.score2_h !== undefined ? m.score2_h : ''}">
+            ${scoreFieldOrText(`${prefix}h2`, m.score2_h, canEdit, locked, 20)}
           </div>
         </div>
         ` : `
         <div style="padding:8px; border-radius:5px; ${hinLegColor}; display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:6px;">
           <span style="font-size:0.85em;">🟡 <strong>Hinspiel:</strong> ${t1.p1} vs. ${hinP2}</span>
           <div style="display:flex; gap:5px; align-items:center;">
-            <input type="number" id="${prefix}h1" min="0" max="20" style="width:40px; text-align:center;" ${(!canEdit || locked) ? 'disabled' : ''} value="${m.score1_h !== null && m.score1_h !== undefined ? m.score1_h : ''}">
+            ${scoreFieldOrText(`${prefix}h1`, m.score1_h, canEdit, locked, 20)}
             :
-            <input type="number" id="${prefix}h2" min="0" max="20" style="width:40px; text-align:center;" ${(!canEdit || locked) ? 'disabled' : ''} value="${m.score2_h !== null && m.score2_h !== undefined ? m.score2_h : ''}">
+            ${scoreFieldOrText(`${prefix}h2`, m.score2_h, canEdit, locked, 20)}
           </div>
         </div>
         <div style="padding:8px; border-radius:5px; ${rueckLegColor}; display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:6px;">
           <span style="font-size:0.85em;">🔵 <strong>Rückspiel:</strong> ${t1.p2} vs. ${rueckP2}</span>
           <div style="display:flex; gap:5px; align-items:center;">
-            <input type="number" id="${prefix}r1" min="0" max="20" style="width:40px; text-align:center;" ${(!canEdit || locked) ? 'disabled' : ''} value="${m.score1_r !== null && m.score1_r !== undefined ? m.score1_r : ''}">
+            ${scoreFieldOrText(`${prefix}r1`, m.score1_r, canEdit, locked, 20)}
             :
-            <input type="number" id="${prefix}r2" min="0" max="20" style="width:40px; text-align:center;" ${(!canEdit || locked) ? 'disabled' : ''} value="${m.score2_r !== null && m.score2_r !== undefined ? m.score2_r : ''}">
+            ${scoreFieldOrText(`${prefix}r2`, m.score2_r, canEdit, locked, 20)}
           </div>
         </div>
         `}
@@ -5267,6 +5277,10 @@ function renderBettingSystem() {
 
   if (upcoming.length === 0) {
     matchesListEl.innerHTML = '<p style="opacity:0.7;">Aktuell keine anstehenden Spiele zum Wetten verfügbar.</p>';
+  } else if (!myPlayerName) {
+    // Reiner Zuschauer ohne eigenen Namen kann sowieso nicht wetten - statt auf jeder
+    // Spielkarte ein funktionsloses Wett-Formular anzuzeigen, gibt's einen einzigen Hinweis.
+    matchesListEl.innerHTML = '<p style="opacity:0.7;">👀 Melde dich mit einem Namen an, um mitzuwetten.</p>';
   } else {
     matchesListEl.innerHTML = upcoming.map(m => {
       const t1 = teams.find(t => t.id === m.t1Id);
