@@ -468,6 +468,14 @@ function playerAvatarImg(playerName, size) {
   }
   return `<span style="display:inline-flex; align-items:center; justify-content:center; width:${size}px; height:${size}px; border-radius:50%; background:var(--fal-blue-primary); vertical-align:middle; margin-right:5px; font-size:${Math.round(size * 0.6)}px;">👤</span>`;
 }
+// Avatar + Name als klickbare Einheit, öffnet das Profil dieser Identität - überall dort
+// eingesetzt, wo ein Spielername auftaucht (Teams, Spielplan, Tabelle, Admin-Liste, ...),
+// damit man jederzeit direkt aufs Profil kommt (siehe openProfile()).
+function playerNameLink(playerName, size, extraStyle) {
+  const safeName = escapeHtml(playerName);
+  const jsName = String(playerName).replace(/'/g, "\\'").replace(/"/g, '&quot;');
+  return `<span onclick="openProfile('${jsName}')" style="cursor:pointer; display:inline-flex; align-items:center;${extraStyle || ''}" title="Profil von ${safeName} ansehen">${playerAvatarImg(playerName, size)}${safeName}</span>`;
+}
 // Bild-Cache fürs Glücksrad: lädt jedes Vereinswappen nur einmal und zeichnet
 // das Rad neu, sobald ein Bild fertig geladen ist (damit es sofort sichtbar wird).
 const clubLogoImageCache = {};
@@ -1871,7 +1879,6 @@ function renderProfile() {
   const gp = globalPlayers[key];
   if (!gp) {
     container.innerHTML = `
-      <p style="margin: -6px 0 10px 0; text-align:center;"><a href="#" style="color:var(--fal-yellow); font-size:0.85em; text-decoration:none;" onclick="closeProfile(); return false;">‹ Zurück zur Turnierauswahl</a></p>
       <p class="empty-state">Dieser Spieler wurde nicht gefunden (evtl. gerade gelöscht).</p>
     `;
     return;
@@ -1899,10 +1906,11 @@ function renderProfile() {
     : `<div style="width:90px; height:90px; border-radius:50%; background:var(--fal-blue-primary); display:flex; align-items:center; justify-content:center; font-size:2.2em; border:2px solid var(--fal-yellow); margin:0 auto;">👤</div>`;
 
   let html = `
-    <p style="margin: -6px 0 10px 0; text-align:center;">
-      ${viewingOwn ? '' : '<a href="#" style="color:var(--fal-yellow); font-size:0.85em; text-decoration:none;" onclick="openProfile(); return false;">‹ Mein Profil</a> · '}
-      <a href="#" style="color:var(--fal-yellow); font-size:0.85em; text-decoration:none;" onclick="closeProfile(); return false;">‹ Turnierauswahl</a>
-    </p>
+    ${viewingOwn ? '' : `
+      <p style="margin: -6px 0 10px 0; text-align:center;">
+        <a href="#" style="color:var(--fal-yellow); font-size:0.85em; text-decoration:none;" onclick="openProfile(); return false;">‹ Mein Profil</a>
+      </p>
+    `}
     <div style="text-align:center; margin-bottom: 14px;">
       ${avatarHtml}
       <h2 style="margin: 8px 0 2px 0;">${escapeHtml(gp.name || key)}${key === 'tim' ? ' 👑' : ''}</h2>
@@ -1969,7 +1977,7 @@ function renderProfile() {
     html += `<h4 style="margin-bottom:6px;">⏳ Freundschaftsanfragen (${requestKeys.length})</h4>`;
     html += requestKeys.length === 0 ? '<p class="empty-state">Keine offenen Anfragen.</p>' : requestKeys.map(k => `
       <div style="display:flex; justify-content:space-between; align-items:center; background: var(--fal-blue-primary); padding: 6px 12px; border-radius: 8px; margin-bottom: 6px;">
-        <span>${playerAvatarImg((globalPlayers[k] && globalPlayers[k].name) || k, 20)}${escapeHtml((globalPlayers[k] && globalPlayers[k].name) || k)}</span>
+        <span>${playerNameLink((globalPlayers[k] && globalPlayers[k].name) || k, 20)}</span>
         <div style="display:flex; gap:5px;">
           <button class="btn-primary btn-sm" style="background:#2ecc71; color:#fff;" onclick="acceptFriendRequest('${k}')">✅</button>
           <button class="btn-danger btn-sm" onclick="declineFriendRequest('${k}')">❌</button>
@@ -1981,7 +1989,7 @@ function renderProfile() {
     html += `<h4 style="margin:14px 0 6px;">🤝 Freunde (${friendKeys.length})</h4>`;
     html += friendKeys.length === 0 ? '<p class="empty-state">Noch keine Freunde.</p>' : friendKeys.map(k => `
       <div style="display:flex; justify-content:space-between; align-items:center; background: var(--fal-blue-primary); padding: 6px 12px; border-radius: 8px; margin-bottom: 6px;">
-        <span>${playerAvatarImg((globalPlayers[k] && globalPlayers[k].name) || k, 20)}${escapeHtml((globalPlayers[k] && globalPlayers[k].name) || k)}</span>
+        <span>${playerNameLink((globalPlayers[k] && globalPlayers[k].name) || k, 20)}</span>
         <button class="btn-secondary btn-sm" onclick="openProfile('${((globalPlayers[k] && globalPlayers[k].name) || k).replace(/'/g, "\\'")}')">Profil ansehen</button>
       </div>
     `).join('');
@@ -2006,7 +2014,7 @@ function renderProfilePlayerList() {
     .sort((a, b) => (globalPlayers[a].name || a).localeCompare(globalPlayers[b].name || b));
   container.innerHTML = keys.length === 0 ? '<p class="empty-state">Keine Spieler gefunden.</p>' : keys.map(k => `
     <div style="display:flex; justify-content:space-between; align-items:center; background: var(--fal-blue-primary); padding: 6px 12px; border-radius: 8px; margin-bottom: 6px;">
-      <span>${playerAvatarImg(globalPlayers[k].name || k, 20)}${escapeHtml(globalPlayers[k].name || k)}${k === 'tim' ? ' 👑' : ''}</span>
+      <span>${playerNameLink(globalPlayers[k].name || k, 20)}${k === 'tim' ? ' 👑' : ''}</span>
       <button class="btn-secondary btn-sm" onclick="openProfile('${(globalPlayers[k].name || k).replace(/'/g, "\\'")}')">Profil ansehen</button>
     </div>
   `).join('');
@@ -2130,7 +2138,7 @@ function renderInvitePanel() {
       const alreadyInvited = !!(globalPlayers[k].invites && globalPlayers[k].invites[currentTournamentId]);
       return `
       <div style="display:flex; justify-content:space-between; align-items:center; background: var(--fal-blue-primary); padding: 6px 12px; border-radius: 8px; margin-bottom: 6px;">
-        <span>${playerAvatarImg(globalPlayers[k].name || k, 20)}${escapeHtml(globalPlayers[k].name || k)}</span>
+        <span>${playerNameLink(globalPlayers[k].name || k, 20)}</span>
         ${alreadyInvited
           ? '<span style="font-size:0.8em; opacity:0.75;">⏳ Bereits eingeladen</span>'
           : `<button class="btn-secondary btn-sm" onclick="inviteToTournament('${k}')">📨 Einladen</button>`}
@@ -2402,14 +2410,14 @@ function computeHeadToHead(nameA, nameB, matches) {
 function renderHeadToHeadHtml(h2h) {
   const total = h2h.winsA + h2h.winsB + h2h.draws;
   if (total === 0) {
-    return `<hr style="margin:16px 0; opacity:0.3;"><h4 style="margin-bottom:6px;">⚔️ Kopf-an-Kopf gegen ${playerAvatarImg(h2h.displayB, 18)}${escapeHtml(h2h.displayB)}</h4><p class="empty-state">Ihr wart in noch keinem bestätigten Spiel direkte Gegner.</p>`;
+    return `<hr style="margin:16px 0; opacity:0.3;"><h4 style="margin-bottom:6px;">⚔️ Kopf-an-Kopf gegen ${playerNameLink(h2h.displayB, 18)}</h4><p class="empty-state">Ihr wart in noch keinem bestätigten Spiel direkte Gegner.</p>`;
   }
   const streakText = h2h.streak
     ? (h2h.streak.outcome === 'A' ? `🔥 ${h2h.streak.count}x in Folge gegen ${escapeHtml(h2h.displayB)} gewonnen` : `❄️ ${h2h.streak.count}x in Folge gegen ${escapeHtml(h2h.displayB)} verloren`)
     : '';
   return `
     <hr style="margin:16px 0; opacity:0.3;">
-    <h4 style="margin-bottom:6px;">⚔️ Kopf-an-Kopf gegen ${playerAvatarImg(h2h.displayB, 18)}${escapeHtml(h2h.displayB)}</h4>
+    <h4 style="margin-bottom:6px;">⚔️ Kopf-an-Kopf gegen ${playerNameLink(h2h.displayB, 18)}</h4>
     <div style="display:grid; grid-template-columns:1fr 1fr 1fr; gap:8px; text-align:center; margin-bottom:10px;">
       <div style="background:var(--fal-blue-primary); border-radius:8px; padding:8px;">
         <div style="font-size:1.3em; font-weight:bold; color:#2ecc71;">${h2h.winsA}</div>
@@ -4686,7 +4694,7 @@ function renderMyOverview() {
         <div style="background:rgba(0,0,0,0.2); border-radius:8px; padding:10px;">
           <div style="font-size:0.85em; opacity:0.8;">${info.match.isKO ? info.match.round : info.match.group} • gegen ${escapeHtml(info.opponentTeam ? info.opponentTeam.name : '?')}</div>
           <div style="font-weight:bold; margin-top:2px;">🕐 ${formatMatchTime(info.match.scheduledTime) || 'Zeit noch offen'} · ${escapeHtml(info.match.court || '')}</div>
-          ${info.leg ? `<div style="margin-top:4px; font-size:0.9em;">${info.leg.legName ? escapeHtml(info.leg.legName) + ': ' : ''}<strong>Du</strong> vs. <strong>${escapeHtml(info.leg.opponent)}</strong></div>` : ''}
+          ${info.leg ? `<div style="margin-top:4px; font-size:0.9em;">${info.leg.legName ? escapeHtml(info.leg.legName) + ': ' : ''}<strong>Du</strong> vs. ${playerNameLink(info.leg.opponent, 16)}</div>` : ''}
           ${info.match.started ? '<div style="margin-top:4px; font-size:0.85em; color:var(--fal-red);">🚦 Läuft bereits!</div>' : ''}
         </div>
       ` : '<p style="margin:0; opacity:0.75; font-size:0.9em;">Aktuell kein anstehendes Spiel für dich.</p>'}
@@ -4948,7 +4956,7 @@ function renderTeams() {
           ${crestHtml}
         </div>
         ${isMyTeam ? '<div style="color:var(--fal-yellow); font-size:0.85em; font-weight:bold; margin-top:4px;">⭐ (Dein Team)</div>' : ''}
-        <p style="margin-top: 8px; margin-bottom:0;">${t.p2 ? `Mitglieder: ${playerAvatarImg(t.p1, 18)}<strong>${t.p1}</strong> &amp; ${playerAvatarImg(t.p2, 18)}<strong>${t.p2}</strong>` : `Spieler: ${playerAvatarImg(t.p1, 18)}<strong>${t.p1}</strong>`}</p>
+        <p style="margin-top: 8px; margin-bottom:0;">${t.p2 ? `Mitglieder: ${playerNameLink(t.p1, 18)} &amp; ${playerNameLink(t.p2, 18)}` : `Spieler: ${playerNameLink(t.p1, 18)}`}</p>
         ${canEditPhoto ? `
           <div style="margin-top:8px; padding-top:8px; border-top:1px solid rgba(255,255,255,0.08); display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
             <button class="btn-secondary btn-sm" onclick="triggerTeamPhotoUpload(${t.id})">📷 ${t.photo ? 'Neues Team-Foto' : 'Team-Foto hochladen'}</button>
@@ -4967,6 +4975,15 @@ function renderTeams() {
   }).join('');
 }
 // GRUPPENTABELLEN BERECHNUNG (Aggregat aus Hin- & Rückspiel)
+// Kleine klickbare Zeile mit den Spieler-Avataren/-Namen eines Teams - unter dem Team-Namen
+// in der Gruppentabelle/im Quervergleich, damit man auch von dort direkt zum Profil kommt.
+function teamPlayersLinksHtml(teamId) {
+  const team = teams.find(t => t.id === teamId);
+  if (!team) return '';
+  const names = [team.p1, team.p2].filter(Boolean);
+  if (names.length === 0) return '';
+  return `<div style="font-size:0.78em; opacity:0.85; margin-top:2px; display:flex; gap:8px; flex-wrap:wrap;">${names.map(n => playerNameLink(n, 14)).join('')}</div>`;
+}
 function calculateGroupStandings() {
   return groups.map(g => {
     const stats = {};
@@ -5035,7 +5052,7 @@ function renderGroups() {
             ${g.rankings.map((r, idx) => `
               <tr>
                 <td>${idx + 1}</td>
-                <td>${teamCrestImg(teams.find(t => t.id === r.teamId), 20)}<strong>${escapeHtml(r.name)}</strong></td>
+                <td>${teamCrestImg(teams.find(t => t.id === r.teamId), 20)}<strong>${escapeHtml(r.name)}</strong>${teamPlayersLinksHtml(r.teamId)}</td>
                 <td>${r.played}</td>
                 <td>${r.gf}:${r.ga}</td>
                 <td>${r.diff > 0 ? '+' + r.diff : r.diff}</td>
@@ -5067,7 +5084,7 @@ function renderGroups() {
                 ${candidatePool.map((r, idx) => `
                   <tr style="${idx < wildcards ? 'background: rgba(0, 255, 100, 0.1);' : 'background: rgba(255, 0, 0, 0.1);'}">
                     <td>${idx + 1}</td>
-                    <td>${teamCrestImg(teams.find(t => t.id === r.teamId), 20)}<strong>${escapeHtml(r.name)}</strong> (${escapeHtml(r.group)})</td>
+                    <td>${teamCrestImg(teams.find(t => t.id === r.teamId), 20)}<strong>${escapeHtml(r.name)}</strong> (${escapeHtml(r.group)})${teamPlayersLinksHtml(r.teamId)}</td>
                     <td>${r.played}</td>
                     <td>${r.gf}:${r.ga}</td>
                     <td>${r.diff > 0 ? '+' + r.diff : r.diff}</td>
@@ -5131,11 +5148,11 @@ function renderMatchBlock(m, isKO) {
       </div>
       <div style="margin: 6px 0;">
         <div style="font-size:1.05em; font-weight:bold;">
-          ${teamCrestImg(t1, 22)}${t1.name} <small style="opacity:0.8;">(${playerAvatarImg(t1.p1, 14)}${t1.p1}${solo ? '' : ` &amp; ${playerAvatarImg(t1.p2, 14)}${t1.p2}`})</small>
+          ${teamCrestImg(t1, 22)}${t1.name} <small style="opacity:0.8;">(${playerNameLink(t1.p1, 14)}${solo ? '' : ` &amp; ${playerNameLink(t1.p2, 14)}`})</small>
         </div>
         <div style="font-size:0.8em; opacity:0.6; margin:2px 0;">vs</div>
         <div style="font-size:1.05em; font-weight:bold;">
-          ${teamCrestImg(t2, 22)}${t2.name} <small style="opacity:0.8;">(${playerAvatarImg(t2.p1, 14)}${t2.p1}${solo ? '' : ` &amp; ${playerAvatarImg(t2.p2, 14)}${t2.p2}`})</small>
+          ${teamCrestImg(t2, 22)}${t2.name} <small style="opacity:0.8;">(${playerNameLink(t2.p1, 14)}${solo ? '' : ` &amp; ${playerNameLink(t2.p2, 14)}`})</small>
         </div>
       </div>
       <div style="display:flex; flex-direction:column; gap:8px;">
@@ -5379,7 +5396,7 @@ function renderAdminPanel() {
       return `
         <div style="display:flex; flex-wrap:wrap; justify-content:space-between; align-items:center; background: var(--fal-blue-primary); padding: 10px 12px; border-radius: 8px; margin-bottom: 8px; gap: 8px;">
           <div>
-            <strong>${index + 1}. ${playerAvatarImg(p.name, 18)}${p.name}</strong>
+            <strong>${index + 1}. </strong>${playerNameLink(p.name, 18)}
             ${p.isTournamentOwner ? '<span style="color:var(--fal-yellow); font-size:0.85em;">[⭐ Ersteller]</span>' : ''}
             ${p.isRef ? '<span style="color:var(--fal-yellow); font-size:0.85em;">[🟨 Ref]</span>' : ''}
             ${hasPW ? '<span style="font-size:0.85em; opacity:0.8;">[🔒 PW]</span>' : ''}

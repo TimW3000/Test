@@ -103,9 +103,11 @@
        Live-Update aus globalPlayers neu gebaut) und "stats" (Turnierhistorie/Rekorde/Elo,
        wird NUR beim Öffnen einmalig asynchron nachgeladen, siehe renderProfileStatsSection). -->
   <div id="profile-modal" class="modal-overlay" style="display: none;">
-    <div class="modal-content" id="profile-modal-content" style="max-width: 480px; text-align: left;">
+    <div class="modal-content" id="profile-modal-content" style="max-width: 480px; text-align: left; position:relative;">
+      <button onclick="closeProfile()" aria-label="Profil schließen" title="Schließen" style="position:absolute; top:10px; right:10px; width:32px; height:32px; border-radius:50%; border:none; background:rgba(0,0,0,0.3); color:var(--fal-white); font-size:1.1em; cursor:pointer; line-height:1;">✕</button>
       <div id="profile-identity-container"></div>
       <div id="profile-stats-container"></div>
+      <button class="btn-secondary" onclick="closeProfile()" style="width:100%; margin-top:14px;">Schließen</button>
     </div>
   </div>
   <input type="file" id="profile-pic-file-input" accept="image/*" style="display:none;" onchange="handleProfilePicFileSelected(event)">
