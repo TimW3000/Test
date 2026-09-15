@@ -487,6 +487,9 @@ function getClubLogoImageElement(clubName) {
   img.crossOrigin = 'anonymous';
   img.onload = () => {
     if (draftState && draftState.active) drawWheelCanvas(draftState.targetAngle || 0);
+    // Auch fürs Gruppen-Glücksrad im "teams"-Modus wichtig - dort werden Wappen jetzt genauso
+    // gebraucht (siehe drawGroupWheelCanvas).
+    if (groupDraftState && groupDraftState.active) drawGroupWheelCanvas(groupDraftState.targetAngle || 0);
   };
   img.src = url;
   clubLogoImageCache[url] = img;
@@ -1667,9 +1670,15 @@ function attachGlobalPlayersListener() {
     renderHeaderGodBadge();
     renderGodPanel();
     // Profil (eigenes oder gerade angesehenes) + Einladungen-Banner live aktuell halten,
-    // z.B. wenn währenddessen eine Freundschaftsanfrage oder Einladung eintrifft.
+    // z.B. wenn währenddessen eine Freundschaftsanfrage oder Einladung eintrifft. Auch das
+    // Admin-Einladen-Panel selbst gehört hierher (nicht nur in renderAdminPanel/renderAll) -
+    // sonst zeigt der "📨 Einladen"-Knopf nach einem Klick nie das erwartete "⏳ Bereits
+    // eingeladen" an (die Einladung selbst landet zwar korrekt in globalPlayers, aber ohne
+    // dieses Neu-Rendern sieht der Admin überhaupt keine Rückmeldung und hält die Funktion
+    // für kaputt - das gemeldete "kann keine Einladungen verschicken").
     renderProfile();
     renderInvites();
+    renderInvitePanel();
   }, (error) => {
     console.error('Firebase Lese-Fehler (globalPlayers):', error);
     alert('⚠️ Bekannte Identitäten konnten nicht geladen werden!\n\n' + error.message + '\n\nBitte die Firebase-Datenbankregeln für den Pfad "globalPlayers" prüfen.');
@@ -2154,6 +2163,12 @@ function inviteToTournament(targetKey) {
     tournamentName: tName,
     invitedBy: myPlayerName,
     at: Date.now()
+  }).then(() => {
+    // Nicht auf den Live-Listener warten (der aktualisiert das Panel zwar auch, siehe
+    // attachGlobalPlayersListener, aber erst mit der nächsten Änderung) - direkt eine klare
+    // Rückmeldung geben, sonst wirkt ein Klick wie folgenlos/kaputt.
+    alert('✅ Einladung verschickt!');
+    renderInvitePanel();
   }).catch((error) => alert('⚠️ Einladung fehlgeschlagen:\n' + error.message));
 }
 // ============================================================================
@@ -3827,13 +3842,19 @@ function drawGroupWheelCanvas(angleOffset) {
   const sliceAngle = (2 * Math.PI) / numItems;
   // Im "players"-Modus (Namen direkt in Gruppen lostopfen, siehe startGroupDraft) sind die
   // Segmente echte Spielernamen -> persönliche Profilfarbe/-bild gilt genau wie beim
-  // Team-Glücksrad. Im "teams"-Modus sind es Team-Namen, dafür gibt's kein Profil.
+  // Team-Glücksrad. Im "teams"-Modus sind es Team-Namen mit eigenem Verein - dort gilt
+  // stattdessen die Vereinsfarbe + das Vereinswappen, genau wie beim Team-Erstellungs-Rad
+  // (siehe drawWheelCanvas/isClubWheel).
   const isPlayersWheel = groupDraftState.source === 'players';
+  const isTeamsWheel = !isPlayersWheel;
   for (let i = 0; i < numItems; i++) {
     const startAngle = angleOffset + i * sliceAngle;
     const endAngle = startAngle + sliceAngle;
     const itemText = String(items[i]);
-    const segmentColor = (isPlayersWheel && getPlayerSegmentColor(itemText)) || ((i % 2 === 0) ? '#1b365d' : '#f1c40f');
+    const itemTeam = isTeamsWheel ? teams.find(t => t.name === itemText) : null;
+    const segmentColor = (isPlayersWheel && getPlayerSegmentColor(itemText))
+      || (isTeamsWheel && itemTeam && itemTeam.club && getClubColor(itemTeam.club))
+      || ((i % 2 === 0) ? '#1b365d' : '#f1c40f');
     ctx.beginPath();
     ctx.moveTo(centerX, centerY);
     ctx.arc(centerX, centerY, radius, startAngle, endAngle);
@@ -3865,6 +3886,11 @@ function drawGroupWheelCanvas(angleOffset) {
         ctx.clip();
         ctx.drawImage(avatarImg, radius - 28, -10, 20, 20);
         ctx.restore();
+      }
+    } else if (itemTeam && itemTeam.club) {
+      const logoImg = getClubLogoImageElement(itemTeam.club);
+      if (logoImg && logoImg.complete && logoImg.naturalWidth !== 0) {
+        ctx.drawImage(logoImg, radius - 28, -10, 20, 20);
       }
     }
     ctx.restore();
