@@ -143,6 +143,8 @@ window.dismissInvite = dismissInvite;
 window.inviteToTournament = inviteToTournament;
 window.openLeaderboard = openLeaderboard;
 window.closeLeaderboard = closeLeaderboard;
+window.openHelp = openHelp;
+window.closeHelp = closeHelp;
 // ============================================================================
 // 1. FIREBASE-KONFIGURATION — Verbindungsdaten zur Online-Datenbank
 // ============================================================================
@@ -2562,6 +2564,13 @@ function openLeaderboard() {
 }
 function closeLeaderboard() {
   document.getElementById('leaderboard-modal').style.display = 'none';
+}
+// Anleitung/Hilfe: rein statischer Inhalt aus dem HTML, für JEDE Rolle ohne Berechtigungsprüfung
+function openHelp() {
+  document.getElementById('help-modal').style.display = 'flex';
+}
+function closeHelp() {
+  document.getElementById('help-modal').style.display = 'none';
 }
 // Baut die Ranglisten-Tabelle auf - Klick auf einen Namen öffnet dessen Profil (mit Statistiken)
 function renderLeaderboard(ratings) {

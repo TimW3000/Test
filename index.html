@@ -78,6 +78,9 @@
       <div style="display:flex; gap:8px; margin-bottom:12px;">
         <button class="btn-secondary" style="flex:1;" onclick="openProfile()">👤 Mein Profil</button>
         <button class="btn-secondary" style="flex:1;" onclick="openLeaderboard()">🏆 Rangliste</button>
+        <!-- Anleitung: schon HIER auf der Turnierauswahl erreichbar, nicht erst innerhalb
+             eines Turniers - für JEDE Rolle ohne Berechtigungs-Check (siehe openHelp) -->
+        <button class="btn-secondary" style="flex:1;" onclick="openHelp()">❓ Anleitung</button>
       </div>
       <!-- Einladungen zu Turnieren, die man selbst noch nicht betreten hat (siehe renderInvites) -->
       <div id="invites-container"></div>
@@ -117,6 +120,222 @@
     <div class="modal-content" id="leaderboard-modal-content" style="max-width: 520px; text-align: left;">
       <p style="margin: -6px 0 10px 0; text-align:center;"><a href="#" style="color:var(--fal-yellow); font-size:0.85em; text-decoration:none;" onclick="closeLeaderboard(); return false;">‹ Zurück zur Turnierauswahl</a></p>
       <div id="leaderboard-container"></div>
+    </div>
+  </div>
+
+  <!-- Anleitung/Hilfe: statischer Inhalt (keine Live-Daten), deshalb komplett fest im HTML
+       statt per JS gerendert - für ALLE Rollen zugänglich (siehe #header-help-btn), erklärt
+       bewusst NICHT die God-exklusiven Werkzeuge (Cheat-Panel, God-Panel, website-weite
+       Sperren) - die sind nur für Tim selbst relevant. -->
+  <div id="help-modal" class="modal-overlay" style="display: none;">
+    <div class="modal-content" id="help-modal-content" style="max-width: 720px; text-align: left; position:relative;">
+      <button onclick="closeHelp()" aria-label="Anleitung schließen" title="Schließen" style="position:absolute; top:10px; right:10px; width:32px; height:32px; border-radius:50%; border:none; background:rgba(0,0,0,0.3); color:var(--fal-white); font-size:1.1em; cursor:pointer; line-height:1;">✕</button>
+      <h2 style="margin-top:0;">📖 So funktioniert Tims FAL Turniere</h2>
+      <p style="opacity:0.85; margin-top:-6px;">Jede Funktion der Website erklärt - für Zuschauer, Spieler, Schiedsrichter (Ref) und Turnier-Ersteller (Admin). Am Ende steht eine Übersicht, wer was darf.</p>
+
+      <div class="admin-card">
+        <details open>
+          <summary><h3>👤 1. Anmelden &amp; deine Identität</h3></summary>
+          <ul style="margin:0; padding-left:20px;">
+            <li>Beim allerersten Öffnen legst du deinen Namen fest: <code>➕ Neuer Spieler</code> für einen neuen Namen, oder <code>👤 Spieler auswählen</code>, wenn du auf diesem Gerät schon mal da warst oder deinen Namen aus der Liste bekannter Spieler wählen willst.</li>
+            <li>Diese Identität gilt danach <strong>für die ganze Website</strong> - für alle Turniere gleichzeitig, nicht nur für eines.</li>
+            <li>Ein Passwort ist <strong>nicht nötig</strong>, um loszulegen. Du kannst sofort mitspielen.</li>
+            <li>Wer seinen Namen zusätzlich schützen möchte (damit niemand anders unter diesem Namen mitspielt), kann sich im eigenen Profil ein Passwort <em>vorschlagen</em> - das muss der Admin einmalig bestätigen, danach ist es aktiv und wird bei jeder Anmeldung abgefragt.</li>
+            <li>"Wechseln" (im Header-Menü) gibt deine aktuelle Identität auf diesem Gerät wieder frei - praktisch, wenn sich ein anderer Spieler dasselbe Handy/Tablet schnappt.</li>
+          </ul>
+        </details>
+      </div>
+
+      <div class="admin-card">
+        <details>
+          <summary><h3>🏠 2. Turniere finden, erstellen, wechseln</h3></summary>
+          <ul style="margin:0; padding-left:20px;">
+            <li>Nach der Anmeldung siehst du die Startseite mit allen laufenden und vergangenen Turnieren. Ein Klick auf ein Turnier, und du bist live dabei.</li>
+            <li>Neues Turnier per <code>+ Neu</code>: einfach einen Namen eingeben, den Rest stellst du danach im Turnier selbst ein.</li>
+            <li>Oder per <code>🧙 Turnier per Beschreibung anlegen</code>: du schreibst in einem Satz, was du willst - z.B. <em>"Dart-Turnier mit 12 Spielern, 3 Gruppen, die besten 6 kommen weiter"</em> - und die App erkennt automatisch Sportart, Teilnehmerzahl, Gruppenanzahl, Duo/Solo-Modus und Anzahl KO-Qualifikanten. Bevor irgendetwas angelegt wird, zeigt dir die App eine Vorschau mit allen erkannten Werten, die du noch von Hand korrigieren kannst.</li>
+            <li>Wer ein Turnier erstellt, wird automatisch dessen <strong>Ersteller/Admin</strong> (siehe Abschnitt 13).</li>
+            <li><code>🔄 Turnier wechseln</code> (im Header-Menü) bringt dich jederzeit zurück zur Turnierauswahl - sogar mitten in einer laufenden Live-Glücksrad-Ziehung, ohne dass du etwas verpasst, wenn du zurückkommst.</li>
+          </ul>
+        </details>
+      </div>
+
+      <div class="admin-card">
+        <details>
+          <summary><h3>⚽🎯 3. Sportart &amp; Modus</h3></summary>
+          <ul style="margin:0; padding-left:20px;">
+            <li><strong>FIFA</strong>: klassisch mit Vereinen/Wappen, die den Teams zugelost werden.</li>
+            <li><strong>Darts</strong>: kein Verein nötig, jeder Teilnehmer tritt direkt als er selbst an. Tabellen zeigen "Sätze" statt "Tore".</li>
+            <li>Die Sportart lässt sich nur umschalten, solange noch <strong>keine Teams ausgelost</strong> wurden (Admin/Ref).</li>
+            <li><strong>Duo</strong>: 2 Spieler teilen sich ein Team + einen Verein, jede Begegnung hat Hin- <em>und</em> Rückspiel.</li>
+            <li><strong>Solo</strong>: jeder tritt für sich an, ein einziges Ergebnis pro Partie. Bei Darts ist das automatisch der Fall.</li>
+          </ul>
+        </details>
+      </div>
+
+      <div class="admin-card">
+        <details>
+          <summary><h3>🚪 4. Einem Turnier beitreten</h3></summary>
+          <ul style="margin:0; padding-left:20px;">
+            <li>Öffnest du ein Turnier, in dem du noch nicht Spieler bist, fragt dich die App: <code>➕ Als Spieler beitreten</code> oder <code>👀 Nur zuschauen</code>.</li>
+            <li>Manche Turniere haben ein <strong>Beitritts-Passwort</strong> (nur für neue Spieler nötig, nicht fürs Zuschauen) - das legt der Ersteller fest und gibt es an euch weiter.</li>
+            <li>Als <strong>Zuschauer</strong> siehst du alles live mit (Gruppen, Spielplan, Glücksrad-Ziehungen, Ergebnisse), kannst aber nichts verändern und nirgends etwas eintragen.</li>
+            <li><code>🚪 Turnier verlassen</code> (Header-Menü, nur sichtbar, wenn du gerade Spieler bist) gibt deinen Platz wieder frei - dein Team, deine Wetten und dein Tipp gehen dabei verloren.</li>
+          </ul>
+        </details>
+      </div>
+
+      <div class="admin-card">
+        <details>
+          <summary><h3>🙋 5. Dein Profil</h3></summary>
+          <ul style="margin:0; padding-left:20px;">
+            <li><code>👤 Profil</code> im Header-Menü öffnet dein Profil. Jeder Name, der irgendwo in der App auftaucht, ist außerdem direkt anklickbar und öffnet das jeweilige Profil.</li>
+            <li><strong>Profilbild</strong> hochladen (📷) - taucht danach überall neben deinem Namen auf: Teams, Spielplan, Gruppentabelle, Admin-Liste, Rangliste, Kopf-an-Kopf.</li>
+            <li><strong>Über mich</strong>: ein kurzer Text, den andere auf deinem Profil sehen.</li>
+            <li><strong>Lieblingsfarbe &amp; Lieblingsverein</strong>: frei wählbar, dazu eine Einstellung, welche der beiden fürs Spieler-Glücksrad gilt (siehe Abschnitt 6/7) - dein Segment auf dem Rad wird dann in dieser Farbe gezeichnet, inklusive deinem Profilbild darauf.</li>
+            <li><strong>Passwort vorschlagen</strong>: siehe Abschnitt 1.</li>
+            <li><strong>Freunde</strong>: Freundschaftsanfragen senden, annehmen oder ablehnen, alle bekannten Spieler der Website durchsuchen.</li>
+            <li>Siehst du das Profil einer <strong>anderen</strong> Person, ist es nur zum Ansehen (Bio, Statistiken, eure gemeinsame Kopf-an-Kopf-Bilanz) - bearbeiten kann jede:r nur das eigene Profil.</li>
+            <li>Schließen: der ✕-Knopf oben rechts oder der "Schließen"-Button ganz unten.</li>
+          </ul>
+        </details>
+      </div>
+
+      <div class="admin-card">
+        <details>
+          <summary><h3>🎰 6. Team-Auslosung</h3></summary>
+          <ul style="margin:0; padding-left:20px;">
+            <li><em>Startet nur Admin/Ref.</em> Zwei Varianten: <code>🎰 Teams &amp; Clubs per Glücksrad auslosen</code> (Live-Show, alle sehen live auf ihrem eigenen Gerät mit) oder <code>⚡ Sofort auslosen</code> (ohne Animation, sofortiges Ergebnis).</li>
+            <li>Das Rad zieht nacheinander die Spieler (bei Duo: 2 pro Team) und danach den Verein für jedes Team.</li>
+            <li>Admin/Ref kann eine laufende Drehung mit <code>⏭️ Überspringen</code> sofort auflösen, statt die volle Animation abzuwarten.</li>
+            <li>Auch während der Live-Show kannst du jederzeit über <code>🔄 Turnier wechseln</code> zu einem anderen Turnier springen, ohne die Ziehung zu verpassen.</li>
+            <li>Bei <strong>Darts</strong> entfällt das Glücksrad komplett: <code>🎯 Teilnehmer übernehmen</code> macht aus der aktuellen Spielerliste direkt die Turnier-Teilnehmer, ganz ohne Verein.</li>
+          </ul>
+        </details>
+      </div>
+
+      <div class="admin-card">
+        <details>
+          <summary><h3>📊 7. Gruppen-Auslosung</h3></summary>
+          <ul style="margin:0; padding-left:20px;">
+            <li><em>Startet nur Admin/Ref.</em> <code>📊 Gruppen per Glücksrad auslosen</code> (beliebige Anzahl, 2 bis 26 Gruppen = Gruppe A bis Z) oder <code>⚡ Sofort auslosen</code>.</li>
+            <li>Beim Teams-Glücksrad zeigt jedes Segment das Vereinswappen und die Vereinsfarbe des jeweiligen Teams.</li>
+            <li>Sonderfall <code>🎲 Nur Namen (ohne Verein)</code>: lost einfach Namen direkt in Gruppen, komplett ohne Team- oder Vereins-Bezug - z.B. praktisch, um bei einem Ausflug Zimmer oder Tische zu verlosen. Zeigt dann die persönliche Profilfarbe/das Profilbild jeder Person statt einer Vereinsfarbe.</li>
+          </ul>
+        </details>
+      </div>
+
+      <div class="admin-card">
+        <details>
+          <summary><h3>⚔️ 8. K.-o.-Phase</h3></summary>
+          <ul style="margin:0; padding-left:20px;">
+            <li><em>Startet nur Admin/Ref.</em> Du legst fest, wie viele Teams insgesamt in die K.-o.-Phase einziehen (z.B. "die besten 6") - unabhängig davon, wie viele Gruppen es gibt.</li>
+            <li>Die App verteilt automatisch gleichmäßig direkte Qualifikanten pro Gruppe und füllt eventuell fehlende Plätze über einen <strong>Quervergleich</strong> der jeweils nächstplatzierten Teams aller Gruppen (z.B. "die beiden besten Gruppendritten").</li>
+            <li>Passt die gewählte Zahl nicht auf ein rundes Turnierbaum-Format, vergibt die App automatisch <strong>Freilose</strong> für die erste Runde - ab der zweiten Runde ist das Feld garantiert wieder glatt.</li>
+            <li>Rundennamen (Achtelfinale, Viertelfinale, Halbfinale, Finale, Spiel um Platz 3) passen sich automatisch der tatsächlichen Feldgröße an.</li>
+          </ul>
+        </details>
+      </div>
+
+      <div class="admin-card">
+        <details>
+          <summary><h3>🕹️ 9. Spieltag: Ergebnisse eintragen &amp; bestätigen</h3></summary>
+          <ul style="margin:0; padding-left:20px;">
+            <li>Ein normaler Spieler darf <strong>nur das Ergebnis seines eigenen Spiels</strong> eintragen. Admin/Ref dürfen jedes Ergebnis eintragen.</li>
+            <li><strong>Duo</strong>: Hin- und Rückspiel getrennt eintragen, das Gesamtergebnis wird automatisch addiert.</li>
+            <li><strong>Solo/Darts</strong>: ein einzelnes Ergebnis pro Partie.</li>
+            <li>Ein frisch eingetragenes Ergebnis ist erstmal nur <strong>vorläufig</strong>. Erst wenn Admin/Ref es mit <code>✅ Bestätigen</code> freigeben, zählt es endgültig für Tabelle/KO-Baum, und offene Wetten darauf werden ausgezahlt.</li>
+            <li><code>🚦 Spiel gestartet</code> (nur Admin/Ref): markiert eine Partie als laufend - ab sofort kann niemand mehr darauf wetten.</li>
+            <li><strong>Darts-Live-Overlay</strong>: <code>🎯 Darts erfassen</code> öffnet eine Wurf-für-Wurf-Erfassung (X01 - Startpunktzahl, Anzahl Legs und Checkout-Regel legt der Admin turnierweit fest), inklusive automatischer Bust-Erkennung, einem "↩️ Zurück"-Knopf für Fehlklicks und Live-Mitverfolgen für alle, auch Zuschauer. Wer will, kann stattdessen weiterhin nur den reinen Sätze-Endstand von Hand eintragen.</li>
+          </ul>
+        </details>
+      </div>
+
+      <div class="admin-card">
+        <details>
+          <summary><h3>🪙 10. FAL-Coins: Wetten &amp; Tippspiel</h3></summary>
+          <ul style="margin:0; padding-left:20px;">
+            <li>Jede Identität startet mit <strong>100 FAL-Coins</strong>.</li>
+            <li><strong>Wettsystem</strong>: vor jeder einzelnen Partie kannst du Coins auf ein Ergebnis setzen, solange das Spiel noch nicht gestartet wurde.</li>
+            <li><strong>Tippspiel</strong>: einmalig, bevor das allererste Spiel des gesamten Turniers beginnt, auf den Gesamtsieger setzen (Quote = Anzahl Teams : 1). Danach ist der Tipp für immer fix, egal was passiert.</li>
+            <li><code>🏆 Highroller Top 5</code> zeigt die aktuell reichsten Wetter dieses Turniers.</li>
+          </ul>
+        </details>
+      </div>
+
+      <div class="admin-card">
+        <details>
+          <summary><h3>🏆 11. Rangliste, Erfolge &amp; Kopf-an-Kopf</h3></summary>
+          <ul style="margin:0; padding-left:20px;">
+            <li><strong>Rangliste</strong> (Elo-Wertung): website-weit über ALLE Turniere hinweg - jeder Sieg und jede Niederlage zählt, egal mit wem gerade gespielt wurde.</li>
+            <li>Automatische <strong>Erfolge/Abzeichen</strong>:</li>
+          </ul>
+          <table style="margin:8px 0 0 0;">
+            <tbody>
+              <tr><td>🏆 Turniersieger</td><td>Mindestens ein gewonnenes Turnier</td></tr>
+              <tr><td>👑 Serien-Champion</td><td>3 oder mehr Turniersiege</td></tr>
+              <tr><td>⚔️ Gladiator</td><td>50 oder mehr Partien insgesamt</td></tr>
+              <tr><td>🔥 Siegesserie</td><td>5 oder mehr Siege in Folge</td></tr>
+              <tr><td>🎯 Scharfschütze</td><td>70%+ Siegquote bei 10+ Spielen</td></tr>
+              <tr><td>😈 Angst vor …</td><td>3+ Niederlagen gegen dieselbe Person</td></tr>
+              <tr><td>🐐 Aktuell Nr. 1</td><td>Aktuelle Spitzenposition der Rangliste</td></tr>
+            </tbody>
+          </table>
+          <ul style="margin:8px 0 0 0; padding-left:20px;">
+            <li><strong>Kopf-an-Kopf</strong>: öffnest du das Profil von jemandem, gegen den du schon gespielt hast, erscheint automatisch eure direkte Bilanz - Siege, höchster Sieg, aktuelle Serie.</li>
+          </ul>
+        </details>
+      </div>
+
+      <div class="admin-card">
+        <details>
+          <summary><h3>🎁 12. Turnier-Wrapped</h3></summary>
+          <ul style="margin:0; padding-left:20px;">
+            <li>Nach Turnierende bekommt jede:r Teilnehmer:in eine eigene, persönliche Rückblick-Karte - im Stil eines Jahresrückblicks: eigene Tore/Sätze, bestes und schlechtestes Ergebnis, und ein Vergleich mit allen anderen im Turnier.</li>
+          </ul>
+        </details>
+      </div>
+
+      <div class="admin-card">
+        <details>
+          <summary><h3>⚙️ 13. Admin-Bereich (Turnier-Ersteller &amp; Ref)</h3></summary>
+          <ul style="margin:0; padding-left:20px;">
+            <li>Eigener <code>⚙️ Admin</code>-Tab, nur für Ersteller und Ref sichtbar.</li>
+            <li><strong>Spieler verwalten</strong>: neue Spieler hinzufügen, Registrierung sperren/entsperren, Beitritts-Passwort festlegen.</li>
+            <li><strong>Nur der Ersteller</strong> (nicht der Ref selbst): die Ref-Rolle an andere vergeben oder entziehen, Spieler komplett entfernen, Test-Spieler automatisch hinzufügen, bekannte Spieler direkt zu diesem Turnier einladen.</li>
+            <li><strong>Vereinsliste</strong>: eigene Vereine hinzufügen, Wappen hochladen, auf die Standard-Topteams zurücksetzen.</li>
+            <li><strong>Turnier-Steuerung</strong>: Sportart/Modus umschalten (nur vor der Auslosung), Team-/Gruppen-/KO-Auslosung starten, Zeitabstand zwischen den Spiel-Slots einstellen, FAL-Coin-Animation wählen.</li>
+            <li><strong>Zurücksetzen</strong> (stufenweise, jede Stufe erstattet automatisch offene Wetten/Tipps auf gelöschte Spiele): nur die K.-o.-Phase / Gruppenphase + K.-o. / komplette Team-Auslosung + alles danach / nur das Wettsystem (Coins, Wetten, Tipps) / das komplette Turnier.</li>
+          </ul>
+        </details>
+      </div>
+
+      <div class="admin-card">
+        <details>
+          <summary><h3>🧭 14. Wer darf was?</h3></summary>
+          <div class="table-container">
+            <table>
+              <thead>
+                <tr><th>Aktion</th><th>Zuschauer</th><th>Spieler</th><th>Ref</th><th>Admin (Ersteller)</th></tr>
+              </thead>
+              <tbody>
+                <tr><td>Alles live mitverfolgen</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td></tr>
+                <tr><td>Eigenes Ergebnis eintragen</td><td>❌</td><td>✅ (nur eigenes)</td><td>✅ (alle)</td><td>✅ (alle)</td></tr>
+                <tr><td>Ergebnis bestätigen</td><td>❌</td><td>❌</td><td>✅</td><td>✅</td></tr>
+                <tr><td>Spiel als "gestartet" markieren</td><td>❌</td><td>❌</td><td>✅</td><td>✅</td></tr>
+                <tr><td>Wetten &amp; Tippspiel</td><td>✅ (jede angemeldete Identität darf mitwetten/-tippen, auch als reiner Zuschauer)</td><td>✅</td><td>✅</td><td>✅</td></tr>
+                <tr><td>Team-/Gruppen-/KO-Auslosung starten</td><td>❌</td><td>❌</td><td>✅</td><td>✅</td></tr>
+                <tr><td>Turnier-Einstellungen (Sportart, Zeiten, Coins)</td><td>❌</td><td>❌</td><td>✅</td><td>✅</td></tr>
+                <tr><td>Turnier zurücksetzen (alle Stufen)</td><td>❌</td><td>❌</td><td>✅</td><td>✅</td></tr>
+                <tr><td>Spieler einladen / Test-Spieler hinzufügen</td><td>❌</td><td>❌</td><td>❌</td><td>✅</td></tr>
+                <tr><td>Ref-Rolle vergeben/entziehen, Spieler entfernen</td><td>❌</td><td>❌</td><td>❌</td><td>✅</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <p style="font-size:0.8em; opacity:0.7; margin-bottom:0;">Ref hat also praktisch dieselben Rechte wie der Admin - außer, andere Spieler zu entfernen oder die Ref-Rolle selbst zu vergeben. Das bleibt dem Ersteller vorbehalten.</p>
+        </details>
+      </div>
+
+      <button class="btn-secondary" onclick="closeHelp()" style="width:100%; margin-top:8px;">Schließen</button>
     </div>
   </div>
 
@@ -225,6 +444,8 @@
             <h1 id="app-title">Tims FAL Turniere</h1>
           </div>
         </div>
+        <!-- Anleitung: für JEDE Rolle sichtbar, kein Berechtigungs-Check nötig (siehe openHelp) -->
+        <button class="header-toggle-btn" onclick="openHelp()" title="Anleitung öffnen" aria-label="Anleitung öffnen">❓</button>
         <!-- Admin-Panel-Zugang: IMMER sichtbar (auch innerhalb eines laufenden Turniers), nicht
              nur auf der Turnierauswahl-Seite - sonst verpasst man offene Passwort-Wünsche, wenn
              man gerade mitten in einem Turnier ist (siehe openGodPanel/renderHeaderGodBadge) -->
