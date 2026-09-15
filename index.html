@@ -5,6 +5,11 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Tims FAL Turniere</title>
   <link rel="stylesheet" href="style.css">
+  <!-- PWA: macht die Seite "Zum Homescreen hinzufügen"-fähig (siehe manifest.json/sw.js) -
+       Voraussetzung dafür, dass Benachrichtigungen auf Handys überhaupt funktionieren. -->
+  <link rel="manifest" href="manifest.json">
+  <meta name="theme-color" content="#0b192c">
+  <link rel="apple-touch-icon" href="https://spvgg-fal.de/templates/yootheme/cache/dc/Logo-2017-web-dc30d58a.webp">
 
   <!-- Firebase App & Database SDKs -->
   <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-app.js"></script>
@@ -193,6 +198,7 @@
             <li><strong>Über mich</strong>: ein kurzer Text, den andere auf deinem Profil sehen.</li>
             <li><strong>Lieblingsfarbe &amp; Lieblingsverein</strong>: frei wählbar, dazu eine Einstellung, welche der beiden fürs Spieler-Glücksrad gilt (siehe Abschnitt 6/7) - dein Segment auf dem Rad wird dann in dieser Farbe gezeichnet, inklusive deinem Profilbild darauf.</li>
             <li><strong>Passwort vorschlagen</strong>: siehe Abschnitt 1.</li>
+            <li><strong>🔔 Benachrichtigungen</strong>: einmal aktivieren, und dieses Gerät meldet sich bei neuen Freundschaftsanfragen, Turnier-Einladungen, einer Entscheidung über deinen Passwort-Wunsch, einem gerade final bestätigten eigenen Ergebnis und dem Start einer Live-Auslosung. Rein geräte-/browserbasiert (keine E-Mail o.ä.), funktioniert nur solange die Seite offen ist (auch im Hintergrund).</li>
             <li><strong>Freunde</strong>: Freundschaftsanfragen senden, annehmen oder ablehnen, alle bekannten Spieler der Website durchsuchen.</li>
             <li>Siehst du das Profil einer <strong>anderen</strong> Person, ist es nur zum Ansehen (Bio, Statistiken, eure gemeinsame Kopf-an-Kopf-Bilanz) - bearbeiten kann jede:r nur das eigene Profil.</li>
             <li>Schließen: der ✕-Knopf oben rechts oder der "Schließen"-Button ganz unten.</li>
@@ -291,6 +297,7 @@
           <summary><h3>🎁 12. Turnier-Wrapped</h3></summary>
           <ul style="margin:0; padding-left:20px;">
             <li>Nach Turnierende bekommt jede:r Teilnehmer:in eine eigene, persönliche Rückblick-Karte - im Stil eines Jahresrückblicks: eigene Tore/Sätze, bestes und schlechtestes Ergebnis, und ein Vergleich mit allen anderen im Turnier.</li>
+            <li><code>📸 Als Bild teilen</code>: erstellt aus der Karte ein Bild und öffnet - falls das Gerät es unterstützt - direkt den Teilen-Dialog (z.B. für die WhatsApp-Gruppe), sonst wird das Bild einfach heruntergeladen.</li>
           </ul>
         </details>
       </div>
@@ -419,7 +426,8 @@
   <div id="wrapped-modal" class="modal-overlay" style="display: none;">
     <div class="modal-content wrapped-card">
       <div id="wrapped-content"></div>
-      <button class="btn-secondary role-btn" style="margin-top:15px;" onclick="closeWrapped()">Schließen</button>
+      <button id="wrapped-share-btn" class="btn-primary role-btn" style="margin-top:15px;" onclick="shareWrappedImage()">📸 Als Bild teilen</button>
+      <button class="btn-secondary role-btn" style="margin-top:8px;" onclick="closeWrapped()">Schließen</button>
     </div>
   </div>
 

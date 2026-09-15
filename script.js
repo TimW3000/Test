@@ -145,6 +145,9 @@ window.openLeaderboard = openLeaderboard;
 window.closeLeaderboard = closeLeaderboard;
 window.openHelp = openHelp;
 window.closeHelp = closeHelp;
+window.enableNotifications = enableNotifications;
+window.disableNotifications = disableNotifications;
+window.shareWrappedImage = shareWrappedImage;
 // ============================================================================
 // 1. FIREBASE-KONFIGURATION — Verbindungsdaten zur Online-Datenbank
 // ============================================================================
@@ -282,6 +285,7 @@ let godOversightData = {}; // { tournamentId: { name, players: [...] } } - nur f
 let godOversightRef = null;
 let tournamentEntryHandled = false; // verhindert, dass handleTournamentEntry() bei jedem Live-Update erneut den Beitreten/Zuschauen-Dialog zeigt
 let myPlayerWasPresent = false; // war man beim letzten Laden Spieler in DIESEM Turnier? (erkennt ein "aus dem Turnier entfernt"-Event, siehe attachTournamentListener)
+let lastNotifiedGlobalPlayerSnapshot = null; // letzter bekannter Stand der eigenen Freundschaftsanfragen/Einladungen/Passwort-Status, siehe checkForNotifiableGlobalPlayerChanges()
 let isFirebaseConnected = null; // null = noch unbekannt, true/false = Verbindungsstatus (siehe .info/connected weiter unten)
 let userBalances = {};  // { "Name": 100 }
 let bets = [];          // { matchId, isKO, playerName, chosenTeamId, amount }
@@ -620,6 +624,7 @@ function setTeamDisplayMode(teamId, mode) {
   renderAll();
 }
 document.addEventListener('DOMContentLoaded', () => {
+  registerServiceWorker();
   // Turnierliste + website-weite Identitäts-Registry/Sperren laufen immer mit
   attachTournamentsMetaListener();
   attachGlobalPlayersListener();
@@ -1065,6 +1070,10 @@ function attachTournamentListener() {
   tournamentRef = db.ref('tournaments/' + currentTournamentId);
   tournamentRef.on('value', (snapshot) => {
     const data = snapshot.val() || {};
+    // Für Benachrichtigungen (siehe checkForNotifiableTournamentChanges unten): den Stand VOR
+    // dem gleich folgenden Überschreiben merken. Nur ab dem zweiten Laden relevant - beim
+    // allerersten Betreten soll nicht der komplette bestehende Turnierstand "neu" wirken.
+    const notifyPrevState = tournamentEntryHandled ? captureNotifyableTournamentState() : null;
     let rawPlayers = data.players || [];
     players = rawPlayers.map(p => typeof p === 'string' ? { name: p, isRef: false, password: null } : p);
     availableClubs = data.availableClubs || [...DEFAULT_CLUBS];
@@ -1128,6 +1137,7 @@ function attachTournamentListener() {
     // Turniere gemeinsam.
     renderAll();
     handleLiveDraftUI();
+    if (notifyPrevState) checkForNotifiableTournamentChanges(notifyPrevState);
   }, (error) => {
     // Wird z.B. ausgelöst, wenn die Firebase-Datenbankregeln das Lesen verbieten
     console.error('Firebase Lese-Fehler:', error);
@@ -1653,6 +1663,11 @@ function migrateOldTournamentIfNeeded() {
 function attachGlobalPlayersListener() {
   db.ref('globalPlayers').on('value', (snap) => {
     globalPlayers = snap.val() || {};
+    // Muss VOR der Reauth-Prüfung direkt darunter laufen: eine bestätigte/abgelehnte
+    // eigene Passwort-Anfrage ist GENAU der Fall, der gleich den Reauth-Zwang auslöst (siehe
+    // unten) - würde diese Prüfung erst DANACH laufen, würde die Benachrichtigung darüber
+    // wegen des früheren "return" nie ausgelöst.
+    checkForNotifiableGlobalPlayerChanges();
     // Wurde GERADE (während man die Seite schon offen hat) für die eigene Identität ein
     // neues Passwort gesetzt/bestätigt (siehe setPlayerPassword/confirmPendingPassword),
     // stimmt die lokal gemerkte Version nicht mehr überein -> zwingt zur erneuten Anmeldung.
@@ -1978,6 +1993,16 @@ function renderProfile() {
       html += `<p style="font-size:0.85em; color:var(--fal-yellow); margin-bottom:18px;">⏳ Passwort-Wunsch wartet auf Bestätigung durch den Admin.</p>`;
     } else {
       html += `<p style="font-size:0.85em; opacity:0.8; margin-bottom:8px;">Noch kein Passwort gesetzt - jeder könnte sonst unter deinem Namen mitspielen.</p><button class="btn-secondary btn-sm" onclick="requestOwnPassword()" style="margin-bottom:18px;">🔑 Passwort vorschlagen</button>`;
+    }
+    // Benachrichtigungen sind eine reine GERÄTE-Einstellung (Browser-Berechtigung), deshalb
+    // hier nach localStorage/Notification.permission fragen statt nach globalPlayers-Daten.
+    html += `<h4 style="margin-bottom:6px;">🔔 Benachrichtigungen</h4>`;
+    if (!notificationsSupported()) {
+      html += `<p style="font-size:0.85em; opacity:0.7; margin-bottom:18px;">Dein Browser unterstützt das leider nicht.</p>`;
+    } else if (notificationsEnabled()) {
+      html += `<p style="font-size:0.85em; opacity:0.8; margin-bottom:8px;">✅ Aktiviert auf diesem Gerät - du bekommst Bescheid bei Einladungen, Freundschaftsanfragen, bestätigten Ergebnissen &amp; Live-Auslosungen.</p><button class="btn-secondary btn-sm" onclick="disableNotifications()" style="margin-bottom:18px;">🔕 Deaktivieren</button>`;
+    } else {
+      html += `<p style="font-size:0.85em; opacity:0.8; margin-bottom:8px;">Bekomme auf diesem Gerät Bescheid, wenn du eingeladen wirst, jemand dir schreibt oder ein Ergebnis final wird.</p><button class="btn-secondary btn-sm" onclick="enableNotifications()" style="margin-bottom:18px;">🔔 Aktivieren</button>`;
     }
   } else {
     html += `<p style="text-align:center; white-space:pre-wrap; opacity:${gp.bio ? '1' : '0.6'}; margin-bottom:18px;">${gp.bio ? escapeHtml(gp.bio) : 'Noch keine Beschreibung.'}</p>`;
@@ -5708,8 +5733,313 @@ function closeWrapped() {
 function renderClubNameWithBadge(clubName) {
   if (!clubName) return '';
   const logoUrl = getClubLogoUrl(clubName); // Deine Funktion/Map für Logos
-  const badgeHtml = logoUrl 
+  const badgeHtml = logoUrl
     ? `<img src="${escapeHtml(logoUrl)}" alt="${escapeHtml(clubName)}" class="club-logo-icon" style="width:18px; height:18px; vertical-align:middle; margin-right:4px;">`
     : '';
   return `<span class="club-badge-inline">${badgeHtml}${escapeHtml(clubName)}</span>`;
+}
+// ============================================================================
+// 13. PWA & BROWSER-BENACHRICHTIGUNGEN — macht die Seite "Zum Homescreen
+//     hinzufügen"-fähig (siehe manifest.json) und schickt bei ein paar wichtigen
+//     Ereignissen eine System-Benachrichtigung, wenn der Nutzer das vorher per
+//     Profil-Knopf erlaubt hat. Rein optional, kein eigener Push-Server nötig:
+//     die Benachrichtigung kommt nur, solange der Tab/die App offen ist (auch im
+//     Hintergrund) - kein Push bei komplett geschlossener App, dafür bräuchte es
+//     einen echten Push-Server mit VAPID-Keys.
+// ============================================================================
+function registerServiceWorker() {
+  if (!('serviceWorker' in navigator)) return;
+  navigator.serviceWorker.register('sw.js').catch(() => {});
+}
+function notificationsSupported() {
+  return typeof Notification !== 'undefined' && 'serviceWorker' in navigator;
+}
+// Per-Gerät gespeichert (nicht identitätsweit) - Benachrichtigungs-Erlaubnis ist eine
+// Browser-Berechtigung und damit ohnehin an dieses eine Gerät/diesen Browser gebunden.
+function notificationsEnabled() {
+  return notificationsSupported() && Notification.permission === 'granted' && localStorage.getItem('fifa_notifications_enabled') === '1';
+}
+// Vom "🔔 Benachrichtigungen aktivieren"-Knopf im Profil aufgerufen
+function enableNotifications() {
+  if (!notificationsSupported()) { alert('Dein Browser unterstützt leider keine Benachrichtigungen.'); return; }
+  Notification.requestPermission().then((permission) => {
+    if (permission === 'granted') {
+      localStorage.setItem('fifa_notifications_enabled', '1');
+      notifyUser('🔔 Benachrichtigungen aktiviert!', { body: 'Du bekommst jetzt Bescheid bei Einladungen, bestätigten Ergebnissen & mehr.' });
+    } else {
+      localStorage.setItem('fifa_notifications_enabled', '0');
+      if (permission === 'denied') alert('Benachrichtigungen wurden blockiert. Du kannst das in den Browser-Einstellungen für diese Seite wieder ändern.');
+    }
+    renderProfile();
+  });
+}
+function disableNotifications() {
+  localStorage.setItem('fifa_notifications_enabled', '0');
+  renderProfile();
+}
+// Zentrale Anzeige-Funktion - über den Service Worker (nötig auf Android-Handys, siehe
+// sw.js: "new Notification()" wird dort direkt aus der Seite heraus nicht unterstützt),
+// mit Fallback auf die direkte Notification-API, falls (noch) kein Worker aktiv ist.
+function notifyUser(title, options) {
+  if (!notificationsEnabled()) return;
+  const icon = 'https://spvgg-fal.de/templates/yootheme/cache/dc/Logo-2017-web-dc30d58a.webp';
+  const opts = Object.assign({ icon, badge: icon }, options);
+  navigator.serviceWorker.getRegistration().then((reg) => {
+    if (reg) { reg.showNotification(title, opts); return; }
+    try { new Notification(title, opts); } catch (e) { /* Browser erlaubt ggf. keine direkte Notification, dann still ignorieren */ }
+  }).catch(() => {
+    try { new Notification(title, opts); } catch (e) { /* s.o. */ }
+  });
+}
+// Eindeutiger Schlüssel für ein Match über Gruppenphase/KO-Phase hinweg (IDs können sich
+// zwischen den beiden Arrays sonst überschneiden)
+function matchNotifyKey(match, isKO) { return (isKO ? 'k' : 'g') + match.id; }
+// Merkt sich VOR dem Überschreiben von groupMatches/koMatches/draftState/groupDraftState
+// (siehe attachTournamentListener) den bisherigen Stand, damit checkForNotifiableTournamentChanges()
+// danach echte NEUE Ereignisse erkennen kann (statt bei jedem Laden erneut zu "erkennen").
+function captureNotifyableTournamentState() {
+  const confirmedKeys = {};
+  groupMatches.forEach(m => { confirmedKeys[matchNotifyKey(m, false)] = !!m.confirmed; });
+  koMatches.forEach(m => { confirmedKeys[matchNotifyKey(m, true)] = !!m.confirmed; });
+  return {
+    confirmedKeys,
+    draftActive: !!(draftState && draftState.active),
+    groupDraftActive: !!(groupDraftState && groupDraftState.active)
+  };
+}
+// Vergleicht den alten mit dem gerade frisch geladenen Turnierstand und benachrichtigt bei:
+// - einem eigenen Spiel, das GERADE eben bestätigt wurde (zählt jetzt final)
+// - einer Live-Auslosung (Team oder Gruppen), die GERADE eben gestartet wurde
+function checkForNotifiableTournamentChanges(prev) {
+  if (!myPlayerName) return;
+  const myTeam = getMyTeam();
+  const checkMatch = (m, isKO) => {
+    if (!m.confirmed || prev.confirmedKeys[matchNotifyKey(m, isKO)] !== false) return;
+    if (!myTeam || (m.t1Id !== myTeam.id && m.t2Id !== myTeam.id)) return;
+    const t1 = teams.find(t => t.id === m.t1Id);
+    const t2 = teams.find(t => t.id === m.t2Id);
+    notifyUser('✅ Ergebnis bestätigt', {
+      body: `${(t1 && t1.name) || '?'} ${m.score1}:${m.score2} ${(t2 && t2.name) || '?'} ist jetzt final.`,
+      tag: 'match-confirmed-' + matchNotifyKey(m, isKO)
+    });
+  };
+  groupMatches.forEach(m => checkMatch(m, false));
+  koMatches.forEach(m => checkMatch(m, true));
+
+  if (draftState.active && !prev.draftActive) {
+    notifyUser('🎰 Live-Team-Auslosung gestartet', { body: 'Die Team-Auslosung läuft gerade im Turnier - schau vorbei!', tag: 'team-draft-live' });
+  }
+  if (groupDraftState.active && !prev.groupDraftActive) {
+    notifyUser('🎰 Live-Gruppen-Auslosung gestartet', { body: 'Die Gruppen-Auslosung läuft gerade im Turnier - schau vorbei!', tag: 'group-draft-live' });
+  }
+}
+// Vergleicht den alten mit dem gerade frisch geladenen Stand der EIGENEN globalen Identität
+// und benachrichtigt bei: neuer Freundschaftsanfrage, neuer Turnier-Einladung, oder einer
+// Entscheidung (bestätigt/abgelehnt) über den eigenen Passwort-Wunsch.
+function checkForNotifiableGlobalPlayerChanges() {
+  if (!myPlayerName) { lastNotifiedGlobalPlayerSnapshot = null; return; }
+  const gp = getGlobalPlayer(myPlayerName);
+  if (!gp) return;
+  const snapshot = {
+    friendRequestKeys: Object.keys(gp.friendRequests || {}),
+    inviteKeys: Object.keys(gp.invites || {}),
+    pendingPassword: !!gp.pendingPassword,
+    passwordVersion: gp.passwordVersion || 0
+  };
+  const prev = lastNotifiedGlobalPlayerSnapshot;
+  if (prev) {
+    snapshot.friendRequestKeys.filter(k => !prev.friendRequestKeys.includes(k)).forEach((k) => {
+      const fromGp = globalPlayers[k];
+      notifyUser('🤝 Neue Freundschaftsanfrage', { body: `${(fromGp && fromGp.name) || k} möchte sich mit dir befreunden.`, tag: 'friend-request-' + k });
+    });
+    snapshot.inviteKeys.filter(k => !prev.inviteKeys.includes(k)).forEach((tid) => {
+      const tName = (tournamentsList[tid] && tournamentsList[tid].name) || 'ein Turnier';
+      notifyUser('📨 Turnier-Einladung', { body: `Du wurdest zu "${tName}" eingeladen.`, tag: 'invite-' + tid });
+    });
+    if (prev.pendingPassword && !snapshot.pendingPassword) {
+      if (snapshot.passwordVersion > prev.passwordVersion) {
+        notifyUser('✅ Passwort bestätigt', { body: 'Dein vorgeschlagenes Passwort wurde bestätigt.' });
+      } else {
+        notifyUser('❌ Passwort abgelehnt', { body: 'Dein vorgeschlagener Passwort-Wunsch wurde abgelehnt.' });
+      }
+    }
+  }
+  lastNotifiedGlobalPlayerSnapshot = snapshot;
+}
+// ============================================================================
+// 14. WRAPPED ALS TEILBARES BILD — zeichnet die Wrapped-Karte manuell auf ein
+//     <canvas> (statt z.B. html2canvas nachzuladen - so bleibt volle Kontrolle
+//     über Cross-Origin-Bilder wie das eigene Profilbild, siehe das etablierte
+//     crossOrigin='anonymous'-Muster beim Glücksrad) und teilt sie per
+//     Web-Share-API (z.B. direkt in die WhatsApp-Gruppe) oder lädt sie als PNG herunter.
+// ============================================================================
+// Bricht einen Text auf mehrere Zeilen um, damit er nicht über den Kartenrand hinausläuft
+function wrapCanvasText(ctx, text, centerX, startY, maxWidth, lineHeight) {
+  const words = text.split(' ');
+  let line = '';
+  let y = startY;
+  words.forEach((word) => {
+    const testLine = line ? `${line} ${word}` : word;
+    if (ctx.measureText(testLine).width > maxWidth && line) {
+      ctx.fillText(line, centerX, y);
+      line = word;
+      y += lineHeight;
+    } else {
+      line = testLine;
+    }
+  });
+  if (line) ctx.fillText(line, centerX, y);
+  return y + lineHeight;
+}
+// Lädt ein Bild cross-origin und liefert ein Promise (löst auch bei Fehler auf, mit null -
+// ein fehlendes/blockiertes Profilbild soll das Teilen nicht komplett verhindern)
+function loadImageForCanvas(url) {
+  return new Promise((resolve) => {
+    if (!url) { resolve(null); return; }
+    const img = new Image();
+    img.crossOrigin = 'anonymous';
+    img.onload = () => resolve(img);
+    img.onerror = () => resolve(null);
+    img.src = url;
+  });
+}
+// Zeichnet die komplette Wrapped-Karte auf ein neues Offscreen-Canvas und liefert es zurück
+async function renderWrappedToCanvas() {
+  const stats = calculatePlayerStats().find(s => s.name === myPlayerName) || { goals: 0, conceded: 0, wins: 0, played: 0 };
+  const { best, worst } = getBestAndWorstResult(myPlayerName);
+  const wrapped = getWrappedTitle(myPlayerName);
+  const balance = getUserBalance(myPlayerName);
+  const worstIsLoss = worst && (worst.goalsFor - worst.goalsAgainst) < 0;
+  const tName = (tournamentsList[currentTournamentId] && tournamentsList[currentTournamentId].name) || 'Tims FAL Turniere';
+  const avatarImg = await loadImageForCanvas(getPlayerAvatarUrl(myPlayerName));
+
+  const W = 800, H = 1000;
+  const canvas = document.createElement('canvas');
+  canvas.width = W; canvas.height = H;
+  const ctx = canvas.getContext('2d');
+
+  // Hintergrund: FAL-Navy mit sanftem Verlauf ins Blau, gelber Rahmen als Markenelement
+  const bgGrad = ctx.createLinearGradient(0, 0, 0, H);
+  bgGrad.addColorStop(0, '#0b192c');
+  bgGrad.addColorStop(1, '#1e3e62');
+  ctx.fillStyle = bgGrad;
+  ctx.fillRect(0, 0, W, H);
+  ctx.strokeStyle = '#ffc800';
+  ctx.lineWidth = 6;
+  ctx.strokeRect(3, 3, W - 6, H - 6);
+
+  ctx.textAlign = 'center';
+  ctx.fillStyle = '#ffc800';
+  ctx.font = 'bold 22px sans-serif';
+  ctx.fillText('🎁 TURNIER-WRAPPED', W / 2, 60);
+  ctx.fillStyle = '#ffffff';
+  ctx.font = '18px sans-serif';
+  ctx.globalAlpha = 0.85;
+  ctx.fillText(tName, W / 2, 90);
+  ctx.globalAlpha = 1;
+
+  // Avatar (falls vorhanden) über dem großen Titel-Emoji
+  let y = 130;
+  if (avatarImg) {
+    const r = 45;
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(W / 2, y + r, r, 0, Math.PI * 2);
+    ctx.closePath();
+    ctx.clip();
+    ctx.drawImage(avatarImg, W / 2 - r, y, r * 2, r * 2);
+    ctx.restore();
+    ctx.strokeStyle = '#ffc800';
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.arc(W / 2, y + r, r, 0, Math.PI * 2);
+    ctx.stroke();
+    y += r * 2 + 20;
+  }
+  ctx.fillStyle = '#ffffff';
+  ctx.font = 'bold 64px sans-serif';
+  ctx.fillText(wrapped.emoji, W / 2, y + 50);
+  y += 90;
+  ctx.font = 'bold 34px sans-serif';
+  ctx.fillStyle = '#ffc800';
+  y = wrapCanvasText(ctx, wrapped.title, W / 2, y, W - 100, 40);
+  ctx.font = '18px sans-serif';
+  ctx.fillStyle = '#ffffff';
+  ctx.globalAlpha = 0.9;
+  y = wrapCanvasText(ctx, wrapped.text, W / 2, y + 10, W - 140, 24);
+  ctx.globalAlpha = 1;
+  y += 30;
+
+  // Stats-Raster (4 Kacheln), analog zur wrapped-stats-grid im Modal
+  const statItems = [
+    { value: String(stats.goals), label: '⚽ Tore' },
+    { value: String(stats.conceded), label: '🥅 Gegentore' },
+    { value: `${stats.wins}/${stats.played}`, label: '🏅 Siege' },
+    { value: `${balance} 🪙`, label: 'Kontostand' }
+  ];
+  const gridW = W - 100, gridX = 50, cellW = gridW / 2, cellH = 90, gridY = y;
+  statItems.forEach((item, i) => {
+    const cx = gridX + (i % 2) * cellW + cellW / 2;
+    const cy = gridY + Math.floor(i / 2) * (cellH + 12);
+    ctx.fillStyle = 'rgba(255,255,255,0.08)';
+    ctx.fillRect(cx - cellW / 2 + 8, cy, cellW - 16, cellH);
+    ctx.fillStyle = '#ffc800';
+    ctx.font = 'bold 28px sans-serif';
+    ctx.fillText(item.value, cx, cy + 38);
+    ctx.fillStyle = '#ffffff';
+    ctx.font = '14px sans-serif';
+    ctx.globalAlpha = 0.85;
+    ctx.fillText(item.label, cx, cy + 62);
+    ctx.globalAlpha = 1;
+  });
+  y = gridY + 2 * (cellH + 12) + 20;
+
+  // Highlights (bestes Ergebnis / bitterste Niederlage), so weit sie noch auf die Karte passen
+  ctx.font = '16px sans-serif';
+  ctx.fillStyle = '#ffffff';
+  if (best && y < H - 60) {
+    y = wrapCanvasText(ctx, `🔥 Bestes Ergebnis: ${best.goalsFor}:${best.goalsAgainst} gegen ${best.opponent}`, W / 2, y, W - 100, 22) + 6;
+  }
+  if (worstIsLoss && y < H - 60) {
+    wrapCanvasText(ctx, `😅 Bitterste Niederlage: ${worst.goalsFor}:${worst.goalsAgainst} gegen ${worst.opponent}`, W / 2, y, W - 100, 22);
+  }
+
+  ctx.font = '13px sans-serif';
+  ctx.fillStyle = '#ffffff';
+  ctx.globalAlpha = 0.6;
+  ctx.fillText('Tims FAL Turniere', W / 2, H - 25);
+  ctx.globalAlpha = 1;
+
+  return canvas;
+}
+// Vom "📸 Als Bild teilen"-Knopf im Wrapped-Modal aufgerufen - teilt direkt (z.B. in die
+// WhatsApp-Gruppe) wenn der Browser das unterstützt, sonst lädt es die Karte als PNG herunter.
+async function shareWrappedImage() {
+  if (!myPlayerName) return;
+  const btn = document.getElementById('wrapped-share-btn');
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ Bild wird erstellt...'; }
+  try {
+    const canvas = await renderWrappedToCanvas();
+    canvas.toBlob(async (blob) => {
+      if (btn) { btn.disabled = false; btn.textContent = '📸 Als Bild teilen'; }
+      if (!blob) { alert('Bild konnte nicht erstellt werden.'); return; }
+      const fileName = `wrapped-${(myPlayerName || 'spieler').toLowerCase()}.png`;
+      const file = new File([blob], fileName, { type: 'image/png' });
+      if (navigator.share && navigator.canShare && navigator.canShare({ files: [file] })) {
+        navigator.share({ files: [file], title: '🎁 Mein Turnier-Wrapped', text: '🎁 Mein Turnier-Wrapped von Tims FAL Turniere' }).catch(() => {});
+      } else {
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = fileName;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 2000);
+      }
+    }, 'image/png');
+  } catch (e) {
+    if (btn) { btn.disabled = false; btn.textContent = '📸 Als Bild teilen'; }
+    alert('Bild konnte nicht erstellt werden: ' + e.message);
+  }
 }
