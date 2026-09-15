@@ -133,6 +133,7 @@ window.renderProfilePlayerList = renderProfilePlayerList;
 window.triggerProfilePicUpload = triggerProfilePicUpload;
 window.handleProfilePicFileSelected = handleProfilePicFileSelected;
 window.saveProfileBio = saveProfileBio;
+window.saveProfileColorSettings = saveProfileColorSettings;
 window.sendFriendRequest = sendFriendRequest;
 window.acceptFriendRequest = acceptFriendRequest;
 window.declineFriendRequest = declineFriendRequest;
@@ -440,6 +441,33 @@ function getReadableTextColor(bgColorHex) {
   const luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
   return luminance > 0.55 ? '#12202e' : '#ffffff';
 }
+// Liefert die Segment-Farbe fürs Spieler-Glücksrad: je nach persönlicher Einstellung im
+// Profil (siehe renderProfile) entweder die selbst gewählte Lieblingsfarbe oder die Farbe
+// des Lieblingsvereins (über dieselbe getClubColor()-Logik wie das Vereins-Glücksrad, inkl.
+// hash-basiertem Fallback für unbekannte Vereine). Ohne Einstellung: null (Aufrufer fällt
+// dann auf das klassische Navy/Gold-Wechselmuster zurück).
+function getPlayerSegmentColor(playerName) {
+  const gp = getGlobalPlayer(playerName);
+  if (!gp) return null;
+  if (gp.colorSource === 'club' && gp.favoriteClub) return getClubColor(gp.favoriteClub);
+  if (gp.favoriteColor) return gp.favoriteColor;
+  return null;
+}
+// Liefert die Profilbild-URL einer Identität (oder '' ohne Bild)
+function getPlayerAvatarUrl(playerName) {
+  const gp = getGlobalPlayer(playerName);
+  return (gp && gp.profilePic) ? gp.profilePic : '';
+}
+// Kleines Avatar-<img> (oder Platzhalter-Icon ohne Foto) neben einem Spielernamen -
+// gemeinsam genutzt von Teams, Match-Karten, Spielerlisten, Rangliste, Kopf-an-Kopf usw.
+function playerAvatarImg(playerName, size) {
+  size = size || 20;
+  const url = getPlayerAvatarUrl(playerName);
+  if (url) {
+    return `<img src="${url}" alt="" style="width:${size}px; height:${size}px; object-fit:cover; border-radius:50%; vertical-align:middle; margin-right:5px; border:1px solid rgba(255,255,255,0.25);">`;
+  }
+  return `<span style="display:inline-flex; align-items:center; justify-content:center; width:${size}px; height:${size}px; border-radius:50%; background:var(--fal-blue-primary); vertical-align:middle; margin-right:5px; font-size:${Math.round(size * 0.6)}px;">👤</span>`;
+}
 // Bild-Cache fürs Glücksrad: lädt jedes Vereinswappen nur einmal und zeichnet
 // das Rad neu, sobald ein Bild fertig geladen ist (damit es sofort sichtbar wird).
 const clubLogoImageCache = {};
@@ -454,6 +482,23 @@ function getClubLogoImageElement(clubName) {
   };
   img.src = url;
   clubLogoImageCache[url] = img;
+  return img;
+}
+// Derselbe Bild-Cache/Neuzeichnen-Trick wie bei Vereinswappen, nur für Spieler-Profilbilder
+// auf dem Spieler-Glücksrad (Team-Auslosung UND Gruppen-Auslosung im players-Modus).
+const playerAvatarImageCache = {};
+function getPlayerAvatarImageElement(playerName) {
+  const url = getPlayerAvatarUrl(playerName);
+  if (!url) return null;
+  if (playerAvatarImageCache[url]) return playerAvatarImageCache[url];
+  const img = new Image();
+  img.crossOrigin = 'anonymous';
+  img.onload = () => {
+    if (draftState && draftState.active) drawWheelCanvas(draftState.targetAngle || 0);
+    if (groupDraftState && groupDraftState.active) drawGroupWheelCanvas(groupDraftState.targetAngle || 0);
+  };
+  img.src = url;
+  playerAvatarImageCache[url] = img;
   return img;
 }
 // Fragt per Prompt eine neue Wappen-Bild-URL für einen Club ab und speichert sie
@@ -1861,6 +1906,12 @@ function renderProfile() {
     <div style="text-align:center; margin-bottom: 14px;">
       ${avatarHtml}
       <h2 style="margin: 8px 0 2px 0;">${escapeHtml(gp.name || key)}${key === 'tim' ? ' 👑' : ''}</h2>
+      ${(gp.favoriteColor || gp.favoriteClub) ? `
+        <div style="font-size:0.8em; opacity:0.8; display:flex; align-items:center; justify-content:center; gap:6px; margin-bottom:4px;">
+          ${gp.favoriteColor ? `<span style="display:inline-block; width:12px; height:12px; border-radius:50%; background:${gp.favoriteColor}; border:1px solid rgba(255,255,255,0.4);"></span>` : ''}
+          ${gp.favoriteClub ? `${clubLogoImg(gp.favoriteClub, 14)}${escapeHtml(gp.favoriteClub)}` : ''}
+        </div>
+      ` : ''}
       ${viewingOwn ? `<button class="btn-secondary btn-sm" onclick="triggerProfilePicUpload()">📷 Profilbild ${gp.profilePic ? 'ändern' : 'hochladen'}</button>` : friendActionHtml}
     </div>
   `;
@@ -1870,6 +1921,32 @@ function renderProfile() {
       <h4 style="margin-bottom:6px;">Über mich</h4>
       <textarea id="profile-bio-input" rows="3" placeholder="Erzähl was über dich..." style="width:100%; box-sizing:border-box; padding:8px; margin-bottom:8px;">${escapeHtml(gp.bio || '')}</textarea>
       <button class="btn-primary btn-sm" onclick="saveProfileBio()" style="margin-bottom:18px;">Speichern</button>
+    `;
+    // Lieblingsfarbe/-verein bestimmen die Segmentfarbe auf dem Spieler-Glücksrad (siehe
+    // getPlayerSegmentColor) - "colorSource" legt fest, welche der beiden Angaben gilt.
+    html += `
+      <h4 style="margin-bottom:2px;">🎨 Lieblingsfarbe &amp; Verein</h4>
+      <p style="font-size:0.8em; opacity:0.7; margin:0 0 8px 0;">Bestimmt deine Segment-Farbe auf dem Spieler-Glücksrad bei der Team-/Gruppenauslosung.</p>
+      <div style="display:flex; gap:14px; align-items:center; flex-wrap:wrap; margin-bottom:8px;">
+        <label style="display:flex; align-items:center; gap:6px; font-size:0.9em;">
+          Farbe
+          <input type="color" id="profile-fav-color-input" value="${gp.favoriteColor || '#1b365d'}" style="width:44px; height:32px; padding:0; border:none; border-radius:4px; cursor:pointer;">
+        </label>
+        <label style="display:flex; align-items:center; gap:6px; font-size:0.9em;">
+          Verein
+          <input type="text" id="profile-fav-club-input" list="profile-club-options" value="${escapeHtml(gp.favoriteClub || '')}" placeholder="z.B. FC Bayern" style="width:150px; padding:6px; box-sizing:border-box;">
+        </label>
+      </div>
+      <datalist id="profile-club-options">${DEFAULT_CLUBS.map(c => `<option value="${escapeHtml(c)}">`).join('')}</datalist>
+      <div style="display:flex; gap:16px; margin-bottom:8px; font-size:0.9em;">
+        <label style="display:flex; align-items:center; gap:4px; cursor:pointer;">
+          <input type="radio" name="profile-color-source" value="favorite" ${gp.colorSource !== 'club' ? 'checked' : ''}> Lieblingsfarbe fürs Rad
+        </label>
+        <label style="display:flex; align-items:center; gap:4px; cursor:pointer;">
+          <input type="radio" name="profile-color-source" value="club" ${gp.colorSource === 'club' ? 'checked' : ''}> Vereinsfarbe fürs Rad
+        </label>
+      </div>
+      <button class="btn-primary btn-sm" onclick="saveProfileColorSettings()" style="margin-bottom:18px;">Speichern</button>
     `;
     // Passwort-Verwaltung lebt jetzt im eigenen Profil statt im Header (der Header-Aktions-
     // block ist auf die 4 festen Navigations-Aktionen begrenzt, siehe user-action-grid).
@@ -1892,7 +1969,7 @@ function renderProfile() {
     html += `<h4 style="margin-bottom:6px;">⏳ Freundschaftsanfragen (${requestKeys.length})</h4>`;
     html += requestKeys.length === 0 ? '<p class="empty-state">Keine offenen Anfragen.</p>' : requestKeys.map(k => `
       <div style="display:flex; justify-content:space-between; align-items:center; background: var(--fal-blue-primary); padding: 6px 12px; border-radius: 8px; margin-bottom: 6px;">
-        <span>${escapeHtml((globalPlayers[k] && globalPlayers[k].name) || k)}</span>
+        <span>${playerAvatarImg((globalPlayers[k] && globalPlayers[k].name) || k, 20)}${escapeHtml((globalPlayers[k] && globalPlayers[k].name) || k)}</span>
         <div style="display:flex; gap:5px;">
           <button class="btn-primary btn-sm" style="background:#2ecc71; color:#fff;" onclick="acceptFriendRequest('${k}')">✅</button>
           <button class="btn-danger btn-sm" onclick="declineFriendRequest('${k}')">❌</button>
@@ -1904,7 +1981,7 @@ function renderProfile() {
     html += `<h4 style="margin:14px 0 6px;">🤝 Freunde (${friendKeys.length})</h4>`;
     html += friendKeys.length === 0 ? '<p class="empty-state">Noch keine Freunde.</p>' : friendKeys.map(k => `
       <div style="display:flex; justify-content:space-between; align-items:center; background: var(--fal-blue-primary); padding: 6px 12px; border-radius: 8px; margin-bottom: 6px;">
-        <span>${escapeHtml((globalPlayers[k] && globalPlayers[k].name) || k)}</span>
+        <span>${playerAvatarImg((globalPlayers[k] && globalPlayers[k].name) || k, 20)}${escapeHtml((globalPlayers[k] && globalPlayers[k].name) || k)}</span>
         <button class="btn-secondary btn-sm" onclick="openProfile('${((globalPlayers[k] && globalPlayers[k].name) || k).replace(/'/g, "\\'")}')">Profil ansehen</button>
       </div>
     `).join('');
@@ -1929,7 +2006,7 @@ function renderProfilePlayerList() {
     .sort((a, b) => (globalPlayers[a].name || a).localeCompare(globalPlayers[b].name || b));
   container.innerHTML = keys.length === 0 ? '<p class="empty-state">Keine Spieler gefunden.</p>' : keys.map(k => `
     <div style="display:flex; justify-content:space-between; align-items:center; background: var(--fal-blue-primary); padding: 6px 12px; border-radius: 8px; margin-bottom: 6px;">
-      <span>${escapeHtml(globalPlayers[k].name || k)}${k === 'tim' ? ' 👑' : ''}</span>
+      <span>${playerAvatarImg(globalPlayers[k].name || k, 20)}${escapeHtml(globalPlayers[k].name || k)}${k === 'tim' ? ' 👑' : ''}</span>
       <button class="btn-secondary btn-sm" onclick="openProfile('${(globalPlayers[k].name || k).replace(/'/g, "\\'")}')">Profil ansehen</button>
     </div>
   `).join('');
@@ -1960,6 +2037,20 @@ function saveProfileBio() {
   const myKey = myPlayerName.trim().toLowerCase();
   db.ref('globalPlayers/' + myKey + '/bio').set(bio)
     .catch((error) => alert('⚠️ Konnte nicht gespeichert werden:\n' + error.message));
+  alert('✅ Gespeichert.');
+}
+// Speichert Lieblingsfarbe/-verein + welche der beiden Angaben fürs Spieler-Glücksrad gilt
+function saveProfileColorSettings() {
+  if (!myPlayerName) return;
+  const colorInput = document.getElementById('profile-fav-color-input');
+  const clubInput = document.getElementById('profile-fav-club-input');
+  const sourceInput = document.querySelector('input[name="profile-color-source"]:checked');
+  const myKey = myPlayerName.trim().toLowerCase();
+  db.ref('globalPlayers/' + myKey).update({
+    favoriteColor: colorInput ? colorInput.value : '#1b365d',
+    favoriteClub: clubInput ? clubInput.value.trim() : '',
+    colorSource: (sourceInput && sourceInput.value === 'club') ? 'club' : 'favorite'
+  }).catch((error) => alert('⚠️ Konnte nicht gespeichert werden:\n' + error.message));
   alert('✅ Gespeichert.');
 }
 // Schickt einer anderen Identität eine Freundschaftsanfrage
@@ -2039,7 +2130,7 @@ function renderInvitePanel() {
       const alreadyInvited = !!(globalPlayers[k].invites && globalPlayers[k].invites[currentTournamentId]);
       return `
       <div style="display:flex; justify-content:space-between; align-items:center; background: var(--fal-blue-primary); padding: 6px 12px; border-radius: 8px; margin-bottom: 6px;">
-        <span>${escapeHtml(globalPlayers[k].name || k)}</span>
+        <span>${playerAvatarImg(globalPlayers[k].name || k, 20)}${escapeHtml(globalPlayers[k].name || k)}</span>
         ${alreadyInvited
           ? '<span style="font-size:0.8em; opacity:0.75;">⏳ Bereits eingeladen</span>'
           : `<button class="btn-secondary btn-sm" onclick="inviteToTournament('${k}')">📨 Einladen</button>`}
@@ -2311,14 +2402,14 @@ function computeHeadToHead(nameA, nameB, matches) {
 function renderHeadToHeadHtml(h2h) {
   const total = h2h.winsA + h2h.winsB + h2h.draws;
   if (total === 0) {
-    return `<hr style="margin:16px 0; opacity:0.3;"><h4 style="margin-bottom:6px;">⚔️ Kopf-an-Kopf gegen ${escapeHtml(h2h.displayB)}</h4><p class="empty-state">Ihr wart in noch keinem bestätigten Spiel direkte Gegner.</p>`;
+    return `<hr style="margin:16px 0; opacity:0.3;"><h4 style="margin-bottom:6px;">⚔️ Kopf-an-Kopf gegen ${playerAvatarImg(h2h.displayB, 18)}${escapeHtml(h2h.displayB)}</h4><p class="empty-state">Ihr wart in noch keinem bestätigten Spiel direkte Gegner.</p>`;
   }
   const streakText = h2h.streak
     ? (h2h.streak.outcome === 'A' ? `🔥 ${h2h.streak.count}x in Folge gegen ${escapeHtml(h2h.displayB)} gewonnen` : `❄️ ${h2h.streak.count}x in Folge gegen ${escapeHtml(h2h.displayB)} verloren`)
     : '';
   return `
     <hr style="margin:16px 0; opacity:0.3;">
-    <h4 style="margin-bottom:6px;">⚔️ Kopf-an-Kopf gegen ${escapeHtml(h2h.displayB)}</h4>
+    <h4 style="margin-bottom:6px;">⚔️ Kopf-an-Kopf gegen ${playerAvatarImg(h2h.displayB, 18)}${escapeHtml(h2h.displayB)}</h4>
     <div style="display:grid; grid-template-columns:1fr 1fr 1fr; gap:8px; text-align:center; margin-bottom:10px;">
       <div style="background:var(--fal-blue-primary); border-radius:8px; padding:8px;">
         <div style="font-size:1.3em; font-weight:bold; color:#2ecc71;">${h2h.winsA}</div>
@@ -2466,7 +2557,7 @@ function renderLeaderboard(ratings) {
       const streakLabel = r.streak >= 3 ? ` 🔥${r.streak}` : (r.streak <= -3 ? ` ❄️${Math.abs(r.streak)}` : '');
       return `
       <div style="display:flex; justify-content:space-between; align-items:center; background: var(--fal-blue-primary); padding: 8px 12px; border-radius: 8px; margin-bottom: 6px; cursor:pointer;" onclick="closeLeaderboard(); openProfile('${r.name.replace(/'/g, "\\'")}')">
-        <span><strong>${medal}</strong> ${escapeHtml(r.name)}${r.key === 'tim' ? ' 👑' : ''}${streakLabel}</span>
+        <span><strong>${medal}</strong> ${playerAvatarImg(r.name, 20)}${escapeHtml(r.name)}${r.key === 'tim' ? ' 👑' : ''}${streakLabel}</span>
         <span style="text-align:right;">
           <strong style="color:var(--fal-yellow);">${r.rating}</strong>
           <span style="font-size:0.8em; opacity:0.7;"> · ${r.wins}S-${r.draws}R-${r.losses}N</span>
@@ -2898,10 +2989,12 @@ function drawWheelCanvas(angleOffset) {
     const endAngle = startAngle + sliceAngle;
     const itemText = String(items[i]);
 
-    // Segment-Hintergrundfarbe einmal bestimmen (wird für Füllung UND Textfarbe gebraucht)
+    // Segment-Hintergrundfarbe einmal bestimmen (wird für Füllung UND Textfarbe gebraucht) -
+    // bei Spielern zuerst deren persönliche Profil-Einstellung (Lieblingsfarbe/Vereinsfarbe,
+    // siehe getPlayerSegmentColor), sonst wie bisher das Navy/Gold-Wechselmuster.
     const segmentColor = isClubWheel
       ? ((typeof getClubColor === 'function' && getClubColor(itemText)) ? getClubColor(itemText) : (i % 2 === 0 ? '#1b365d' : '#f1c40f'))
-      : ((i % 2 === 0) ? '#1b365d' : '#f1c40f');
+      : (getPlayerSegmentColor(itemText) || (i % 2 === 0 ? '#1b365d' : '#f1c40f'));
 
     // 🎨 Farbfüllung Segmente
     ctx.beginPath();
@@ -2937,11 +3030,21 @@ function drawWheelCanvas(angleOffset) {
     ctx.fillStyle = textColor;
     ctx.fillText(itemText, radius - 35, 0);
 
-    // 🖼️ Wappen rendern bei Vereinsrad
+    // 🖼️ Wappen rendern bei Vereinsrad, Profilbild (rund) bei Spielerrad
     if (isClubWheel && typeof getClubLogoImageElement === 'function') {
       const logoImg = getClubLogoImageElement(itemText);
       if (logoImg && logoImg.complete && logoImg.naturalWidth !== 0) {
         ctx.drawImage(logoImg, radius - 28, -10, 20, 20);
+      }
+    } else if (!isClubWheel) {
+      const avatarImg = getPlayerAvatarImageElement(itemText);
+      if (avatarImg && avatarImg.complete && avatarImg.naturalWidth !== 0) {
+        ctx.save();
+        ctx.beginPath();
+        ctx.arc(radius - 18, 0, 10, 0, 2 * Math.PI);
+        ctx.clip();
+        ctx.drawImage(avatarImg, radius - 28, -10, 20, 20);
+        ctx.restore();
       }
     }
 
@@ -3714,11 +3817,15 @@ function drawGroupWheelCanvas(angleOffset) {
   if (numItems === 0) return;
   const centerX = 130, centerY = 130, radius = 130;
   const sliceAngle = (2 * Math.PI) / numItems;
+  // Im "players"-Modus (Namen direkt in Gruppen lostopfen, siehe startGroupDraft) sind die
+  // Segmente echte Spielernamen -> persönliche Profilfarbe/-bild gilt genau wie beim
+  // Team-Glücksrad. Im "teams"-Modus sind es Team-Namen, dafür gibt's kein Profil.
+  const isPlayersWheel = groupDraftState.source === 'players';
   for (let i = 0; i < numItems; i++) {
     const startAngle = angleOffset + i * sliceAngle;
     const endAngle = startAngle + sliceAngle;
     const itemText = String(items[i]);
-    const segmentColor = (i % 2 === 0) ? '#1b365d' : '#f1c40f';
+    const segmentColor = (isPlayersWheel && getPlayerSegmentColor(itemText)) || ((i % 2 === 0) ? '#1b365d' : '#f1c40f');
     ctx.beginPath();
     ctx.moveTo(centerX, centerY);
     ctx.arc(centerX, centerY, radius, startAngle, endAngle);
@@ -3741,6 +3848,17 @@ function drawGroupWheelCanvas(angleOffset) {
     ctx.strokeText(itemText, radius - 35, 0);
     ctx.fillStyle = textColor;
     ctx.fillText(itemText, radius - 35, 0);
+    if (isPlayersWheel) {
+      const avatarImg = getPlayerAvatarImageElement(itemText);
+      if (avatarImg && avatarImg.complete && avatarImg.naturalWidth !== 0) {
+        ctx.save();
+        ctx.beginPath();
+        ctx.arc(radius - 18, 0, 10, 0, 2 * Math.PI);
+        ctx.clip();
+        ctx.drawImage(avatarImg, radius - 28, -10, 20, 20);
+        ctx.restore();
+      }
+    }
     ctx.restore();
   }
 }
@@ -4830,7 +4948,7 @@ function renderTeams() {
           ${crestHtml}
         </div>
         ${isMyTeam ? '<div style="color:var(--fal-yellow); font-size:0.85em; font-weight:bold; margin-top:4px;">⭐ (Dein Team)</div>' : ''}
-        <p style="margin-top: 8px; margin-bottom:0;">${t.p2 ? `Mitglieder: <strong>${t.p1}</strong> & <strong>${t.p2}</strong>` : `Spieler: <strong>${t.p1}</strong>`}</p>
+        <p style="margin-top: 8px; margin-bottom:0;">${t.p2 ? `Mitglieder: ${playerAvatarImg(t.p1, 18)}<strong>${t.p1}</strong> &amp; ${playerAvatarImg(t.p2, 18)}<strong>${t.p2}</strong>` : `Spieler: ${playerAvatarImg(t.p1, 18)}<strong>${t.p1}</strong>`}</p>
         ${canEditPhoto ? `
           <div style="margin-top:8px; padding-top:8px; border-top:1px solid rgba(255,255,255,0.08); display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
             <button class="btn-secondary btn-sm" onclick="triggerTeamPhotoUpload(${t.id})">📷 ${t.photo ? 'Neues Team-Foto' : 'Team-Foto hochladen'}</button>
@@ -5013,11 +5131,11 @@ function renderMatchBlock(m, isKO) {
       </div>
       <div style="margin: 6px 0;">
         <div style="font-size:1.05em; font-weight:bold;">
-          ${teamCrestImg(t1, 22)}${t1.name} <small style="opacity:0.8;">(${t1.p1}${solo ? '' : ` & ${t1.p2}`})</small>
+          ${teamCrestImg(t1, 22)}${t1.name} <small style="opacity:0.8;">(${playerAvatarImg(t1.p1, 14)}${t1.p1}${solo ? '' : ` &amp; ${playerAvatarImg(t1.p2, 14)}${t1.p2}`})</small>
         </div>
         <div style="font-size:0.8em; opacity:0.6; margin:2px 0;">vs</div>
         <div style="font-size:1.05em; font-weight:bold;">
-          ${teamCrestImg(t2, 22)}${t2.name} <small style="opacity:0.8;">(${t2.p1}${solo ? '' : ` & ${t2.p2}`})</small>
+          ${teamCrestImg(t2, 22)}${t2.name} <small style="opacity:0.8;">(${playerAvatarImg(t2.p1, 14)}${t2.p1}${solo ? '' : ` &amp; ${playerAvatarImg(t2.p2, 14)}${t2.p2}`})</small>
         </div>
       </div>
       <div style="display:flex; flex-direction:column; gap:8px;">
@@ -5261,7 +5379,7 @@ function renderAdminPanel() {
       return `
         <div style="display:flex; flex-wrap:wrap; justify-content:space-between; align-items:center; background: var(--fal-blue-primary); padding: 10px 12px; border-radius: 8px; margin-bottom: 8px; gap: 8px;">
           <div>
-            <strong>${index + 1}. ${p.name}</strong>
+            <strong>${index + 1}. ${playerAvatarImg(p.name, 18)}${p.name}</strong>
             ${p.isTournamentOwner ? '<span style="color:var(--fal-yellow); font-size:0.85em;">[⭐ Ersteller]</span>' : ''}
             ${p.isRef ? '<span style="color:var(--fal-yellow); font-size:0.85em;">[🟨 Ref]</span>' : ''}
             ${hasPW ? '<span style="font-size:0.85em; opacity:0.8;">[🔒 PW]</span>' : ''}
