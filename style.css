@@ -161,6 +161,9 @@ header h1 {
   transition: 0.2s;
 }
 .header-toggle-btn:active span { background: var(--fal-yellow); }
+/* Krönchen-Knopf fürs (immer erreichbare) God-Panel, nutzt dieselbe Box wie das
+   Aufklapp-Icon, zeigt aber ein Emoji statt der 2 Striche */
+#header-god-panel-btn { font-size: 1.1rem; }
 /* Striche klappen leicht auseinander, sobald der Detailbereich offen ist */
 .header-toggle-btn.expanded span:first-child { transform: translateY(2px) rotate(8deg); }
 .header-toggle-btn.expanded span:last-child { transform: translateY(-2px) rotate(-8deg); }

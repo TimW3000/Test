@@ -787,6 +787,7 @@ function toggleHeaderDetails() {
 // Zeigt den Namens-Badge im Header + (falls zutreffend) den "Passwort vorschlagen"-Button
 // bzw. den Hinweis, dass ein Passwort-Wunsch schon auf Bestätigung wartet.
 function renderUserBadge() {
+  renderHeaderGodBadge();
   // Name des aktuell geöffneten Turniers - im Header (klein unter dem Titel) und im
   // Browsertab-Titel, "und auch sonst an den passenden Stellen" wie gewünscht.
   const tournamentName = (currentTournamentId && tournamentsList[currentTournamentId]) ? tournamentsList[currentTournamentId].name : '';
@@ -913,7 +914,7 @@ function leaveTournament() {
   const p = getPlayerObj(myPlayerName);
   if (!p) return;
   const warning = p.isTournamentOwner
-    ? 'Du bist Ersteller/Admin dieses Turniers! Verlässt du es, hat hier (außer dem God) niemand mehr Admin-Rechte. Wirklich als Spieler austreten?'
+    ? 'Du bist Ersteller/Admin dieses Turniers! Verlässt du es, hat hier niemand mehr Admin-Rechte (außer einem übergeordneten Admin). Wirklich als Spieler austreten?'
     : 'Turnier wirklich als Spieler verlassen? Dein Team-Platz, deine Wetten und dein Tipp gehen dabei verloren.';
   if (!confirm(warning)) return;
   const tid = currentTournamentId;
@@ -1044,6 +1045,7 @@ function attachTournamentListener() {
     coinAnimation = data.coinAnimation || 'none';
     draftState = data.draftState || { active: false, currentStep: 0, tempP1: null, tempP2: null, remainingPlayers: [], remainingClubs: [], spinning: false, startTime: null, targetAngle: 0, duration: 4000, lastDrawnItem: null, pairs: [] };
     groupDraftState = data.groupDraftState || { active: false, spinning: false, remainingTeams: [], groupLetters: [], targetGroupIndex: 0, assignments: {}, lastDrawnItem: null, lastAssignedGroup: null, startTime: null, targetAngle: 0, duration: 4000 };
+    normalizeGroupDraftState(groupDraftState);
     userBalances = data.userBalances || {};
     bets = data.bets || [];
 
@@ -1197,6 +1199,24 @@ function renderGodPanelButton() {
       ${pendingCount > 0 ? `<span style="background:var(--fal-yellow); color:#000; border-radius:10px; padding:1px 8px; font-size:0.8em; font-weight:bold;">${pendingCount}</span>` : ''}
     </button>
   `;
+}
+// Baut den IMMER sichtbaren God-Panel-Knopf im Header auf (auch innerhalb eines offenen
+// Turniers, nicht nur auf der Turnierauswahl-Seite - siehe renderGodPanelButton oben, das
+// war der gemeldete "Passwort-Wunsch poppt erst außerhalb des Turniers auf"-Bug). Zeigt
+// dieselbe Zahl offener Passwort-Wünsche als kleines Badge oben rechts am Krönchen.
+function renderHeaderGodBadge() {
+  const btn = document.getElementById('header-god-panel-btn');
+  const badge = document.getElementById('header-god-panel-badge');
+  if (!btn || !badge) return;
+  if (!isGod()) { btn.style.display = 'none'; return; }
+  btn.style.display = 'flex';
+  const pendingCount = countPendingGlobalPasswords();
+  if (pendingCount > 0) {
+    badge.textContent = String(pendingCount);
+    badge.style.display = 'inline-block';
+  } else {
+    badge.style.display = 'none';
+  }
 }
 // Zählt offene Passwort-Wünsche (identitätsweit, nicht mehr pro Turnier) - für das
 // Hinweis-Badge auf dem "God-Panel öffnen"-Knopf, damit man nicht extra reinklicken muss.
@@ -1592,6 +1612,7 @@ function attachGlobalPlayersListener() {
     // Turnieren) - das God-Panel + sein Hinweis-Badge müssen deshalb bei JEDER Änderung
     // hier neu gerendert werden, nicht nur bei attachGodOversightListener-Updates.
     renderGodPanelButton();
+    renderHeaderGodBadge();
     renderGodPanel();
     // Profil (eigenes oder gerade angesehenes) + Einladungen-Banner live aktuell halten,
     // z.B. wenn währenddessen eine Freundschaftsanfrage oder Einladung eintrifft.
@@ -3179,7 +3200,7 @@ function removePlayerPassword(key) {
 // der God es bestätigt. Gilt danach für ALLE Turniere, nicht nur das gerade offene.
 function requestOwnPassword() {
   if (!myPlayerName) return;
-  const pwd = prompt('Welches Passwort möchtest du für dein Konto vorschlagen?\n(Gilt danach für ALLE Turniere. Der God muss es noch bestätigen, bevor es aktiv wird.)');
+  const pwd = prompt('Welches Passwort möchtest du für dein Konto vorschlagen?\n(Gilt danach für ALLE Turniere. Der Admin muss es noch bestätigen, bevor es aktiv wird.)');
   if (pwd === null) return;
   if (pwd.trim() === '') return alert('Passwort darf nicht leer sein.');
   const key = myPlayerName.trim().toLowerCase();
@@ -3192,7 +3213,7 @@ function requestOwnPassword() {
     createdAt: (gp && gp.createdAt) || Date.now(),
     pendingPassword: pwd.trim()
   }).catch((error) => alert('⚠️ Konnte nicht gespeichert werden:\n' + error.message));
-  alert('✅ Dein Passwort-Wunsch wurde gespeichert und wartet auf Bestätigung durch den God.');
+  alert('✅ Dein Passwort-Wunsch wurde gespeichert und wartet auf Bestätigung durch den Admin.');
 }
 // God bestätigt einen von einer Identität selbst vorgeschlagenen Passwort-Wunsch -> wird aktiv
 function confirmPendingPassword(key) {
@@ -3539,6 +3560,22 @@ function skipGroupWheelSpin() {
   if (groupSpinTimeoutId) { clearTimeout(groupSpinTimeoutId); groupSpinTimeoutId = null; }
   applyGroupDraw(groupDraftState.pendingTarget);
 }
+// Repariert einen Gruppen-Auslosungs-Zustand, der gerade frisch aus Firebase geladen wurde:
+// "assignments" startet als Objekt, dessen Werte ALLE leere Arrays sind ({ "Gruppe A": [],
+// "Gruppe B": [] }) - echtes Firebase RTDB speichert leere Arrays/Objekte aber nicht, sondern
+// entfernt sie beim Schreiben komplett (siehe normalizeDartsMatchState für dasselbe Muster).
+// Nach dem allerersten Speichern (schon beim Start der Ziehung, VOR der ersten Drehung) wurde
+// "assignments" dadurch komplett zu "undefined" - applyGroupDraw() stürzte beim Zugriff
+// "assignments[letter]" dann mit einer Exception ab, und zwar OHNE dass danach noch
+// saveData()/ein Re-Render lief (der Absturz passiert VOR beiden Aufrufen im selben
+// setTimeout-Callback) - das Rad blieb dadurch für immer nach der ersten Drehung hängen.
+function normalizeGroupDraftState(gds) {
+  if (!gds) return;
+  if (!gds.assignments) gds.assignments = {};
+  (gds.groupLetters || []).forEach(letter => {
+    if (!gds.assignments[letter]) gds.assignments[letter] = [];
+  });
+}
 // Übernimmt das gezogene Element (Team oder - im source='players'-Modus - direkt ein
 // Spielername) und weist es der aktuellen Ziel-Gruppe zu; rückt die Ziel-Gruppe eins
 // weiter (reihum A, B, C, ..., wieder A, ...)
@@ -3550,6 +3587,7 @@ function applyGroupDraw(itemName) {
   const idx = groupDraftState.remainingTeams.indexOf(itemName);
   if (idx !== -1) groupDraftState.remainingTeams.splice(idx, 1);
   const letter = groupDraftState.groupLetters[groupDraftState.targetGroupIndex];
+  if (!groupDraftState.assignments) groupDraftState.assignments = {};
   if (!groupDraftState.assignments[letter]) groupDraftState.assignments[letter] = [];
   if (isPlayers) {
     groupDraftState.assignments[letter].push(itemName);

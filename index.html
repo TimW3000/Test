@@ -224,6 +224,12 @@
             <div id="header-tournament-name"></div>
           </div>
         </div>
+        <!-- Admin-Panel-Zugang: IMMER sichtbar (auch innerhalb eines laufenden Turniers), nicht
+             nur auf der Turnierauswahl-Seite - sonst verpasst man offene Passwort-Wünsche, wenn
+             man gerade mitten in einem Turnier ist (siehe openGodPanel/renderHeaderGodBadge) -->
+        <button id="header-god-panel-btn" class="header-toggle-btn" style="display:none; position:relative;" onclick="openGodPanel()" title="God-Panel öffnen">
+          👑<span id="header-god-panel-badge" style="display:none; position:absolute; top:-4px; right:-4px; background:var(--fal-yellow); color:#000; border-radius:10px; padding:1px 6px; font-size:0.65em; font-weight:bold; line-height:1.3;"></span>
+        </button>
         <!-- Aufklapp-Icon (2 Striche) fürs Header-Detailmenü (Angemeldet als / Wechseln usw.) -->
         <button id="header-toggle-btn" class="header-toggle-btn" onclick="toggleHeaderDetails()" aria-label="Details ein-/ausblenden" title="Details ein-/ausblenden">
           <span></span><span></span>
