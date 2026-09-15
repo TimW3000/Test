@@ -168,20 +168,31 @@ header h1 {
 .header-toggle-btn.expanded span:first-child { transform: translateY(2px) rotate(8deg); }
 .header-toggle-btn.expanded span:last-child { transform: translateY(-2px) rotate(-8deg); }
 
-/* Detailbereich (Angemeldet als / Passwort vorschlagen / Wechseln) - standardmäßig
-   zugeklappt, klappt in 2 Spalten x 2 Zeilen auf (statt 1 Zeile x 4 Spalten) */
+/* Detailbereich (Angemeldet als + Profil/Wechseln/Turnier-Aktionen) - standardmäßig
+   zugeklappt. Statuszeile (wer bin ich) oben als einfache Zeile, darunter ein festes
+   2x2-Aktionsraster (siehe user-action-grid) - jede Zelle bleibt an ihrem Platz. */
 #user-badge-container {
   font-size: 0.85rem;
   display: none;
-  grid-template-columns: 1fr 1fr;
-  gap: 10px 14px;
   width: 100%;
 }
 #user-badge-container.expanded {
-  display: grid;
+  display: block;
   margin-top: 12px;
   padding-top: 10px;
   border-top: 1px solid rgba(255, 255, 255, 0.12);
+}
+#user-status-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+#user-action-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px 14px;
 }
 .header-cell { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
 .header-cell button { width: 100%; margin: 0 !important; }

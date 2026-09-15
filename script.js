@@ -784,20 +784,21 @@ function toggleHeaderDetails() {
   const isExpanded = container.classList.toggle('expanded');
   if (btn) btn.classList.toggle('expanded', isExpanded);
 }
-// Zeigt den Namens-Badge im Header + (falls zutreffend) den "Passwort vorschlagen"-Button
-// bzw. den Hinweis, dass ein Passwort-Wunsch schon auf Bestätigung wartet.
+// Zeigt den Namens-Badge im Header, den Turniertitel + das feste 2x2-Aktionsraster
+// (Profil/Wechseln/Turnier wechseln/Turnier verlassen) - Passwort-Verwaltung selbst lebt
+// jetzt im Profil-Screen (siehe renderProfile), nicht mehr direkt im Header.
 function renderUserBadge() {
   renderHeaderGodBadge();
-  // Name des aktuell geöffneten Turniers - im Header (klein unter dem Titel) und im
-  // Browsertab-Titel, "und auch sonst an den passenden Stellen" wie gewünscht.
+  // Der Header zeigt jetzt (seit es mehrere Turniere gleichzeitig gibt) NUR NOCH den echten
+  // Turniernamen groß oben - "FAL FIFA/Darts Turnier" stand vor der Mehrturnier-Funktion für
+  // DAS eine Turnier und wirkte seitdem wie unnötige Redundanz. Ein kleines Sport-Emoji davor
+  // gibt weiterhin auf einen Blick Kontext, ohne Platz für generische Marken-Textwiederholung
+  // zu verschwenden.
   const tournamentName = (currentTournamentId && tournamentsList[currentTournamentId]) ? tournamentsList[currentTournamentId].name : '';
-  const tnameEl = document.getElementById('header-tournament-name');
-  if (tnameEl) tnameEl.textContent = tournamentName ? '🏆 ' + tournamentName : '';
-  // Titel im Header (und im Browsertab) passt sich der Sportart DIESES Turniers an (siehe tournamentSport)
-  const appTitle = tournamentSport === 'darts' ? 'FAL Darts Turnier' : 'FAL FIFA Turnier';
+  const sportEmoji = tournamentSport === 'darts' ? '🎯' : '⚽';
   const titleEl = document.getElementById('app-title');
-  if (titleEl) titleEl.textContent = appTitle;
-  document.title = tournamentName ? `${tournamentName} — ${appTitle}` : appTitle;
+  if (titleEl) titleEl.textContent = tournamentName ? `${sportEmoji} ${tournamentName}` : 'Tims FAL Turniere';
+  document.title = tournamentName || 'Tims FAL Turniere';
   const userBadge = document.getElementById('user-badge');
   if (userBadge) {
     let roleTag = '';
@@ -824,22 +825,15 @@ function renderUserBadge() {
       connBadge.style.color = '#ff4d4d';
     }
   }
-  // Das Passwort ist jetzt identitätsweit (nicht mehr pro Turnier) - der "Vorschlagen"-Knopf
-  // greift deshalb auf die globale Registry zu, nicht mehr auf den Spieler-Eintrag DIESES Turniers.
-  const pwAction = document.getElementById('user-password-action');
-  if (pwAction) {
-    const gp = myPlayerName ? getGlobalPlayer(myPlayerName) : null;
-    if (!myPlayerName || isGod() || (gp && gp.password)) {
-      pwAction.innerHTML = '';
-    } else if (gp && gp.pendingPassword) {
-      pwAction.innerHTML = `<span style="font-size:0.8em; color:var(--fal-yellow); margin-left:10px;">⏳ Passwort-Wunsch wartet auf Bestätigung</span>`;
-    } else {
-      pwAction.innerHTML = `<button class="btn-secondary btn-sm" style="margin-left: 10px;" onclick="requestOwnPassword()">🔑 Passwort vorschlagen</button>`;
-    }
-  }
-  // "Turnier verlassen" nur anzeigen, wenn man hier gerade wirklich Spieler ist (nicht nur Zuschauer)
+  // "Turnier verlassen" nur anzeigen, wenn man hier gerade wirklich Spieler ist (nicht nur
+  // Zuschauer) - bleibt aber IMMER eine Grid-Zelle (nur der Inhalt wechselt), damit das
+  // 2x2-Aktionsraster nie durch eine verschwindende Zelle aus der Form gerät.
   const leaveCell = document.getElementById('leave-tournament-cell');
-  if (leaveCell) leaveCell.style.display = getPlayerObj(myPlayerName) ? 'flex' : 'none';
+  if (leaveCell) {
+    leaveCell.innerHTML = getPlayerObj(myPlayerName)
+      ? `<button class="btn-danger btn-sm" onclick="leaveTournament()">🚪 Turnier verlassen</button>`
+      : '';
+  }
 }
 // Entscheidet beim (erneuten) Betreten eines Turniers automatisch, ob man direkt angemeldet
 // wird, oder erst entscheiden muss, ob man beitritt oder nur zuschaut. Ein eigenes Passwort
@@ -856,6 +850,11 @@ function showJoinOrSpectatePrompt() {
   document.getElementById('tournament-join-modal').style.display = 'flex';
   document.getElementById('join-options').style.display = 'block';
   document.getElementById('join-tournament-password-select').style.display = 'none';
+  const nameEl = document.getElementById('join-modal-tournament-name');
+  if (nameEl) {
+    const tName = (currentTournamentId && tournamentsList[currentTournamentId]) ? tournamentsList[currentTournamentId].name : '';
+    nameEl.textContent = tName || 'diesem Turnier';
+  }
 }
 // Tritt dem aktuellen Turnier als vollwertiger Spieler bei (unter der globalen Identität)
 function joinCurrentTournamentAsPlayer() {
@@ -1872,6 +1871,18 @@ function renderProfile() {
       <textarea id="profile-bio-input" rows="3" placeholder="Erzähl was über dich..." style="width:100%; box-sizing:border-box; padding:8px; margin-bottom:8px;">${escapeHtml(gp.bio || '')}</textarea>
       <button class="btn-primary btn-sm" onclick="saveProfileBio()" style="margin-bottom:18px;">Speichern</button>
     `;
+    // Passwort-Verwaltung lebt jetzt im eigenen Profil statt im Header (der Header-Aktions-
+    // block ist auf die 4 festen Navigations-Aktionen begrenzt, siehe user-action-grid).
+    html += `<h4 style="margin-bottom:6px;">🔑 Passwort</h4>`;
+    if (isGod()) {
+      html += `<p style="font-size:0.85em; opacity:0.7; margin-bottom:18px;">Als Admin brauchst du kein Konto-Passwort.</p>`;
+    } else if (gp.password) {
+      html += `<p style="font-size:0.85em; opacity:0.8; margin-bottom:18px;">🔒 Passwort ist gesetzt - schützt deinen Namen auf allen Turnieren.</p>`;
+    } else if (gp.pendingPassword) {
+      html += `<p style="font-size:0.85em; color:var(--fal-yellow); margin-bottom:18px;">⏳ Passwort-Wunsch wartet auf Bestätigung durch den Admin.</p>`;
+    } else {
+      html += `<p style="font-size:0.85em; opacity:0.8; margin-bottom:8px;">Noch kein Passwort gesetzt - jeder könnte sonst unter deinem Namen mitspielen.</p><button class="btn-secondary btn-sm" onclick="requestOwnPassword()" style="margin-bottom:18px;">🔑 Passwort vorschlagen</button>`;
+    }
   } else {
     html += `<p style="text-align:center; white-space:pre-wrap; opacity:${gp.bio ? '1' : '0.6'}; margin-bottom:18px;">${gp.bio ? escapeHtml(gp.bio) : 'Noch keine Beschreibung.'}</p>`;
   }

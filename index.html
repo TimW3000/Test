@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>FAL FIFA Turnier v3</title>
+  <title>Tims FAL Turniere</title>
   <link rel="stylesheet" href="style.css">
 
   <!-- Firebase App & Database SDKs -->
@@ -17,7 +17,7 @@
   <div id="global-identity-modal" class="modal-overlay" style="display: none;">
     <div class="modal-content">
       <img src="https://spvgg-fal.de/templates/yootheme/cache/dc/Logo-2017-web-dc30d58a.webp" alt="SpVgg FAL Wappen" class="modal-logo modal-logo-big">
-      <h3>Willkommen beim FAL FIFA Turnier!</h3>
+      <h3>🏆 Willkommen bei Tims FAL Turnieren!</h3>
       <p style="margin: -6px 0 10px 0; font-size:0.85em; opacity:0.8;">Schön, dass du da bist. Melde dich an, um loszulegen - deine Anmeldung gilt für alle Turniere auf dieser Website.</p>
 
       <!-- 1. Hauptoptionen -->
@@ -165,7 +165,7 @@
   <div id="tournament-join-modal" class="modal-overlay" style="display: none;">
     <div class="modal-content">
       <img src="https://spvgg-fal.de/templates/yootheme/cache/dc/Logo-2017-web-dc30d58a.webp" alt="SpVgg FAL Wappen" class="modal-logo modal-logo-big">
-      <h3>Willkommen zum FAL FIFA Turnier</h3>
+      <h3>Willkommen zu <span id="join-modal-tournament-name">diesem Turnier</span></h3>
       <p style="margin: -6px 0 10px 0;"><a href="#" style="color:var(--fal-yellow); font-size:0.85em; text-decoration:none;" onclick="goToLandingPage(); return false;">‹ Anderes Turnier wählen</a></p>
 
       <!-- 1. Beitreten oder nur zuschauen -->
@@ -220,8 +220,7 @@
         <div id="header-brand">
           <img src="https://spvgg-fal.de/templates/yootheme/cache/dc/Logo-2017-web-dc30d58a.webp" id="header-logo" alt="SpVgg FAL Logo">
           <div>
-            <h1 id="app-title">FAL FIFA Turnier</h1>
-            <div id="header-tournament-name"></div>
+            <h1 id="app-title">Tims FAL Turniere</h1>
           </div>
         </div>
         <!-- Admin-Panel-Zugang: IMMER sichtbar (auch innerhalb eines laufenden Turniers), nicht
@@ -235,14 +234,20 @@
           <span></span><span></span>
         </button>
       </div>
-      <!-- 2 Spalten x 2 Zeilen, klappt per header-toggle-btn auf/zu (siehe .expanded in style.css) -->
+      <!-- Klappt per header-toggle-btn auf/zu (siehe .expanded in style.css). Statuszeile (wer
+           bin ich) oben, darunter ein FESTES 2x2-Aktionsraster - jede Zelle bleibt immer an
+           ihrem Platz und wird bei Nichtzutreffen nur LEER statt entfernt (siehe renderUserBadge/
+           requestOwnPassword/leaveTournament), damit das Raster nie durch ein-/ausblendende
+           Zellen aus der Form gerät. -->
       <div id="user-badge-container">
-        <div class="header-cell"><span id="user-badge"></span><span id="connection-status-badge" class="connection-badge"></span></div>
-        <div class="header-cell" id="user-password-action"></div>
-        <div class="header-cell"><button class="btn-secondary btn-sm" id="btn-switch-user" onclick="switchUser()">Wechseln</button></div>
-        <div class="header-cell"><button class="btn-secondary btn-sm" onclick="goToLandingPage()">🔄 Turnier wechseln</button></div>
-        <!-- Nur sichtbar, wenn die eigene Identität aktuell Spieler in DIESEM Turnier ist (siehe renderUserBadge) -->
-        <div class="header-cell" id="leave-tournament-cell" style="display:none;"><button class="btn-danger btn-sm" onclick="leaveTournament()">🚪 Turnier verlassen</button></div>
+        <div id="user-status-row"><span id="user-badge"></span><span id="connection-status-badge" class="connection-badge"></span></div>
+        <div id="user-action-grid">
+          <div class="header-cell"><button class="btn-secondary btn-sm" onclick="openProfile()">👤 Profil</button></div>
+          <div class="header-cell"><button class="btn-secondary btn-sm" id="btn-switch-user" onclick="switchUser()">Wechseln</button></div>
+          <div class="header-cell"><button class="btn-secondary btn-sm" onclick="goToLandingPage()">🔄 Turnier wechseln</button></div>
+          <!-- Bleibt IMMER eine Grid-Zelle, ist nur leer statt entfernt, wenn nicht anwendbar -->
+          <div class="header-cell" id="leave-tournament-cell"></div>
+        </div>
       </div>
     </header>
 
