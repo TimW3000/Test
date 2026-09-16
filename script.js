@@ -148,6 +148,8 @@ window.closeHelp = closeHelp;
 window.enableNotifications = enableNotifications;
 window.disableNotifications = disableNotifications;
 window.shareWrappedImage = shareWrappedImage;
+window.enableSoundEffects = enableSoundEffects;
+window.disableSoundEffects = disableSoundEffects;
 // ============================================================================
 // 1. FIREBASE-KONFIGURATION — Verbindungsdaten zur Online-Datenbank
 // ============================================================================
@@ -2009,6 +2011,14 @@ function renderProfile() {
     } else {
       html += `<p style="font-size:0.85em; opacity:0.8; margin-bottom:8px;">Bekomme auf diesem Gerät Bescheid, wenn du eingeladen wirst, jemand dir schreibt, ein Ergebnis final wird oder dein nächstes Spiel gleich beginnt.</p><button class="btn-secondary btn-sm" onclick="enableNotifications()" style="margin-bottom:18px;">🔔 Aktivieren</button>`;
     }
+    // Sound-Effekte sind unabhängig von den Benachrichtigungen (keine Browser-Berechtigung
+    // nötig) - laufen rein während die Seite offen ist, z.B. beim Glücksrad oder Live-Darts.
+    html += `<h4 style="margin-bottom:6px;">🔊 Sound-Effekte</h4>`;
+    if (soundEffectsEnabled()) {
+      html += `<p style="font-size:0.85em; opacity:0.8; margin-bottom:8px;">✅ An - Trommelwirbel &amp; Ding beim Glücksrad, Checkout/Bust bei Live-Darts, Fanfare beim Turniersieg.</p><button class="btn-secondary btn-sm" onclick="disableSoundEffects()" style="margin-bottom:18px;">🔇 Ausschalten</button>`;
+    } else {
+      html += `<p style="font-size:0.85em; opacity:0.8; margin-bottom:8px;">Aus - keine Sounds beim Glücksrad, Live-Darts oder Turniersieg auf diesem Gerät.</p><button class="btn-secondary btn-sm" onclick="enableSoundEffects()" style="margin-bottom:18px;">🔊 Einschalten</button>`;
+    }
   } else {
     html += `<p style="text-align:center; white-space:pre-wrap; opacity:${gp.bio ? '1' : '0.6'}; margin-bottom:18px;">${gp.bio ? escapeHtml(gp.bio) : 'Noch keine Beschreibung.'}</p>`;
   }
@@ -3003,6 +3013,7 @@ function renderDraftStep() {
 }
 
 // Startet die requestAnimationFrame-Schleife, die das Glücksrad dreht
+let lastWheelDingStartTime = { team: null, group: null };
 function startWheelAnimationLoop() {
   if (animFrameId) cancelAnimationFrame(animFrameId);
   function animate() {
@@ -3013,8 +3024,13 @@ function startWheelAnimationLoop() {
       const progress = Math.min(elapsed / (draftState.duration || 4000), 1);
       const easeOut = 1 - Math.pow(1 - progress, 3);
       currentAngle = (draftState.targetAngle || 0) * easeOut;
+      maybePlayWheelTick('team', currentAngle);
       if (progress >= 1) {
         drawWheelCanvas(draftState.targetAngle);
+        if (lastWheelDingStartTime.team !== draftState.startTime) {
+          lastWheelDingStartTime.team = draftState.startTime;
+          playSound('ding');
+        }
         return;
       }
     } else {
@@ -3208,6 +3224,7 @@ function spinWheel() {
   const targetSegmentCenter = (targetIndex + 0.5) * sliceAngle;
   const targetAngleAtTop = (1.5 * Math.PI) - targetSegmentCenter;
   const totalRotation = (2 * Math.PI * 5) + targetAngleAtTop;
+  wheelTickTracker.team = -1; // neue Drehung -> Trommelwirbel-Zähler zurücksetzen
   draftState.spinning = true;
   draftState.startTime = Date.now();
   draftState.targetAngle = totalRotation;
@@ -3733,6 +3750,7 @@ function spinGroupWheel() {
   const targetSegmentCenter = (targetIndex + 0.5) * sliceAngle;
   const targetAngleAtTop = (1.5 * Math.PI) - targetSegmentCenter;
   const totalRotation = (2 * Math.PI * 5) + targetAngleAtTop;
+  wheelTickTracker.group = -1; // neue Drehung -> Trommelwirbel-Zähler zurücksetzen
   groupDraftState.spinning = true;
   groupDraftState.startTime = Date.now();
   groupDraftState.targetAngle = totalRotation;
@@ -3877,8 +3895,13 @@ function startGroupWheelAnimationLoop() {
       const progress = Math.min(elapsed / (groupDraftState.duration || 4000), 1);
       const easeOut = 1 - Math.pow(1 - progress, 3);
       currentAngle = (groupDraftState.targetAngle || 0) * easeOut;
+      maybePlayWheelTick('group', currentAngle);
       if (progress >= 1) {
         drawGroupWheelCanvas(groupDraftState.targetAngle);
+        if (lastWheelDingStartTime.group !== groupDraftState.startTime) {
+          lastWheelDingStartTime.group = groupDraftState.startTime;
+          playSound('ding');
+        }
         return;
       }
     } else {
@@ -4449,7 +4472,14 @@ function throwDart(segment) {
   if (ds.finished) return;
   // Bull kennt kein Triple - dann fällt die Auswahl automatisch auf "Single" (25) zurück.
   const mult = (segment === 'bull' && dartsSelectedMultiplier === 'triple') ? 'single' : dartsSelectedMultiplier;
-  recordDartsThrow(ds, segment, mult);
+  const result = recordDartsThrow(ds, segment, mult);
+  if (result.bust) {
+    playSound('bust');
+  } else if (result.checkout) {
+    playSound('checkout');
+  } else if (segment === 20 && mult === 'triple') {
+    playSound('triple20');
+  }
   if (ds.finished) finalizeDartsMatch(match);
   saveData();
   renderAll();
@@ -4684,6 +4714,7 @@ function confirmMatchResult(matchId, isKO) {
       evaluateTips(winningTeamId);
       const winnerTeam = teams.find(t => t.id === winningTeamId);
       if (winnerTeam) {
+        playSound('victory');
         setTimeout(() => {
           const winnerNames = tournamentMode === 'solo' ? winnerTeam.p1 : `${winnerTeam.p1} & ${winnerTeam.p2}`;
           alert(`🎉 🏆 DIE SIEGER DES FAL FIFA TURNIERS SIND: 🏆 🎉\n\n🥇 ${winnerNames} (${winnerTeam.name} - ${winnerTeam.club || ''}) 🥇\n\nHerzlichen Glückwunsch! 👏🥳`);
@@ -6111,5 +6142,108 @@ async function shareWrappedImage() {
   } catch (e) {
     if (btn) { btn.disabled = false; btn.textContent = '📸 Als Bild teilen'; }
     alert('Bild konnte nicht erstellt werden: ' + e.message);
+  }
+}
+// ============================================================================
+// 15. SOUND-EFFEKTE — kleine, selbst per Web Audio API erzeugte Sounds (keine externen
+//     Audiodateien nötig, also auch kein CORS-/Hosting-Risiko wie bei den Vereinswappen-
+//     Bildern) für Live-Momente: Trommelwirbel + Ding beim Glücksrad, Checkout/Bust/
+//     Triple-20 bei Live-Darts, Fanfare beim Turniersieg. Rein clientseitig/dekorativ -
+//     läuft unabhängig von den Browser-Benachrichtigungen (kein Berechtigungs-Dialog nötig).
+// ============================================================================
+let sharedAudioContext = null;
+// Erzeugt den AudioContext erst bei Bedarf (typischerweise innerhalb eines Klick-Handlers,
+// z.B. "Rad drehen" oder ein Darts-Wurf) - Browser blockieren Audio sonst ohne Nutzer-Geste.
+function getAudioContext() {
+  const Ctx = window.AudioContext || window.webkitAudioContext;
+  if (!Ctx) return null;
+  if (!sharedAudioContext) sharedAudioContext = new Ctx();
+  if (sharedAudioContext.state === 'suspended') sharedAudioContext.resume().catch(() => {});
+  return sharedAudioContext;
+}
+// Per Gerät gespeichert (wie die Benachrichtigungs-Erlaubnis) - standardmäßig AN, da hier
+// (anders als bei Notifications) keine Browser-Berechtigung nötig ist, es also keinen Grund
+// gibt, es Leuten zu verstecken, die einfach nur mitspielen wollen.
+function soundEffectsEnabled() {
+  return localStorage.getItem('fifa_sound_effects_enabled') !== '0';
+}
+function enableSoundEffects() {
+  localStorage.setItem('fifa_sound_effects_enabled', '1');
+  renderProfile();
+  playSound('ding');
+}
+function disableSoundEffects() {
+  localStorage.setItem('fifa_sound_effects_enabled', '0');
+  renderProfile();
+}
+// Einzelner Ton (Sinus/Dreieck/Sägezahn/Rechteck) mit kurzem Attack + exponentiellem Ausklang
+function playTone(ctx, freq, startTime, duration, type, gainPeak) {
+  const osc = ctx.createOscillator();
+  const gain = ctx.createGain();
+  osc.type = type || 'sine';
+  osc.frequency.setValueAtTime(freq, startTime);
+  gain.gain.setValueAtTime(0.0001, startTime);
+  gain.gain.linearRampToValueAtTime(gainPeak || 0.2, startTime + 0.01);
+  gain.gain.exponentialRampToValueAtTime(0.0001, startTime + duration);
+  osc.connect(gain).connect(ctx.destination);
+  osc.start(startTime);
+  osc.stop(startTime + duration + 0.05);
+}
+// Kurzer Rausch-Klick (für den Trommelwirbel-Effekt beim Glücksrad, siehe maybePlayWheelTick)
+function playNoiseBurst(ctx, startTime, duration, gainPeak) {
+  const bufferSize = Math.max(1, Math.floor(ctx.sampleRate * duration));
+  const buffer = ctx.createBuffer(1, bufferSize, ctx.sampleRate);
+  const data = buffer.getChannelData(0);
+  for (let i = 0; i < bufferSize; i++) data[i] = (Math.random() * 2 - 1) * (1 - i / bufferSize);
+  const src = ctx.createBufferSource();
+  src.buffer = buffer;
+  const gain = ctx.createGain();
+  gain.gain.setValueAtTime(gainPeak || 0.15, startTime);
+  src.connect(gain).connect(ctx.destination);
+  src.start(startTime);
+}
+// Zentrale Abspiel-Funktion für alle vordefinierten Effekte
+function playSound(effect) {
+  if (!soundEffectsEnabled()) return;
+  const ctx = getAudioContext();
+  if (!ctx) return;
+  const now = ctx.currentTime;
+  switch (effect) {
+    case 'ding': // Glücksrad ist stehengeblieben
+      playTone(ctx, 1400, now, 0.25, 'sine', 0.25);
+      playTone(ctx, 2100, now + 0.05, 0.2, 'sine', 0.15);
+      break;
+    case 'drumroll-tick': // ein einzelner Trommelwirbel-Schlag, siehe maybePlayWheelTick
+      playNoiseBurst(ctx, now, 0.06, 0.12);
+      break;
+    case 'checkout': // Darts: Leg/Match gewonnen
+      [523, 659, 784, 1047].forEach((f, i) => playTone(ctx, f, now + i * 0.09, 0.25, 'triangle', 0.2));
+      break;
+    case 'bust': // Darts: überworfen
+      playTone(ctx, 180, now, 0.35, 'sawtooth', 0.18);
+      playTone(ctx, 140, now + 0.15, 0.3, 'sawtooth', 0.15);
+      break;
+    case 'triple20': // Darts: Dreifache 20 getroffen (höchstmöglicher Einzelwurf)
+      playTone(ctx, 900, now, 0.12, 'square', 0.15);
+      playTone(ctx, 1200, now + 0.08, 0.15, 'square', 0.15);
+      break;
+    case 'victory': // Turniersieger steht fest
+      [523, 659, 784, 1047, 1319].forEach((f, i) => playTone(ctx, f, now + i * 0.12, 0.4, 'triangle', 0.22));
+      playTone(ctx, 1568, now + 0.6, 0.6, 'triangle', 0.25);
+      break;
+  }
+}
+// Spielt während des Glücksrad-Drehens einen "Trommelwirbel"-Klick pro überquerter
+// Winkel-Schwelle - da die Drehung per Ease-Out abbremst, werden die Klicks dadurch ganz
+// von selbst zum Ende hin seltener, genau wie bei einem echten mechanischen Glücksrad.
+// trackerKey unterscheidet Team-Rad ("team") und Gruppen-Rad ("group"), da beide unabhängig
+// voneinander laufen können.
+const WHEEL_TICK_ANGLE = Math.PI / 10;
+const wheelTickTracker = { team: -1, group: -1 };
+function maybePlayWheelTick(trackerKey, currentAngle) {
+  const bucket = Math.floor(currentAngle / WHEEL_TICK_ANGLE);
+  if (bucket > wheelTickTracker[trackerKey]) {
+    wheelTickTracker[trackerKey] = bucket;
+    playSound('drumroll-tick');
   }
 }
