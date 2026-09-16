@@ -286,6 +286,7 @@ let godOversightRef = null;
 let tournamentEntryHandled = false; // verhindert, dass handleTournamentEntry() bei jedem Live-Update erneut den Beitreten/Zuschauen-Dialog zeigt
 let myPlayerWasPresent = false; // war man beim letzten Laden Spieler in DIESEM Turnier? (erkennt ein "aus dem Turnier entfernt"-Event, siehe attachTournamentListener)
 let lastNotifiedGlobalPlayerSnapshot = null; // letzter bekannter Stand der eigenen Freundschaftsanfragen/Einladungen/Passwort-Status, siehe checkForNotifiableGlobalPlayerChanges()
+let notifiedUpcomingMatchIds = new Set(); // welche eigenen Spiele die "gleich geht's los"-Benachrichtigung schon bekommen haben, siehe checkForUpcomingOwnMatchNotification()
 let isFirebaseConnected = null; // null = noch unbekannt, true/false = Verbindungsstatus (siehe .info/connected weiter unten)
 let userBalances = {};  // { "Name": 100 }
 let bets = [];          // { matchId, isKO, playerName, chosenTeamId, amount }
@@ -1066,6 +1067,10 @@ function resetLocalStateToDefaults() {
 // zwei Turniere gleichzeitig mitgehört werden (siehe enterTournament/goToLandingPage).
 function attachTournamentListener() {
   if (tournamentRef) { tournamentRef.off('value'); tournamentRef = null; }
+  // Match-IDs sind nur INNERHALB eines Turniers eindeutig - beim Wechsel/Betreten eines
+  // (anderen) Turniers zurücksetzen, sonst könnte eine zufällig gleiche ID dort fälschlich
+  // als "schon benachrichtigt" gelten (siehe checkForUpcomingOwnMatchNotification).
+  notifiedUpcomingMatchIds = new Set();
   if (!currentTournamentId) return;
   tournamentRef = db.ref('tournaments/' + currentTournamentId);
   tournamentRef.on('value', (snapshot) => {
@@ -2000,9 +2005,9 @@ function renderProfile() {
     if (!notificationsSupported()) {
       html += `<p style="font-size:0.85em; opacity:0.7; margin-bottom:18px;">Dein Browser unterstützt das leider nicht.</p>`;
     } else if (notificationsEnabled()) {
-      html += `<p style="font-size:0.85em; opacity:0.8; margin-bottom:8px;">✅ Aktiviert auf diesem Gerät - du bekommst Bescheid bei Einladungen, Freundschaftsanfragen, bestätigten Ergebnissen &amp; Live-Auslosungen.</p><button class="btn-secondary btn-sm" onclick="disableNotifications()" style="margin-bottom:18px;">🔕 Deaktivieren</button>`;
+      html += `<p style="font-size:0.85em; opacity:0.8; margin-bottom:8px;">✅ Aktiviert auf diesem Gerät - du bekommst Bescheid bei Einladungen, Freundschaftsanfragen, bestätigten Ergebnissen, Live-Auslosungen${isGod() ? ', neuen Passwort-Wünschen' : ''} und 5 Minuten vor deinem nächsten eigenen Spiel.</p><button class="btn-secondary btn-sm" onclick="disableNotifications()" style="margin-bottom:18px;">🔕 Deaktivieren</button>`;
     } else {
-      html += `<p style="font-size:0.85em; opacity:0.8; margin-bottom:8px;">Bekomme auf diesem Gerät Bescheid, wenn du eingeladen wirst, jemand dir schreibt oder ein Ergebnis final wird.</p><button class="btn-secondary btn-sm" onclick="enableNotifications()" style="margin-bottom:18px;">🔔 Aktivieren</button>`;
+      html += `<p style="font-size:0.85em; opacity:0.8; margin-bottom:8px;">Bekomme auf diesem Gerät Bescheid, wenn du eingeladen wirst, jemand dir schreibt, ein Ergebnis final wird oder dein nächstes Spiel gleich beginnt.</p><button class="btn-secondary btn-sm" onclick="enableNotifications()" style="margin-bottom:18px;">🔔 Aktivieren</button>`;
     }
   } else {
     html += `<p style="text-align:center; white-space:pre-wrap; opacity:${gp.bio ? '1' : '0.6'}; margin-bottom:18px;">${gp.bio ? escapeHtml(gp.bio) : 'Noch keine Beschreibung.'}</p>`;
@@ -3579,6 +3584,31 @@ function validateGroupCount(n, poolSize, itemLabel, minPerGroup) {
   if (poolSize < n * minPerGroup) return `Für ${n} Gruppen benötigst du mindestens ${n * minPerGroup} ${itemLabel} (aktuell: ${poolSize}), damit jede Gruppe mindestens ${minPerGroup} bekommt.`;
   return null;
 }
+// Teilt alle Paarungen einer Gruppe in "Runden" ein (Kreis-Methode/Round-Robin), statt sie
+// naiv team-für-team durchzugehen. Naiv würde Team 1 erst gegen alle anderen spielen, bevor
+// der Rest überhaupt anfängt (z.B. bei A,B,C,D: A-B, A-C, A-D, B-C, B-D, C-D - A hat dann
+// schon 3 Spiele, während B/C/D erst 1 haben). Round-Robin verteilt stattdessen jedes Team
+// gleichmäßig: pro Runde spielt jedes Team höchstens einmal (bei ungerader Team-Anzahl mit
+// einer Freilos-Runde pro Team). Ergebnis: Runde 1 deckt schon alle Teams einmal ab, dann
+// Runde 2 usw. - kein Team wartet mehrere Spiele lang auf sein erstes.
+function generateRoundRobinRounds(teamIds) {
+  const list = [...teamIds];
+  if (list.length % 2 !== 0) list.push(null); // ungerade Anzahl -> ein Freilos pro Runde
+  const n = list.length;
+  const rounds = [];
+  for (let r = 0; r < n - 1; r++) {
+    const roundPairs = [];
+    for (let i = 0; i < n / 2; i++) {
+      const a = list[i];
+      const b = list[n - 1 - i];
+      if (a !== null && b !== null) roundPairs.push([a, b]);
+    }
+    rounds.push(roundPairs);
+    // Rotation der Kreis-Methode: erstes Team bleibt fix, der Rest rotiert um eine Position.
+    list.splice(1, 0, list.pop());
+  }
+  return rounds;
+}
 // Baut aus den fertig befüllten "groups" (letter + teams[]) den kompletten Gruppen-
 // Spielplan (Hin- und Rückspiele aller Team-Paare je Gruppe, über alle Gruppen verzahnt),
 // setzt die KO-Phase zurück und speichert. Gemeinsam genutzt von quickDrawGroups() und
@@ -3586,12 +3616,11 @@ function validateGroupCount(n, poolSize, itemLabel, minPerGroup) {
 function buildGroupScheduleAndSave() {
   let rawGroupMatches = [];
   groups.forEach(group => {
-    const gTeams = group.teams;
-    for (let i = 0; i < gTeams.length; i++) {
-      for (let j = i + 1; j < gTeams.length; j++) {
-        rawGroupMatches.push(makeMatch(null, group.letter, null, gTeams[i], gTeams[j]));
-      }
-    }
+    generateRoundRobinRounds(group.teams).forEach(roundPairs => {
+      roundPairs.forEach(([t1, t2]) => {
+        rawGroupMatches.push(makeMatch(null, group.letter, null, t1, t2));
+      });
+    });
   });
   let matchesByGroup = {};
   groups.forEach(g => {
@@ -5838,13 +5867,17 @@ function checkForNotifiableTournamentChanges(prev) {
 // Entscheidung (bestätigt/abgelehnt) über den eigenen Passwort-Wunsch.
 function checkForNotifiableGlobalPlayerChanges() {
   if (!myPlayerName) { lastNotifiedGlobalPlayerSnapshot = null; return; }
+  // Für den God zusätzlich website-weit alle offenen Passwort-Wünsche im Blick behalten (nicht
+  // nur den eigenen) - er muss die ja im God-Panel bestätigen/ablehnen, siehe checkPendingKeys unten.
+  const pendingKeysNow = isGod() ? Object.keys(globalPlayers).filter(k => globalPlayers[k] && globalPlayers[k].pendingPassword) : [];
   const gp = getGlobalPlayer(myPlayerName);
-  if (!gp) return;
+  if (!gp) { lastNotifiedGlobalPlayerSnapshot = { pendingKeys: pendingKeysNow }; return; }
   const snapshot = {
     friendRequestKeys: Object.keys(gp.friendRequests || {}),
     inviteKeys: Object.keys(gp.invites || {}),
     pendingPassword: !!gp.pendingPassword,
-    passwordVersion: gp.passwordVersion || 0
+    passwordVersion: gp.passwordVersion || 0,
+    pendingKeys: pendingKeysNow
   };
   const prev = lastNotifiedGlobalPlayerSnapshot;
   if (prev) {
@@ -5863,9 +5896,46 @@ function checkForNotifiableGlobalPlayerChanges() {
         notifyUser('❌ Passwort abgelehnt', { body: 'Dein vorgeschlagener Passwort-Wunsch wurde abgelehnt.' });
       }
     }
+    if (isGod()) {
+      snapshot.pendingKeys.filter(k => !(prev.pendingKeys || []).includes(k)).forEach((k) => {
+        const requester = globalPlayers[k];
+        notifyUser('👑 Neuer Passwort-Wunsch wartet', { body: `${(requester && requester.name) || k} hat ein Passwort vorgeschlagen - im God-Panel bestätigen.`, tag: 'god-pending-password-' + k });
+      });
+    }
   }
   lastNotifiedGlobalPlayerSnapshot = snapshot;
 }
+// Läuft alle 30s (siehe setInterval am Ende dieses Abschnitts): benachrichtigt einmalig, sobald
+// ein eigenes noch nicht gestartetes Spiel in den nächsten 5 Minuten angesetzt ist. Bewusst ein
+// wiederkehrender Check statt eines einzelnen setTimeout pro Spiel, weil sich scheduledTime
+// jederzeit verschieben kann (Admin ändert den Minuten-Abstand, ein Spiel startet früher/später
+// als geplant, siehe rescheduleWholeArray) - ein Timer-Check holt solche Änderungen automatisch
+// nach, ein einmalig gesetzter Timeout würde das verpassen.
+function checkForUpcomingOwnMatchNotification() {
+  if (!notificationsEnabled() || !myPlayerName) return;
+  const myTeam = getMyTeam();
+  if (!myTeam) return;
+  const now = Date.now();
+  const fiveMinutes = 5 * 60 * 1000;
+  const checkMatch = (m, isKO) => {
+    if (m.started || m.played || !m.scheduledTime) return;
+    if (m.t1Id !== myTeam.id && m.t2Id !== myTeam.id) return;
+    const key = matchNotifyKey(m, isKO);
+    if (notifiedUpcomingMatchIds.has(key)) return;
+    const diff = m.scheduledTime - now;
+    if (diff <= 0 || diff > fiveMinutes) return;
+    notifiedUpcomingMatchIds.add(key);
+    const opponentId = m.t1Id === myTeam.id ? m.t2Id : m.t1Id;
+    const opponent = teams.find(t => t.id === opponentId);
+    notifyUser('⏰ Gleich geht\'s los!', {
+      body: `Dein Spiel gegen ${(opponent && opponent.name) || '?'} beginnt in ca. 5 Minuten.`,
+      tag: 'upcoming-match-' + key
+    });
+  };
+  groupMatches.forEach(m => checkMatch(m, false));
+  koMatches.forEach(m => checkMatch(m, true));
+}
+setInterval(checkForUpcomingOwnMatchNotification, 30000);
 // ============================================================================
 // 14. WRAPPED ALS TEILBARES BILD — zeichnet die Wrapped-Karte manuell auf ein
 //     <canvas> (statt z.B. html2canvas nachzuladen - so bleibt volle Kontrolle
