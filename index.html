@@ -115,6 +115,17 @@
     </div>
   </div>
 
+  <!-- Datenbank-Explorer: God-exklusiver Überblick über die Firebase-Datenbank (geschätzte
+       Größe pro Bereich, Online-Status) + rohe, interaktive Baum-Ansicht zum Bearbeiten/Löschen
+       einzelner Werte - nur über den Verbindungsstatus-Badge im Header erreichbar, siehe
+       openDbExplorer()/renderDbExplorer() in script.js. -->
+  <div id="db-explorer-modal" class="modal-overlay" style="display: none;">
+    <div class="modal-content" id="db-explorer-modal-content" style="max-width: 640px; text-align: left;">
+      <p style="margin: -6px 0 10px 0; text-align:center;"><a href="#" style="color:var(--fal-yellow); font-size:0.85em; text-decoration:none;" onclick="closeDbExplorer(); return false;">‹ Schließen</a></p>
+      <div id="db-explorer-container"></div>
+    </div>
+  </div>
+
   <!-- Gag-Effekt-Vollbild-Overlay: zeigt Bild/Video/vorgefertigte Animation eines ausgelösten
        Gag-Effekts ÜBER ALLEM (auch über dem Auslosungs-Modal) - für ALLE Zuschauer:innen
        gleichzeitig, siehe playGagEffect() in script.js. Sound-Effekte brauchen dieses Overlay
@@ -507,7 +518,7 @@
            requestOwnPassword/leaveTournament), damit das Raster nie durch ein-/ausblendende
            Zellen aus der Form gerät. -->
       <div id="user-badge-container">
-        <div id="user-status-row"><span id="user-badge"></span><span id="connection-status-badge" class="connection-badge"></span></div>
+        <div id="user-status-row"><span id="user-badge"></span><span id="connection-status-badge" class="connection-badge" style="cursor:pointer;" title="📊 Datenbank-Explorer öffnen" onclick="openDbExplorer()"></span></div>
         <div id="user-action-grid">
           <div class="header-cell"><button class="btn-secondary btn-sm" onclick="openProfile()">👤 Profil</button></div>
           <div class="header-cell"><button class="btn-secondary btn-sm" id="btn-switch-user" onclick="switchUser()">Wechseln</button></div>

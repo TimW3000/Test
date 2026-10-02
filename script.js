@@ -163,6 +163,14 @@ window.saveNewGagEffect = saveNewGagEffect;
 window.deleteCustomEffect = deleteCustomEffect;
 window.toggleCustomEffectEnabled = toggleCustomEffectEnabled;
 window.testPlayGagEffect = testPlayGagEffect;
+window.openDbExplorer = openDbExplorer;
+window.closeDbExplorer = closeDbExplorer;
+window.refreshDbExplorer = refreshDbExplorer;
+window.toggleDbExplorerPath = toggleDbExplorerPath;
+window.startDbExplorerEdit = startDbExplorerEdit;
+window.cancelDbExplorerEdit = cancelDbExplorerEdit;
+window.saveDbExplorerEdit = saveDbExplorerEdit;
+window.deleteDbExplorerNode = deleteDbExplorerNode;
 // ============================================================================
 // 1. FIREBASE-KONFIGURATION — Verbindungsdaten zur Online-Datenbank
 // ============================================================================
@@ -297,9 +305,11 @@ let globalPlayers = {}; // { nameLowerCase: { name, createdAt, password, passwor
 let profileViewKey = null; // welcher Spieler wird gerade im Profil-Screen angezeigt (null = das eigene Profil), siehe openProfile()
 let globalSettings = { lockNewIdentities: false, lockNewTournaments: false }; // website-weite God-Sperren
 // Website-weite, God-verwaltete "Gag-Effekte": { pushKey: { name, triggerType, targetPlayerKey,
-// effectType ('sound'|'image'|'video'|'preset'), mediaData (data:-URL) oder presetKey, durationMs,
-// enabled, createdAt } } - läuft komplett unabhängig vom aktuellen Turnier (Running Gags gelten
+// effectType ('sound'|'image'|'video'|'preset'), presetKey, durationMs, mediaBytes, enabled,
+// createdAt } } - läuft komplett unabhängig vom aktuellen Turnier (Running Gags gelten
 // identitätsweit, nicht nur in einem Turnier), siehe attachCustomEffectsListener/openGagManager.
+// WICHTIG: das eigentliche (ggf. große) Medium steckt hier BEWUSST NICHT drin, sondern separat
+// in customEffectsMedia - siehe die ausführliche Begründung bei saveNewGagEffect().
 let customEffects = {};
 let godOversightData = {}; // { tournamentId: { name, players: [...] } } - nur für God geladen, siehe attachGodOversightListener
 let godOversightRef = null;
@@ -6619,6 +6629,10 @@ const GAG_MEDIA_MAX_BYTES = 15 * 1024 * 1024; // 15 MB
 // wurde - verhindert Mehrfach-Auslösung beim wiederholten Neu-Rendern derselben Ziehung. Wird
 // komplett zurückgesetzt, sobald KEIN Glücksrad mehr läuft (siehe handleLiveDraftUI).
 let lastTriggeredDrawKey = { team: null, group: null };
+// Zwischenspeicher für bereits abgerufene Gag-Medien (siehe playGagEffectById) - verhindert
+// nur unnötige WIEDERHOLTE Downloads INNERHALB derselben Seiten-Sitzung (z.B. wenn der God im
+// Gag-Manager mehrfach "Testen" klickt), persistiert nicht über einen Reload hinweg.
+let gagMediaCache = {};
 // Sucht alle aktiven Gag-Effekte für eine gerade gezogene Person und spielt sie ab. name ist
 // der rohe gezogene Spielername (wie im Glücksrad angezeigt) - wird für den Abgleich auf den
 // globalPlayers-Schlüssel normalisiert (Groß-/Kleinschreibung, Leerzeichen).
@@ -6630,13 +6644,30 @@ function triggerPlayerDrawnEffects(name) {
     if (!effect || effect.enabled === false) return;
     if (effect.triggerType !== 'player_drawn') return;
     if ((effect.targetPlayerKey || '') !== key) return;
-    playGagEffect(effect);
+    playGagEffectById(id, effect);
   });
 }
-// Spielt einen einzelnen Gag-Effekt ab: Sound läuft einfach nebenbei weiter (kein Overlay
-// nötig, blockiert nichts), Bild/Video/Preset bekommen ein Vollbild-Overlay ÜBER allem (auch
-// über dem Auslosungs-Modal) mit Skip-Knopf, damit ein hängendes/zu langes Video nie die ganze
-// Live-Show blockiert.
+// Lädt das (ggf. schwere) Medium eines Effekts ERST JETZT, im Moment des tatsächlichen
+// Auslösens/Testens nach - NICHT vorab für alle Effekte auf einmal (siehe customEffects/
+// customEffectsMedia-Aufteilung oben). So kostet das Herumliegen vieler/großer Gag-Videos in
+// der Datenbank nur dann wirklich Downloads, wenn ein Effekt AUCH WIRKLICH abgespielt wird -
+// und das auch nur bei den Geräten, die gerade zuschauen, statt bei JEDEM Seitenaufruf aller.
+function playGagEffectById(id, effect) {
+  if (!effect) return;
+  if (effect.effectType === 'preset') { playGagEffect(effect); return; }
+  if (gagMediaCache[id]) { playGagEffect(Object.assign({}, effect, { mediaData: gagMediaCache[id] })); return; }
+  db.ref('customEffectsMedia/' + id).once('value').then((snap) => {
+    const media = snap.val();
+    const mediaData = media && media.mediaData;
+    if (mediaData) gagMediaCache[id] = mediaData;
+    playGagEffect(Object.assign({}, effect, { mediaData }));
+  }).catch((error) => console.error('Gag-Effekt-Medium konnte nicht geladen werden:', error));
+}
+// Spielt einen einzelnen Gag-Effekt ab (mediaData muss hier schon vorliegen, siehe
+// playGagEffectById): Sound läuft einfach nebenbei weiter (kein Overlay nötig, blockiert
+// nichts), Bild/Video/Preset bekommen ein Vollbild-Overlay ÜBER allem (auch über dem
+// Auslosungs-Modal) mit Skip-Knopf, damit ein hängendes/zu langes Video nie die ganze Live-
+// Show blockiert.
 function playGagEffect(effect) {
   if (!effect) return;
   if (effect.effectType === 'sound') {
@@ -6749,6 +6780,17 @@ function handleGagMediaFileSelected(event) {
   reader.readAsDataURL(file);
 }
 // Speichert den aktuellen Formular-Entwurf als neuen Gag-Effekt (website-weit, sofort aktiv).
+// WICHTIG fürs Download-Kontingent: das (ggf. große) Medium landet NICHT im selben Knoten wie
+// die restlichen, leichten Angaben (customEffects), sondern separat unter customEffectsMedia.
+// customEffects wird von JEDER besuchenden Person dauerhaft mitgeladen (damit Effekte sofort
+// live auslösen können) - würde das schwere Medium direkt dort drinstecken, würde JEDER
+// Seitenaufruf UND jede Änderung irgendeines Effekts das SOFORT an ALLE gerade verbundenen
+// Geräte erneut verschicken (bei z.B. 20 gleichzeitig offenen Geräten und einem 15-MB-Video
+// wären das 300 MB - pro Seitenaufruf/Änderung, nicht nur beim tatsächlichen Abspielen!).
+// customEffectsMedia wird dagegen nie dauerhaft abonniert, sondern nur per einmaligem
+// .once('value') abgerufen, GENAU in dem Moment, in dem ein Effekt wirklich abgespielt werden
+// soll (siehe playGagEffectById) - dann kostet es wirklich nur so viel, wie es beim Abspielen
+// selbst kostet (Größe × Anzahl der Zuschauer:innen, die es GERADE erleben).
 function saveNewGagEffect() {
   if (!isGod()) return;
   const d = gagFormDraft;
@@ -6759,18 +6801,23 @@ function saveNewGagEffect() {
   } else if (!d.mediaData) {
     return alert('Bitte erst eine Datei hochladen.');
   }
-  const newEffect = {
+  const newEffectMeta = {
     name: d.name.trim(),
     triggerType: 'player_drawn',
     targetPlayerKey: d.targetPlayerKey,
     effectType: d.effectType,
-    mediaData: d.effectType === 'preset' ? null : d.mediaData,
     presetKey: d.effectType === 'preset' ? d.presetKey : null,
     durationMs: (d.effectType === 'image' || d.effectType === 'preset') ? (parseInt(d.durationMs, 10) || 3000) : null,
+    mediaBytes: d.effectType === 'preset' ? 0 : estimateMediaBytes(d.mediaData),
     enabled: true,
     createdAt: Date.now()
   };
-  db.ref('customEffects').push(newEffect).set(newEffect).then(() => {
+  const ref = db.ref('customEffects').push();
+  const id = ref.key;
+  Promise.all([
+    ref.set(newEffectMeta),
+    d.effectType === 'preset' ? Promise.resolve() : db.ref('customEffectsMedia/' + id).set({ mediaData: d.mediaData })
+  ]).then(() => {
     resetGagFormDraft();
     renderGagManager();
   }).catch((error) => alert('⚠️ Speichern fehlgeschlagen:\n' + error.message));
@@ -6779,7 +6826,9 @@ function deleteCustomEffect(id) {
   if (!isGod()) return;
   const effect = customEffects[id];
   if (!confirm(`Effekt "${(effect && effect.name) || id}" wirklich löschen?`)) return;
-  db.ref('customEffects/' + id).remove().catch((error) => alert('⚠️ Löschen fehlgeschlagen:\n' + error.message));
+  delete gagMediaCache[id];
+  db.ref().update({ ['customEffects/' + id]: null, ['customEffectsMedia/' + id]: null })
+    .catch((error) => alert('⚠️ Löschen fehlgeschlagen:\n' + error.message));
 }
 function toggleCustomEffectEnabled(id) {
   if (!isGod()) return;
@@ -6791,7 +6840,8 @@ function toggleCustomEffectEnabled(id) {
 // müssen - praktisch, um vor dem Turnierabend zu checken, ob er auch wirklich funktioniert/gut
 // aussieht.
 function testPlayGagEffect(id) {
-  if (customEffects[id]) playGagEffect(customEffects[id]);
+  const effect = customEffects[id];
+  if (effect) playGagEffectById(id, effect);
 }
 const GAG_EFFECT_TYPE_LABELS = { sound: '🔊 Sound', image: '🖼️ Bild', video: '🎬 Video', preset: '🎭 Vorgefertigte Animation' };
 // Schätzt die Rohgröße (Bytes) eines als data:-URL gespeicherten Mediums - base64 kodiert 3 Byte
@@ -6818,7 +6868,7 @@ function renderGagManager() {
   const presetOptions = Object.keys(GAG_ANIMATION_PRESETS)
     .map(key => `<option value="${key}" ${gagFormDraft.presetKey === key ? 'selected' : ''}>${escapeHtml(GAG_ANIMATION_PRESETS[key].label)}</option>`).join('');
 
-  const totalBytes = effectIds.reduce((sum, id) => sum + estimateMediaBytes(customEffects[id].mediaData), 0);
+  const totalBytes = effectIds.reduce((sum, id) => sum + (customEffects[id].mediaBytes || 0), 0);
   const list = effectIds.length === 0 ? '<p class="empty-state">Noch keine Gag-Effekte angelegt.</p>' : effectIds.map((id) => {
     const e = customEffects[id];
     const targetName = (globalPlayers[e.targetPlayerKey] && globalPlayers[e.targetPlayerKey].name) || e.targetPlayerKey;
@@ -6826,7 +6876,7 @@ function renderGagManager() {
       <div style="background: var(--fal-blue-primary); padding: 8px 12px; border-radius: 8px; margin-bottom: 6px;">
         <div style="display:flex; flex-wrap:wrap; justify-content:space-between; align-items:center; gap:8px;">
           <span style="font-size:0.9em; ${e.enabled === false ? 'opacity:0.5; text-decoration:line-through;' : ''}">
-            ${GAG_EFFECT_TYPE_LABELS[e.effectType] || e.effectType} - <strong>${escapeHtml(e.name)}</strong>${e.mediaData ? ` <span style="opacity:0.6;">(${formatBytes(estimateMediaBytes(e.mediaData))})</span>` : ''}<br>
+            ${GAG_EFFECT_TYPE_LABELS[e.effectType] || e.effectType} - <strong>${escapeHtml(e.name)}</strong>${e.mediaBytes ? ` <span style="opacity:0.6;">(${formatBytes(e.mediaBytes)})</span>` : ''}<br>
             <span style="font-size:0.85em; opacity:0.75;">🎯 bei: ${escapeHtml(targetName)}</span>
           </span>
           <div style="display:flex; gap:5px; flex-wrap:wrap;">
@@ -6852,8 +6902,11 @@ function renderGagManager() {
     </p>
     <p style="font-size:0.8em; opacity:0.65; margin-top:-4px;">
       ⚠️ Jede Datei landet direkt in deiner Firebase-Datenbank (keine separate Datei-Ablage) -
-      aktuell belegt: <strong>${formatBytes(totalBytes)}</strong>. Bei vielen/langen Videos lieber
-      kurz &amp; komprimiert halten statt riesige Dateien hochzuladen.
+      aktuell gespeichert: <strong>${formatBytes(totalBytes)}</strong>. Wird erst wirklich
+      heruntergeladen, wenn ein Effekt tatsächlich abgespielt wird (dann aber bei JEDER Person,
+      die gerade zuschaut) - bei z.B. 20 gleichzeitigen Zuschauer:innen und einem 10-MB-Video
+      sind das 200 MB AUF EINEN SCHLAG. Videos deshalb wirklich kurz &amp; komprimiert halten,
+      Sound/Bild sind viel günstiger.
     </p>
 
     <h4 style="margin-bottom:6px;">Bestehende Effekte (${effectIds.length})</h4>
@@ -6888,6 +6941,187 @@ function renderGagManager() {
         </label>
       ` : ''}
       <button class="btn-primary btn-sm" onclick="saveNewGagEffect()">💾 Effekt speichern</button>
+    </div>
+  `;
+}
+// ============================================================================
+// 19. DATENBANK-EXPLORER — God-exklusiver Überblick über die Firebase-Datenbank: Online-
+//     Status, geschätzte Größe pro Bereich (wichtig, seit Gag-Effekte eigene Medien in die
+//     Datenbank legen können - siehe Abschnitt 18) und eine rohe, interaktive Baum-Ansicht zum
+//     Bearbeiten/Löschen einzelner Werte. Erreichbar über den Verbindungsstatus-Badge im Header
+//     (siehe #connection-status-badge in index.html), der ohnehin schon God-exklusiv ist.
+//     Liest NICHT den kompletten Datenbank-Wurzelpfad auf einmal (könnte an den Firebase-
+//     Regeln scheitern, falls dort nur einzelne Pfade statt der Wurzel lesbar sind), sondern
+//     genau die bekannten Top-Level-Pfade einzeln - genau die, die auch sonst in der App schon
+//     gelesen werden (siehe attachGodOversightListener für "tournaments").
+// ============================================================================
+const DB_EXPLORER_ROOT_PATHS = ['tournaments_meta', 'globalPlayers', 'globalSettings', 'customEffects', 'customEffectsMedia', 'tournaments'];
+let dbExplorerData = null;
+let dbExplorerLoading = false;
+let dbExplorerExpandedPaths = new Set();
+let dbExplorerEditingPath = null;
+function openDbExplorer() {
+  if (!isGod()) return;
+  document.getElementById('db-explorer-modal').style.display = 'flex';
+  refreshDbExplorer();
+}
+function closeDbExplorer() {
+  document.getElementById('db-explorer-modal').style.display = 'none';
+}
+// Lädt alle bekannten Top-Level-Pfade frisch (einmalig, kein Live-Listener - der Explorer wird
+// bewusst nur bei Bedarf geöffnet/neu geladen, damit er nicht permanent zusätzliche Downloads
+// verursacht, die ja genau das Problem sind, das er sichtbar machen soll).
+function refreshDbExplorer() {
+  if (!isGod()) return;
+  dbExplorerLoading = true;
+  dbExplorerEditingPath = null;
+  renderDbExplorer();
+  Promise.all(DB_EXPLORER_ROOT_PATHS.map(p => db.ref(p).once('value').then(snap => [p, snap.val()])))
+    .then((entries) => {
+      dbExplorerData = {};
+      entries.forEach(([p, val]) => { dbExplorerData[p] = val; });
+      dbExplorerLoading = false;
+      renderDbExplorer();
+    })
+    .catch((error) => {
+      dbExplorerLoading = false;
+      renderDbExplorer();
+      alert('⚠️ Datenbank-Explorer: Laden fehlgeschlagen:\n' + error.message);
+    });
+}
+// Schätzt die Größe eines beliebigen Werts über die Länge seiner JSON-Textdarstellung - nicht
+// exakt identisch mit der tatsächlichen Firebase-Speichergröße, aber ein guter, einfacher
+// Anhaltspunkt (und genau das, was bei jedem .on/.once tatsächlich übers Netz geht).
+function estimateJsonBytes(value) {
+  if (value === null || value === undefined) return 0;
+  try { return JSON.stringify(value).length; } catch (e) { return 0; }
+}
+function toggleDbExplorerPath(path) {
+  if (dbExplorerExpandedPaths.has(path)) dbExplorerExpandedPaths.delete(path);
+  else dbExplorerExpandedPaths.add(path);
+  renderDbExplorer();
+}
+function startDbExplorerEdit(path) {
+  dbExplorerEditingPath = path;
+  renderDbExplorer();
+}
+function cancelDbExplorerEdit() {
+  dbExplorerEditingPath = null;
+  renderDbExplorer();
+}
+// Überschreibt einen Wert direkt in der Datenbank - KOMPLETT ungefiltert, ohne jede der
+// sonstigen App-eigenen Prüfungen (Rollen/Format/Konsistenz). Bewusst nur fürs absolute
+// Notfall-Eingreifen gedacht, deshalb die deutliche Warnung in der Bestätigung.
+function saveDbExplorerEdit(path) {
+  const textarea = document.getElementById('db-explorer-edit-textarea');
+  if (!textarea) return;
+  let parsed;
+  try { parsed = JSON.parse(textarea.value); } catch (e) { return alert('⚠️ Ungültiges JSON, nichts wurde gespeichert:\n' + e.message); }
+  if (!confirm(`"${path}" wirklich überschreiben?\n\nACHTUNG: Das greift komplett ungefiltert in die Datenbank ein und kann die App für ALLE kaputt machen, wenn das Format nicht passt. Nur im Notfall nutzen!`)) return;
+  db.ref(path).set(parsed).then(() => {
+    dbExplorerEditingPath = null;
+    refreshDbExplorer();
+  }).catch((error) => alert('⚠️ Speichern fehlgeschlagen:\n' + error.message));
+}
+function deleteDbExplorerNode(path) {
+  if (!confirm(`"${path}" WIRKLICH unwiderruflich löschen?\n\nACHTUNG: Das greift komplett ungefiltert in die Datenbank ein und kann die App für ALLE kaputt machen. Nur im Notfall nutzen!`)) return;
+  db.ref(path).remove().then(() => refreshDbExplorer()).catch((error) => alert('⚠️ Löschen fehlgeschlagen:\n' + error.message));
+}
+// Baut EINEN Knoten der Baum-Ansicht (rekursiv für Objekte/Arrays) - path ist der komplette
+// Firebase-Pfad ab der Wurzel (z.B. "tournaments/-NabcXYZ/teams/0/photo"), depth steuert die
+// Einrückung.
+function renderDbExplorerNode(key, value, path, depth) {
+  const escapedPath = path.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+  const indent = Math.min(depth, 12) * 16;
+  const sizeBytes = estimateJsonBytes(value);
+  if (dbExplorerEditingPath === path) {
+    return `
+      <div style="margin-left:${indent}px; padding:6px 0;">
+        <div style="font-size:0.8em; opacity:0.75; margin-bottom:4px; font-family:monospace;">${escapeHtml(key)}</div>
+        <textarea id="db-explorer-edit-textarea" rows="6" style="width:100%; box-sizing:border-box; font-family:monospace; font-size:0.78em;">${escapeHtml(JSON.stringify(value, null, 2))}</textarea>
+        <div style="display:flex; gap:6px; margin-top:4px;">
+          <button class="btn-primary btn-sm" onclick="saveDbExplorerEdit('${escapedPath}')">💾 Speichern</button>
+          <button class="btn-secondary btn-sm" onclick="cancelDbExplorerEdit()">✕ Abbrechen</button>
+        </div>
+      </div>
+    `;
+  }
+  const isExpandable = value !== null && typeof value === 'object';
+  if (!isExpandable) {
+    const raw = value === null || value === undefined ? 'null' : JSON.stringify(value);
+    const preview = raw.length > 90 ? raw.slice(0, 90) + '…' : raw;
+    return `
+      <div style="margin-left:${indent}px; padding:3px 0; display:flex; justify-content:space-between; align-items:center; gap:6px; flex-wrap:wrap; border-bottom:1px solid rgba(255,255,255,0.05);">
+        <span style="font-size:0.8em; font-family:monospace; word-break:break-all;"><strong>${escapeHtml(key)}</strong>: ${escapeHtml(preview)} <span style="opacity:0.5;">(${formatBytes(sizeBytes)})</span></span>
+        <div style="display:flex; gap:4px; flex-shrink:0;">
+          <button class="btn-secondary btn-sm" onclick="startDbExplorerEdit('${escapedPath}')">✏️</button>
+          <button class="btn-danger btn-sm" onclick="deleteDbExplorerNode('${escapedPath}')">🗑️</button>
+        </div>
+      </div>
+    `;
+  }
+  const isExpanded = dbExplorerExpandedPaths.has(path);
+  const childCount = Object.keys(value).length;
+  let html = `
+    <div style="margin-left:${indent}px; padding:3px 0; display:flex; justify-content:space-between; align-items:center; gap:6px; flex-wrap:wrap;">
+      <span style="font-size:0.8em; font-family:monospace; cursor:pointer;" onclick="toggleDbExplorerPath('${escapedPath}')">
+        ${isExpanded ? '▾' : '▸'} <strong>${escapeHtml(key)}</strong> <span style="opacity:0.6;">(${childCount} Einträge, ${formatBytes(sizeBytes)})</span>
+      </span>
+      <div style="display:flex; gap:4px; flex-shrink:0;">
+        <button class="btn-secondary btn-sm" onclick="startDbExplorerEdit('${escapedPath}')">✏️</button>
+        <button class="btn-danger btn-sm" onclick="deleteDbExplorerNode('${escapedPath}')">🗑️</button>
+      </div>
+    </div>
+  `;
+  if (isExpanded) {
+    html += Object.keys(value).map(childKey => renderDbExplorerNode(childKey, value[childKey], path + '/' + childKey, depth + 1)).join('');
+  }
+  return html;
+}
+function renderDbExplorer() {
+  const container = document.getElementById('db-explorer-container');
+  if (!container) return;
+  if (!isGod()) { container.innerHTML = ''; return; }
+  if (dbExplorerLoading || !dbExplorerData) {
+    container.innerHTML = `
+      <h2 style="margin-top:0;">📊 Datenbank-Explorer</h2>
+      <p class="empty-state">⏳ Lädt...</p>
+    `;
+    return;
+  }
+  const totalBytes = estimateJsonBytes(dbExplorerData);
+  const breakdown = Object.keys(dbExplorerData)
+    .map(k => ({ key: k, bytes: estimateJsonBytes(dbExplorerData[k]) }))
+    .sort((a, b) => b.bytes - a.bytes);
+  const maxBytes = Math.max(1, ...breakdown.map(b => b.bytes));
+  container.innerHTML = `
+    <h2 style="margin-top:0;">📊 Datenbank-Explorer</h2>
+    <p style="font-size:0.85em; opacity:0.8;">
+      ${isFirebaseConnected ? '🟢 Verbunden' : '🔴 Nicht verbunden'} ·
+      Geschätzte Gesamtgröße: <strong>${formatBytes(totalBytes)}</strong>
+      <button class="btn-secondary btn-sm" style="margin-left:8px;" onclick="refreshDbExplorer()">🔄 Neu laden</button>
+    </p>
+    <p style="font-size:0.75em; opacity:0.6; margin-top:-6px; margin-bottom:12px;">
+      Schätzung über die JSON-Textgröße (ungefähr proportional zur tatsächlichen Firebase-Größe,
+      nicht exakt identisch - die echten Werte/Limits stehen in der Firebase-Konsole). ⚠️
+      Bearbeiten/Löschen unten greift SOFORT &amp; komplett ungefiltert in die Datenbank ein,
+      ohne irgendeine der sonstigen App-Prüfungen - nur im Notfall nutzen!
+    </p>
+    <div style="margin-bottom:14px;">
+      ${breakdown.map(b => `
+        <div style="margin-bottom:6px;">
+          <div style="display:flex; justify-content:space-between; font-size:0.82em;">
+            <span>${escapeHtml(b.key)}</span><span style="opacity:0.7;">${formatBytes(b.bytes)}</span>
+          </div>
+          <div style="background:rgba(255,255,255,0.08); border-radius:4px; height:6px;">
+            <div style="background:var(--fal-yellow); height:6px; border-radius:4px; width:${Math.max(2, (b.bytes / maxBytes) * 100)}%;"></div>
+          </div>
+        </div>
+      `).join('')}
+    </div>
+    <h4 style="margin-bottom:6px;">🔍 Rohdaten durchsuchen</h4>
+    <div style="max-height:340px; overflow-y:auto; border-top:1px solid rgba(255,255,255,0.1); padding-top:8px;">
+      ${Object.keys(dbExplorerData).map(k => renderDbExplorerNode(k, dbExplorerData[k], k, 0)).join('')}
     </div>
   `;
 }
