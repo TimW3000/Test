@@ -155,6 +155,9 @@ window.disableSoundEffects = disableSoundEffects;
 window.openTVMode = openTVMode;
 window.closeTVMode = closeTVMode;
 window.shareScheduleImage = shareScheduleImage;
+window.openScheduleExportModal = openScheduleExportModal;
+window.closeScheduleExportModal = closeScheduleExportModal;
+window.updateScheduleExportMode = updateScheduleExportMode;
 window.openGagManager = openGagManager;
 window.closeGagManager = closeGagManager;
 window.updateGagFormField = updateGagFormField;
@@ -6480,18 +6483,27 @@ function renderTVModeContent() {
 //     es herunter. Für alle Rollen, rein lesend, kein Drucker nötig - landet einfach in
 //     der Galerie bzw. direkt im Gruppenchat.
 // ============================================================================
-async function renderScheduleToCanvas() {
+// mode: 'both' (Standard, Tabelle+Spielplan zusammen) | 'table' (nur Tabelle) | 'schedule' (nur
+// Spielplan). includeBlankBoxes gilt nur bei mode='schedule': zeichnet statt des digitalen
+// Ergebnisses ein klassisches leeres Ergebnisfeld (zwei Kästchen + Doppelpunkt) zum
+// handschriftlichen Eintragen mit Stift auf dem Ausdruck - für alle, die das Papier statt
+// digital tracken wollen.
+async function renderScheduleToCanvas(mode, includeBlankBoxes) {
+  mode = mode || 'both';
+  const showTable = mode === 'both' || mode === 'table';
+  const showSchedule = mode === 'both' || mode === 'schedule';
   const tName = (tournamentsList[currentTournamentId] && tournamentsList[currentTournamentId].name) || 'Tims FAL Turniere';
   const hasRealGroups = groups.length > 0 && groups[0].members === undefined;
-  const standings = hasRealGroups ? calculateGroupStandings() : [];
-  const allMatches = [...groupMatches, ...koMatches];
+  const standings = (showTable && hasRealGroups) ? calculateGroupStandings() : [];
+  const allMatches = showSchedule ? [...groupMatches, ...koMatches] : [];
 
   const W = 800;
   const rowH = 26;
   const groupHeaderH = 36;
   const groupGap = 16;
   const standingsH = standings.reduce((sum, g) => sum + groupHeaderH + g.rankings.length * rowH + groupGap, 0);
-  const matchRowH = 26;
+  // Mit leeren Ergebnisfeldern etwas mehr Zeilenhöhe, damit die Kästchen Luft zum Atmen haben.
+  const matchRowH = includeBlankBoxes ? 36 : 26;
   const matchesHeaderH = 44;
   const matchesH = allMatches.length ? matchesHeaderH + allMatches.length * matchRowH : 0;
   const headerH = 90;
@@ -6518,7 +6530,8 @@ async function renderScheduleToCanvas() {
   ctx.fillStyle = '#ffffff';
   ctx.font = '14px sans-serif';
   ctx.globalAlpha = 0.7;
-  ctx.fillText('Spielplan & Tabelle', W / 2, 74);
+  const subtitle = mode === 'table' ? 'Tabelle' : mode === 'schedule' ? (includeBlankBoxes ? 'Spielplan zum Ausfüllen' : 'Spielplan') : 'Spielplan & Tabelle';
+  ctx.fillText(subtitle, W / 2, 74);
   ctx.globalAlpha = 1;
 
   let y = headerH;
@@ -6560,13 +6573,28 @@ async function renderScheduleToCanvas() {
       const t1 = teams.find(t => t.id === m.t1Id);
       const t2 = teams.find(t => t.id === m.t2Id);
       const time = m.scheduledTime ? formatMatchTime(m.scheduledTime).replace(' Uhr', '') : '--:--';
-      const scoreTxt = m.played ? `${m.score1}:${m.score2}` : 'vs';
       ctx.font = '14px sans-serif';
       ctx.fillStyle = '#ffc800';
       ctx.textAlign = 'left';
       ctx.fillText(time, 40, y + 18);
       ctx.fillStyle = '#ffffff';
-      ctx.fillText(`${t1 ? t1.name : '?'}  ${scoreTxt}  ${t2 ? t2.name : '?'}`, 120, y + 18);
+      if (includeBlankBoxes) {
+        // Klassisches leeres Ergebnisfeld statt des digitalen Stands: zwei Kästchen + Doppelpunkt
+        // zum handschriftlichen Eintragen mit Stift auf dem Ausdruck.
+        ctx.fillText(`${t1 ? t1.name : '?'}  vs.  ${t2 ? t2.name : '?'}`, 120, y + 18);
+        const boxSize = 24;
+        const boxY = y + 18 - boxSize + 7;
+        ctx.strokeStyle = '#ffffff';
+        ctx.lineWidth = 1.5;
+        ctx.strokeRect(W - 112, boxY, boxSize, boxSize);
+        ctx.strokeRect(W - 60, boxY, boxSize, boxSize);
+        ctx.textAlign = 'center';
+        ctx.font = 'bold 16px sans-serif';
+        ctx.fillText(':', W - 86, boxY + boxSize - 6);
+      } else {
+        const scoreTxt = m.played ? `${m.score1}:${m.score2}` : 'vs';
+        ctx.fillText(`${t1 ? t1.name : '?'}  ${scoreTxt}  ${t2 ? t2.name : '?'}`, 120, y + 18);
+      }
       y += matchRowH;
     });
   }
@@ -6580,24 +6608,61 @@ async function renderScheduleToCanvas() {
 
   return canvas;
 }
-// Vom "📸 Spielplan als Bild"-Knopf im Gruppen-Tab aufgerufen - gleiches Teilen/Download-
-// Muster wie shareWrappedImage().
-async function shareScheduleImage() {
+// Merkt sich die aktuelle Auswahl im Export-Modal (siehe #schedule-export-modal in index.html)
+let scheduleExportMode = 'both';
+// Öffnet die kleine Auswahl, WAS exportiert werden soll (Tabelle/Spielplan/beides), bevor das
+// Bild erzeugt wird - vom "📸 Spielplan als Bild"-Knopf im Gruppen-Tab aufgerufen.
+function openScheduleExportModal() {
   if (groups.length === 0 && groupMatches.length === 0 && koMatches.length === 0) {
     return alert('Noch nichts zum Exportieren - erst Gruppen/Spielplan auslosen.');
   }
+  scheduleExportMode = 'both';
+  const radios = document.querySelectorAll('input[name="schedule-export-mode"]');
+  radios.forEach(r => { r.checked = r.value === 'both'; });
+  const boxCheckbox = document.getElementById('schedule-export-blank-boxes');
+  if (boxCheckbox) boxCheckbox.checked = false;
+  updateScheduleExportMode();
+  document.getElementById('schedule-export-modal').style.display = 'flex';
+}
+function closeScheduleExportModal() {
+  document.getElementById('schedule-export-modal').style.display = 'none';
+}
+// Von den Radio-Buttons im Export-Modal per onchange aufgerufen - blendet die "leere
+// Ergebnisfelder"-Option nur ein, wenn wirklich NUR der Spielplan exportiert wird (siehe
+// renderScheduleToCanvas).
+function updateScheduleExportMode() {
+  const checked = document.querySelector('input[name="schedule-export-mode"]:checked');
+  scheduleExportMode = checked ? checked.value : 'both';
+  const boxOption = document.getElementById('schedule-export-blank-boxes-option');
+  if (boxOption) boxOption.style.display = scheduleExportMode === 'schedule' ? 'flex' : 'none';
+}
+// Vom "📸 Exportieren"-Knopf im Export-Modal aufgerufen - gleiches Teilen/Download-Muster wie
+// shareWrappedImage().
+async function shareScheduleImage() {
+  const mode = scheduleExportMode || 'both';
+  const hasRealGroups = groups.length > 0 && groups[0].members === undefined;
+  if (mode === 'table' && !hasRealGroups) return alert('Noch keine Tabelle vorhanden - erst Gruppen auslosen.');
+  if (mode === 'schedule' && groupMatches.length === 0 && koMatches.length === 0) return alert('Noch kein Spielplan vorhanden.');
+  if (mode === 'both' && groups.length === 0 && groupMatches.length === 0 && koMatches.length === 0) {
+    return alert('Noch nichts zum Exportieren - erst Gruppen/Spielplan auslosen.');
+  }
+  const boxCheckbox = document.getElementById('schedule-export-blank-boxes');
+  const includeBlankBoxes = mode === 'schedule' && !!(boxCheckbox && boxCheckbox.checked);
+  closeScheduleExportModal();
   const btn = document.getElementById('schedule-share-btn');
   if (btn) { btn.disabled = true; btn.textContent = '⏳ Bild wird erstellt...'; }
   try {
-    const canvas = await renderScheduleToCanvas();
+    const canvas = await renderScheduleToCanvas(mode, includeBlankBoxes);
     canvas.toBlob(async (blob) => {
       if (btn) { btn.disabled = false; btn.textContent = '📸 Spielplan als Bild'; }
       if (!blob) { alert('Bild konnte nicht erstellt werden.'); return; }
       const tName = (tournamentsList[currentTournamentId] && tournamentsList[currentTournamentId].name) || 'turnier';
-      const fileName = `spielplan-${tName.toLowerCase().replace(/[^a-z0-9]+/g, '-')}.png`;
+      const modeLabel = mode === 'table' ? 'tabelle' : mode === 'schedule' ? 'spielplan' : 'spielplan-tabelle';
+      const shareTitle = mode === 'table' ? '📸 Tabelle' : mode === 'schedule' ? '📸 Spielplan' : '📸 Spielplan & Tabelle';
+      const fileName = `${modeLabel}-${tName.toLowerCase().replace(/[^a-z0-9]+/g, '-')}.png`;
       const file = new File([blob], fileName, { type: 'image/png' });
       if (navigator.share && navigator.canShare && navigator.canShare({ files: [file] })) {
-        navigator.share({ files: [file], title: '📸 Spielplan', text: `📸 Spielplan & Tabelle - ${tName}` }).catch(() => {});
+        navigator.share({ files: [file], title: shareTitle, text: `${shareTitle} - ${tName}` }).catch(() => {});
       } else {
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');

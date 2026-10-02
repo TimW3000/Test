@@ -126,6 +126,32 @@
     </div>
   </div>
 
+  <!-- Spielplan/Tabelle als Bild exportieren: kleine Auswahl, WAS exportiert werden soll, bevor
+       das Bild erzeugt wird - siehe openScheduleExportModal()/shareScheduleImage() in script.js. -->
+  <div id="schedule-export-modal" class="modal-overlay" style="display: none;">
+    <div class="modal-content" style="max-width: 420px; text-align: left;">
+      <h3 style="margin-top:0;">📸 Als Bild exportieren</h3>
+      <div style="display:flex; flex-direction:column; gap:10px;">
+        <label style="display:flex; align-items:center; gap:8px; cursor:pointer;">
+          <input type="radio" name="schedule-export-mode" value="both" checked onchange="updateScheduleExportMode()"> 📋 Tabelle + Spielplan zusammen
+        </label>
+        <label style="display:flex; align-items:center; gap:8px; cursor:pointer;">
+          <input type="radio" name="schedule-export-mode" value="table" onchange="updateScheduleExportMode()"> 📊 Nur die Tabelle
+        </label>
+        <label style="display:flex; align-items:center; gap:8px; cursor:pointer;">
+          <input type="radio" name="schedule-export-mode" value="schedule" onchange="updateScheduleExportMode()"> ⏱️ Nur der Spielplan
+        </label>
+        <label id="schedule-export-blank-boxes-option" style="display:none; align-items:center; gap:8px; margin-left:26px; font-size:0.9em; cursor:pointer;">
+          <input type="checkbox" id="schedule-export-blank-boxes"> ✍️ Leere Ergebnisfelder zum handschriftlichen Eintragen (statt digitaler Ergebnisse)
+        </label>
+      </div>
+      <div style="display:flex; gap:8px; margin-top:18px;">
+        <button class="btn-secondary" style="flex:1;" onclick="closeScheduleExportModal()">Abbrechen</button>
+        <button class="btn-primary" id="schedule-export-confirm-btn" style="flex:1;" onclick="shareScheduleImage()">📸 Exportieren</button>
+      </div>
+    </div>
+  </div>
+
   <!-- Gag-Effekt-Vollbild-Overlay: zeigt Bild/Video/vorgefertigte Animation eines ausgelösten
        Gag-Effekts ÜBER ALLEM (auch über dem Auslosungs-Modal) - für ALLE Zuschauer:innen
        gleichzeitig, siehe playGagEffect() in script.js. Sound-Effekte brauchen dieses Overlay
@@ -601,8 +627,9 @@
       <div style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:8px;">
         <h2 style="margin:0;">Gruppenphase & Tabellen</h2>
         <!-- Rein lesender Export, für JEDE Rolle - kein Drucker nötig, landet einfach als
-             Bild in der Galerie/im Gruppenchat, siehe shareScheduleImage() -->
-        <button id="schedule-share-btn" class="btn-secondary btn-sm" onclick="shareScheduleImage()">📸 Spielplan als Bild</button>
+             Bild in der Galerie/im Gruppenchat. Öffnet erst eine kleine Auswahl (nur Tabelle /
+             nur Spielplan / beides), siehe openScheduleExportModal()/shareScheduleImage(). -->
+        <button id="schedule-share-btn" class="btn-secondary btn-sm" onclick="openScheduleExportModal()">📸 Spielplan als Bild</button>
       </div>
       <div id="groups-container" class="grid-container"></div>
       <div id="third-place-container" style="margin-top: 25px;"></div>
