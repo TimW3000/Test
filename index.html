@@ -714,5 +714,10 @@
   </main>
 
   <script src="script.js"></script>
+  <!-- Vercel Web Analytics: reine Seitenaufruf-/Besucherzählung, keine Cookies, läuft komplett
+       unabhängig von Firebase - zeigt sich in den Vercel-Projekteinstellungen unter "Analytics".
+       Kein npm-Paket nötig (das ist nur für Next.js/React-Projekte mit Build-Schritt), diese
+       Seite ist statisches HTML, deshalb reicht der reine Script-Tag. -->
+  <script defer src="/_vercel/insights/script.js"></script>
 </body>
 </html>
