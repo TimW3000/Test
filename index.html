@@ -227,6 +227,7 @@
             <li><em>Startet nur Admin/Ref.</em> <code>📊 Gruppen per Glücksrad auslosen</code> (beliebige Anzahl, 2 bis 26 Gruppen = Gruppe A bis Z) oder <code>⚡ Sofort auslosen</code>.</li>
             <li>Beim Teams-Glücksrad zeigt jedes Segment das Vereinswappen und die Vereinsfarbe des jeweiligen Teams.</li>
             <li>Sonderfall <code>🎲 Nur Namen (ohne Verein)</code>: lost einfach Namen direkt in Gruppen, komplett ohne Team- oder Vereins-Bezug - z.B. praktisch, um bei einem Ausflug Zimmer oder Tische zu verlosen. Zeigt dann die persönliche Profilfarbe/das Profilbild jeder Person statt einer Vereinsfarbe.</li>
+            <li><strong>📸 Spielplan als Bild</strong> (Gruppen-Tab, jede Rolle): exportiert Tabelle(n) + kompletten Spielplan als ein Bild - öffnet den Teilen-Dialog oder lädt es herunter, praktisch für die Gruppenchat-Übersicht ohne Drucker.</li>
           </ul>
         </details>
       </div>
@@ -253,6 +254,7 @@
             <li>Ein frisch eingetragenes Ergebnis ist erstmal nur <strong>vorläufig</strong>. Erst wenn Admin/Ref es mit <code>✅ Bestätigen</code> freigeben, zählt es endgültig für Tabelle/KO-Baum, und offene Wetten darauf werden ausgezahlt.</li>
             <li><code>🚦 Spiel gestartet</code> (nur Admin/Ref): markiert eine Partie als laufend - ab sofort kann niemand mehr darauf wetten.</li>
             <li><strong>Darts-Live-Overlay</strong>: <code>🎯 Darts erfassen</code> öffnet eine Wurf-für-Wurf-Erfassung (X01 - Startpunktzahl, Anzahl Legs und Checkout-Regel legt der Admin turnierweit fest), inklusive automatischer Bust-Erkennung, einem "↩️ Zurück"-Knopf für Fehlklicks und Live-Mitverfolgen für alle, auch Zuschauer. Wer will, kann stattdessen weiterhin nur den reinen Sätze-Endstand von Hand eintragen.</li>
+            <li><strong>📺 TV-Modus</strong> (Header-Knopf, jede Rolle): eine rein lesende Vollbild-Ansicht zum Anschließen an einen Fernseher/Beamer - wechselt automatisch alle 10 Sekunden zwischen Tabelle, nächsten Spielen und K.-o.-Baum und aktualisiert sich live mit.</li>
           </ul>
         </details>
       </div>
@@ -345,6 +347,19 @@
 
       <button class="btn-secondary" onclick="closeHelp()" style="width:100%; margin-top:8px;">Schließen</button>
     </div>
+  </div>
+
+  <!-- TV-/Beamer-Modus: eigener Vollbild-Kiosk-Overlay (bewusst KEIN .modal-overlay, da
+       nicht zentriert/begrenzt, sondern den ganzen Bildschirm ausfüllt) - zyklisch
+       wechselnde, rein lesende Großansicht (Tabelle/Nächste Spiele/KO-Baum) zum Casten auf
+       einen Fernseher/Beamer beim Turnierabend. Keine Admin-Controls, keine Eingabefelder -
+       siehe openTVMode()/renderTVModeContent() in script.js. Für jede Rolle erreichbar
+       (Knopf im Header), da irgendwer einfach nur sein eigenes Gerät an den Fernseher
+       anschließen will, unabhängig von seiner Rolle im Turnier.
+  -->
+  <div id="tv-mode-overlay" style="display: none; position: fixed; inset: 0; background: #060f1d; color: var(--fal-white); z-index: 9999; overflow: hidden;">
+    <button onclick="closeTVMode()" aria-label="TV-Modus beenden" title="TV-Modus beenden" style="position:absolute; top:18px; right:18px; width:44px; height:44px; border-radius:50%; border:none; background:rgba(255,255,255,0.12); color:var(--fal-white); font-size:1.3em; cursor:pointer; line-height:1; z-index:1;">✕</button>
+    <div id="tv-mode-content" class="tv-mode-content"></div>
   </div>
 
   <!-- Turnier per Freitext-Beschreibung anlegen: rein lokale Text-Analyse (kein API, komplett
@@ -455,6 +470,9 @@
         </div>
         <!-- Anleitung: für JEDE Rolle sichtbar, kein Berechtigungs-Check nötig (siehe openHelp) -->
         <button class="header-toggle-btn" onclick="openHelp()" title="Anleitung öffnen" aria-label="Anleitung öffnen">❓</button>
+        <!-- TV-Modus: ebenfalls für JEDE Rolle sichtbar - jede:r könnte sein Gerät an einen
+             Fernseher/Beamer anschließen wollen, unabhängig von der eigenen Rolle (siehe openTVMode) -->
+        <button class="header-toggle-btn" onclick="openTVMode()" title="TV-Modus öffnen" aria-label="TV-Modus öffnen">📺</button>
         <!-- Admin-Panel-Zugang: IMMER sichtbar (auch innerhalb eines laufenden Turniers), nicht
              nur auf der Turnierauswahl-Seite - sonst verpasst man offene Passwort-Wünsche, wenn
              man gerade mitten in einem Turnier ist (siehe openGodPanel/renderHeaderGodBadge) -->
@@ -552,7 +570,12 @@
 
     <!-- GRUPPEN TAB -->
     <section id="tab-groups" class="tab-content">
-      <h2>Gruppenphase & Tabellen</h2>
+      <div style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:8px;">
+        <h2 style="margin:0;">Gruppenphase & Tabellen</h2>
+        <!-- Rein lesender Export, für JEDE Rolle - kein Drucker nötig, landet einfach als
+             Bild in der Galerie/im Gruppenchat, siehe shareScheduleImage() -->
+        <button id="schedule-share-btn" class="btn-secondary btn-sm" onclick="shareScheduleImage()">📸 Spielplan als Bild</button>
+      </div>
       <div id="groups-container" class="grid-container"></div>
       <div id="third-place-container" style="margin-top: 25px;"></div>
     </section>

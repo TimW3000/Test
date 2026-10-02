@@ -689,3 +689,65 @@ th { color: var(--fal-yellow); font-size: 0.8rem; text-transform: uppercase; }
   font-size: 0.95em;
   margin: 4px 0;
 }
+
+/* ============================================================================
+   TV-/BEAMER-MODUS — Vollbild-Kiosk-Ansicht für einen Fernseher/Beamer beim
+   Turnierabend: große Schrift, zentriert, rein lesend (siehe openTVMode() in
+   script.js). Bewusst eigene Klassen statt der normalen Tabellen/Karten-Styles,
+   da die auf Handy-Bildschirmgröße optimiert sind, nicht auf Zimmerentfernung.
+   ============================================================================ */
+.tv-mode-content {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 40px 60px;
+  box-sizing: border-box;
+  text-align: center;
+}
+.tv-tournament-name {
+  position: absolute;
+  top: 24px;
+  left: 32px;
+  font-size: 1.4em;
+  opacity: 0.6;
+  letter-spacing: 0.03em;
+}
+.tv-heading {
+  font-size: 3em;
+  color: var(--fal-yellow);
+  margin: 0 0 30px 0;
+}
+.tv-empty { font-size: 1.6em; opacity: 0.7; }
+.tv-groups-grid {
+  display: flex;
+  gap: 40px;
+  flex-wrap: wrap;
+  justify-content: center;
+  max-width: 100%;
+}
+.tv-group-card {
+  background: rgba(255,255,255,0.06);
+  border-radius: 16px;
+  padding: 20px 28px;
+  min-width: 320px;
+}
+.tv-group-card h2 { color: var(--fal-yellow); margin: 0 0 12px 0; font-size: 1.8em; }
+.tv-table { border-collapse: collapse; font-size: 1.3em; width: 100%; }
+.tv-table th, .tv-table td { padding: 6px 14px; text-align: center; }
+.tv-table th { opacity: 0.6; font-size: 0.7em; text-transform: uppercase; }
+.tv-table td:nth-child(2) { text-align: left; }
+.tv-table tr:first-child td { color: var(--fal-yellow); }
+.tv-matches-list {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  font-size: 1.8em;
+  max-width: 900px;
+}
+.tv-match-row { display: flex; align-items: center; justify-content: center; gap: 24px; background: rgba(255,255,255,0.06); border-radius: 14px; padding: 14px 28px; }
+.tv-match-time { color: var(--fal-yellow); font-weight: bold; min-width: 90px; }
+.tv-ko-rounds { display: flex; gap: 40px; flex-wrap: wrap; justify-content: center; }
+.tv-ko-round h3 { color: var(--fal-yellow); font-size: 1.4em; margin: 0 0 12px 0; }
+.tv-ko-match { font-size: 1.3em; background: rgba(255,255,255,0.06); border-radius: 10px; padding: 10px 20px; margin-bottom: 10px; }

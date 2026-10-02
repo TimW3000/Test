@@ -150,6 +150,9 @@ window.disableNotifications = disableNotifications;
 window.shareWrappedImage = shareWrappedImage;
 window.enableSoundEffects = enableSoundEffects;
 window.disableSoundEffects = disableSoundEffects;
+window.openTVMode = openTVMode;
+window.closeTVMode = closeTVMode;
+window.shareScheduleImage = shareScheduleImage;
 // ============================================================================
 // 1. FIREBASE-KONFIGURATION — Verbindungsdaten zur Online-Datenbank
 // ============================================================================
@@ -4757,6 +4760,7 @@ function renderAll() {
   // Hat man gerade ein Darts-Live-Overlay offen (egal ob selbst werfend oder nur zuschauend),
   // hier live mit aktualisieren - genau wie handleLiveDraftUI() es fürs Glücksrad tut.
   if (openDartsMatchId != null) renderDartsMatch();
+  renderTVModeIfOpen();
 }
 // ---- 10a. HOME-TAB: Regeln, Tippspiel, Dashboard ----
 function renderHome() {
@@ -6245,5 +6249,239 @@ function maybePlayWheelTick(trackerKey, currentAngle) {
   if (bucket > wheelTickTracker[trackerKey]) {
     wheelTickTracker[trackerKey] = bucket;
     playSound('drumroll-tick');
+  }
+}
+// ============================================================================
+// 16. TV-/BEAMER-MODUS — ein rein lesender Vollbild-Kiosk-Overlay zum Casten auf
+//     einen Fernseher/Beamer beim Turnierabend: wechselt automatisch alle 10s
+//     zwischen Tabelle, nächsten Spielen und KO-Baum (je nachdem, was gerade
+//     vorhanden ist) und aktualisiert sich live mit, solange er offen ist (siehe
+//     renderTVModeIfOpen() in renderAll()). Für JEDE Rolle erreichbar, keine
+//     Admin-Controls/Eingabefelder - wer auch immer sein Gerät an den Fernseher
+//     hängt, soll einfach nur die aktuelle Lage sehen.
+// ============================================================================
+let tvModeInterval = null;
+let tvModeViewIndex = 0;
+function openTVMode() {
+  if (!currentTournamentId) return;
+  const overlay = document.getElementById('tv-mode-overlay');
+  if (!overlay) return;
+  overlay.style.display = 'flex';
+  tvModeViewIndex = 0;
+  renderTVModeContent();
+  if (tvModeInterval) clearInterval(tvModeInterval);
+  tvModeInterval = setInterval(() => {
+    tvModeViewIndex++;
+    renderTVModeContent();
+  }, 10000);
+}
+function closeTVMode() {
+  const overlay = document.getElementById('tv-mode-overlay');
+  if (overlay) overlay.style.display = 'none';
+  if (tvModeInterval) { clearInterval(tvModeInterval); tvModeInterval = null; }
+}
+// Wird aus renderAll() heraus bei JEDER Live-Aktualisierung aufgerufen - rendert die
+// AKTUELL angezeigte Ansicht mit frischen Daten neu, ohne die Ansicht zu wechseln oder
+// den 10s-Zyklus-Timer zu stören (das macht ausschließlich das setInterval oben).
+function renderTVModeIfOpen() {
+  const overlay = document.getElementById('tv-mode-overlay');
+  if (overlay && overlay.style.display !== 'none') renderTVModeContent();
+}
+function renderTVModeContent() {
+  const container = document.getElementById('tv-mode-content');
+  if (!container) return;
+  const tName = (tournamentsList[currentTournamentId] && tournamentsList[currentTournamentId].name) || 'Turnier';
+  const nameTag = `<div class="tv-tournament-name">🏆 ${escapeHtml(tName)}</div>`;
+
+  // Welche Ansichten sind überhaupt sinnvoll zeigbar, je nach aktuellem Turnierstand?
+  const views = [];
+  const hasRealGroups = groups.length > 0 && groups[0].members === undefined;
+  if (hasRealGroups) views.push('standings');
+  const upcoming = [...groupMatches, ...koMatches]
+    .filter(m => !m.played && !m.started)
+    .sort((a, b) => (a.scheduledTime || Infinity) - (b.scheduledTime || Infinity))
+    .slice(0, 6);
+  if (upcoming.length > 0) views.push('upcoming');
+  if (koMatches.length > 0) views.push('ko');
+  if (views.length === 0) {
+    container.innerHTML = `${nameTag}<p class="tv-empty">Noch keine Auslosung/Spiele vorhanden.</p>`;
+    return;
+  }
+  const view = views[tvModeViewIndex % views.length];
+
+  let bodyHtml = '';
+  if (view === 'standings') {
+    const standings = calculateGroupStandings();
+    bodyHtml = `<h1 class="tv-heading">📊 Tabelle</h1><div class="tv-groups-grid">` + standings.map(g => `
+      <div class="tv-group-card">
+        <h2>${escapeHtml(g.letter)}</h2>
+        <table class="tv-table">
+          <tr><th></th><th>Team</th><th>Sp.</th><th>Diff</th><th>Pkt.</th></tr>
+          ${g.rankings.map((r, i) => `
+            <tr><td>${i + 1}.</td><td>${escapeHtml(r.name)}</td><td>${r.played}</td><td>${r.diff > 0 ? '+' : ''}${r.diff}</td><td><strong>${r.points}</strong></td></tr>
+          `).join('')}
+        </table>
+      </div>
+    `).join('') + `</div>`;
+  } else if (view === 'upcoming') {
+    bodyHtml = `<h1 class="tv-heading">⏱️ Nächste Spiele</h1><div class="tv-matches-list">` + upcoming.map(m => {
+      const t1 = teams.find(t => t.id === m.t1Id);
+      const t2 = teams.find(t => t.id === m.t2Id);
+      const time = m.scheduledTime ? new Date(m.scheduledTime).toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' }) : '--:--';
+      return `<div class="tv-match-row"><span class="tv-match-time">${time}</span><span>${escapeHtml(t1 ? t1.name : '?')} vs ${escapeHtml(t2 ? t2.name : '?')}</span></div>`;
+    }).join('') + `</div>`;
+  } else if (view === 'ko') {
+    const roundNumbers = [...new Set(koMatches.map(m => m.roundNumber || 0))].sort((a, b) => a - b);
+    bodyHtml = `<h1 class="tv-heading">⚔️ K.-o.-Phase</h1><div class="tv-ko-rounds">` + roundNumbers.map(rn => {
+      const matchesInRound = koMatches.filter(m => (m.roundNumber || 0) === rn);
+      const roundLabel = matchesInRound[0] ? matchesInRound[0].round : '';
+      return `<div class="tv-ko-round"><h3>${escapeHtml(roundLabel)}</h3>` + matchesInRound.map(m => {
+        const t1 = teams.find(t => t.id === m.t1Id);
+        const t2 = teams.find(t => t.id === m.t2Id);
+        const scoreTxt = m.played ? `${m.score1}:${m.score2}` : 'vs';
+        return `<div class="tv-ko-match">${escapeHtml(t1 ? t1.name : '?')} <strong>${scoreTxt}</strong> ${escapeHtml(t2 ? t2.name : '?')}</div>`;
+      }).join('') + `</div>`;
+    }).join('') + `</div>`;
+  }
+  container.innerHTML = nameTag + bodyHtml;
+}
+// ============================================================================
+// 17. SPIELPLAN ALS TEILBARES BILD — analog zum Wrapped-Export (siehe Abschnitt 14):
+//     zeichnet Tabellen + kompletten Spielplan manuell auf ein <canvas> und teilt/lädt
+//     es herunter. Für alle Rollen, rein lesend, kein Drucker nötig - landet einfach in
+//     der Galerie bzw. direkt im Gruppenchat.
+// ============================================================================
+async function renderScheduleToCanvas() {
+  const tName = (tournamentsList[currentTournamentId] && tournamentsList[currentTournamentId].name) || 'Tims FAL Turniere';
+  const hasRealGroups = groups.length > 0 && groups[0].members === undefined;
+  const standings = hasRealGroups ? calculateGroupStandings() : [];
+  const allMatches = [...groupMatches, ...koMatches];
+
+  const W = 800;
+  const rowH = 26;
+  const groupHeaderH = 36;
+  const groupGap = 16;
+  const standingsH = standings.reduce((sum, g) => sum + groupHeaderH + g.rankings.length * rowH + groupGap, 0);
+  const matchRowH = 26;
+  const matchesHeaderH = 44;
+  const matchesH = allMatches.length ? matchesHeaderH + allMatches.length * matchRowH : 0;
+  const headerH = 90;
+  const footerH = 36;
+  const H = Math.max(300, headerH + standingsH + matchesH + footerH + 20);
+
+  const canvas = document.createElement('canvas');
+  canvas.width = W; canvas.height = H;
+  const ctx = canvas.getContext('2d');
+
+  const bgGrad = ctx.createLinearGradient(0, 0, 0, H);
+  bgGrad.addColorStop(0, '#0b192c');
+  bgGrad.addColorStop(1, '#1e3e62');
+  ctx.fillStyle = bgGrad;
+  ctx.fillRect(0, 0, W, H);
+  ctx.strokeStyle = '#ffc800';
+  ctx.lineWidth = 5;
+  ctx.strokeRect(2.5, 2.5, W - 5, H - 5);
+
+  ctx.textAlign = 'center';
+  ctx.fillStyle = '#ffc800';
+  ctx.font = 'bold 26px sans-serif';
+  ctx.fillText('🏆 ' + tName, W / 2, 48);
+  ctx.fillStyle = '#ffffff';
+  ctx.font = '14px sans-serif';
+  ctx.globalAlpha = 0.7;
+  ctx.fillText('Spielplan & Tabelle', W / 2, 74);
+  ctx.globalAlpha = 1;
+
+  let y = headerH;
+  const colX = { rank: 56, name: 80, played: 560, diff: 640, points: 730 };
+  standings.forEach((g) => {
+    ctx.textAlign = 'left';
+    ctx.fillStyle = '#ffc800';
+    ctx.font = 'bold 18px sans-serif';
+    ctx.fillText(g.letter, 40, y + 22);
+    ctx.font = '12px sans-serif';
+    ctx.globalAlpha = 0.6;
+    ['Sp.', 'Diff', 'Pkt.'].forEach((label, i) => {
+      ctx.textAlign = 'center';
+      ctx.fillText(label, [colX.played, colX.diff, colX.points][i], y + 22);
+    });
+    ctx.globalAlpha = 1;
+    y += groupHeaderH;
+    g.rankings.forEach((r, i) => {
+      ctx.fillStyle = i === 0 ? '#ffc800' : '#ffffff';
+      ctx.font = i === 0 ? 'bold 15px sans-serif' : '15px sans-serif';
+      ctx.textAlign = 'left';
+      ctx.fillText(`${i + 1}. ${r.name}`, colX.rank, y + 18);
+      ctx.textAlign = 'center';
+      ctx.fillText(String(r.played), colX.played, y + 18);
+      ctx.fillText((r.diff > 0 ? '+' : '') + r.diff, colX.diff, y + 18);
+      ctx.fillText(String(r.points), colX.points, y + 18);
+      y += rowH;
+    });
+    y += groupGap;
+  });
+
+  if (allMatches.length) {
+    ctx.textAlign = 'left';
+    ctx.fillStyle = '#ffc800';
+    ctx.font = 'bold 18px sans-serif';
+    ctx.fillText('⏱️ Spielplan', 40, y + 22);
+    y += matchesHeaderH;
+    allMatches.forEach((m) => {
+      const t1 = teams.find(t => t.id === m.t1Id);
+      const t2 = teams.find(t => t.id === m.t2Id);
+      const time = m.scheduledTime ? formatMatchTime(m.scheduledTime).replace(' Uhr', '') : '--:--';
+      const scoreTxt = m.played ? `${m.score1}:${m.score2}` : 'vs';
+      ctx.font = '14px sans-serif';
+      ctx.fillStyle = '#ffc800';
+      ctx.textAlign = 'left';
+      ctx.fillText(time, 40, y + 18);
+      ctx.fillStyle = '#ffffff';
+      ctx.fillText(`${t1 ? t1.name : '?'}  ${scoreTxt}  ${t2 ? t2.name : '?'}`, 120, y + 18);
+      y += matchRowH;
+    });
+  }
+
+  ctx.textAlign = 'center';
+  ctx.font = '12px sans-serif';
+  ctx.fillStyle = '#ffffff';
+  ctx.globalAlpha = 0.55;
+  ctx.fillText('Tims FAL Turniere', W / 2, H - 16);
+  ctx.globalAlpha = 1;
+
+  return canvas;
+}
+// Vom "📸 Spielplan als Bild"-Knopf im Gruppen-Tab aufgerufen - gleiches Teilen/Download-
+// Muster wie shareWrappedImage().
+async function shareScheduleImage() {
+  if (groups.length === 0 && groupMatches.length === 0 && koMatches.length === 0) {
+    return alert('Noch nichts zum Exportieren - erst Gruppen/Spielplan auslosen.');
+  }
+  const btn = document.getElementById('schedule-share-btn');
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ Bild wird erstellt...'; }
+  try {
+    const canvas = await renderScheduleToCanvas();
+    canvas.toBlob(async (blob) => {
+      if (btn) { btn.disabled = false; btn.textContent = '📸 Spielplan als Bild'; }
+      if (!blob) { alert('Bild konnte nicht erstellt werden.'); return; }
+      const tName = (tournamentsList[currentTournamentId] && tournamentsList[currentTournamentId].name) || 'turnier';
+      const fileName = `spielplan-${tName.toLowerCase().replace(/[^a-z0-9]+/g, '-')}.png`;
+      const file = new File([blob], fileName, { type: 'image/png' });
+      if (navigator.share && navigator.canShare && navigator.canShare({ files: [file] })) {
+        navigator.share({ files: [file], title: '📸 Spielplan', text: `📸 Spielplan & Tabelle - ${tName}` }).catch(() => {});
+      } else {
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = fileName;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 2000);
+      }
+    }, 'image/png');
+  } catch (e) {
+    if (btn) { btn.disabled = false; btn.textContent = '📸 Spielplan als Bild'; }
+    alert('Bild konnte nicht erstellt werden: ' + e.message);
   }
 }
