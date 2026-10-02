@@ -697,12 +697,12 @@ th { color: var(--fal-yellow); font-size: 0.8rem; text-transform: uppercase; }
    da die auf Handy-Bildschirmgröße optimiert sind, nicht auf Zimmerentfernung.
    ============================================================================ */
 .tv-mode-content {
-  height: 100%;
+  min-height: 100%;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  padding: 40px 60px;
+  padding: 70px 60px 40px;
   box-sizing: border-box;
   text-align: center;
 }
@@ -732,12 +732,17 @@ th { color: var(--fal-yellow); font-size: 0.8rem; text-transform: uppercase; }
   border-radius: 16px;
   padding: 20px 28px;
   min-width: 320px;
+  max-width: 100%;
+  box-sizing: border-box;
 }
 .tv-group-card h2 { color: var(--fal-yellow); margin: 0 0 12px 0; font-size: 1.8em; }
 .tv-table { border-collapse: collapse; font-size: 1.3em; width: 100%; }
 .tv-table th, .tv-table td { padding: 6px 14px; text-align: center; }
 .tv-table th { opacity: 0.6; font-size: 0.7em; text-transform: uppercase; }
 .tv-table td:nth-child(2) { text-align: left; }
+/* Team-Foto/Vereinswappen (siehe teamCrestImg() in script.js) neben dem Teamnamen - in
+   Tabelle, Spielplan und KO-Baum gleich ausgerichtet. */
+.tv-team-cell { display: inline-flex; align-items: center; gap: 8px; }
 .tv-table tr:first-child td { color: var(--fal-yellow); }
 .tv-matches-list {
   display: flex;
@@ -745,9 +750,30 @@ th { color: var(--fal-yellow); font-size: 0.8rem; text-transform: uppercase; }
   gap: 18px;
   font-size: 1.8em;
   max-width: 900px;
+  width: 100%;
 }
-.tv-match-row { display: flex; align-items: center; justify-content: center; gap: 24px; background: rgba(255,255,255,0.06); border-radius: 14px; padding: 14px 28px; }
+.tv-match-row { display: flex; align-items: center; justify-content: center; gap: 24px; background: rgba(255,255,255,0.06); border-radius: 14px; padding: 14px 28px; flex-wrap: wrap; }
 .tv-match-time { color: var(--fal-yellow); font-weight: bold; min-width: 90px; }
-.tv-ko-rounds { display: flex; gap: 40px; flex-wrap: wrap; justify-content: center; }
+.tv-ko-rounds { display: flex; gap: 40px; flex-wrap: wrap; justify-content: center; max-width: 100%; }
 .tv-ko-round h3 { color: var(--fal-yellow); font-size: 1.4em; margin: 0 0 12px 0; }
 .tv-ko-match { font-size: 1.3em; background: rgba(255,255,255,0.06); border-radius: 10px; padding: 10px 20px; margin-bottom: 10px; }
+
+/* Handy/kleiner Bildschirm: deutlich kleinere Schrift/Abstände, Name wandert aus der
+   Ecke zurück in den normalen Textfluss (sonst überlappt er mit dem ✕-Knopf), und
+   Gruppen-/KO-Karten bekommen volle Breite statt einer festen Mindestbreite von 320px,
+   die auf einem Handy breiter als der Bildschirm wäre. */
+@media (max-width: 768px) {
+  .tv-mode-content { padding: 56px 16px 24px; }
+  .tv-tournament-name { position: static; display: block; margin-bottom: 14px; font-size: 1em; }
+  .tv-heading { font-size: 1.7em; margin-bottom: 18px; }
+  .tv-empty { font-size: 1.1em; }
+  .tv-groups-grid, .tv-ko-rounds { gap: 18px; }
+  .tv-group-card { min-width: 0; width: 100%; padding: 14px 16px; }
+  .tv-group-card h2 { font-size: 1.3em; }
+  .tv-table { font-size: 0.95em; }
+  .tv-table th, .tv-table td { padding: 4px 6px; }
+  .tv-matches-list { font-size: 1.1em; gap: 10px; }
+  .tv-match-row { padding: 10px 14px; gap: 10px; }
+  .tv-ko-round h3 { font-size: 1.1em; }
+  .tv-ko-match { font-size: 1em; padding: 8px 12px; }
+}

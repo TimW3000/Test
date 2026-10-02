@@ -858,6 +858,10 @@ function toggleHeaderDetails() {
 // jetzt im Profil-Screen (siehe renderProfile), nicht mehr direkt im Header.
 function renderUserBadge() {
   renderHeaderGodBadge();
+  // TV-Modus nur für reine Zuschauer:innen anbieten - Admin/Ref/Spieler haben ohnehin schon
+  // ihr eigenes Aktionsraster im Header, da wirkt ein zusätzlicher TV-Knopf nur überladen.
+  const tvBtn = document.getElementById('header-tv-mode-btn');
+  if (tvBtn) tvBtn.style.display = !getPlayerObj(myPlayerName) ? 'flex' : 'none';
   // Der Header zeigt jetzt (seit es mehrere Turniere gleichzeitig gibt) NUR NOCH den echten
   // Turniernamen groß oben - "FAL FIFA/Darts Turnier" stand vor der Mehrturnier-Funktion für
   // DAS eine Turnier und wirkte seitdem wie unnötige Redundanz. Ein kleines Sport-Emoji davor
@@ -1878,7 +1882,19 @@ function deleteGlobalPlayerAsGod(key) {
   if (key === 'tim') return alert('Du kannst dich nicht selbst aus der Liste löschen.');
   const name = (globalPlayers[key] && globalPlayers[key].name) || key;
   if (!confirm(`Identität "${name}" wirklich aus der Liste löschen?`)) return;
-  db.ref('globalPlayers/' + key).remove().catch((error) => alert('⚠️ Löschen fehlgeschlagen:\n' + error.message));
+  // Räumt beim Löschen direkt auch alle VERWEISE anderer Spieler auf diese Identität auf
+  // (Freundschaften/-anfragen) - sonst bliebe sie als "Geister-Freund" mit dem rohen
+  // Schlüssel als Namen für immer in fremden Listen stehen (siehe renderProfile(), das den
+  // Namen nur per Live-Lookup in globalPlayers auflöst). Ein einzelnes Multi-Pfad-update()
+  // erledigt das Löschen + Aufräumen atomar in einem Schritt.
+  const updates = { ['globalPlayers/' + key]: null };
+  Object.keys(globalPlayers).forEach((otherKey) => {
+    if (otherKey === key) return;
+    const otherGp = globalPlayers[otherKey];
+    if (otherGp && otherGp.friends && otherGp.friends[key]) updates['globalPlayers/' + otherKey + '/friends/' + key] = null;
+    if (otherGp && otherGp.friendRequests && otherGp.friendRequests[key]) updates['globalPlayers/' + otherKey + '/friendRequests/' + key] = null;
+  });
+  db.ref().update(updates).catch((error) => alert('⚠️ Löschen fehlgeschlagen:\n' + error.message));
 }
 // ============================================================================
 // 4d. PROFIL-SYSTEM — eigenes Profil (Bio, Foto) bearbeiten, fremde Profile nur ansehen,
@@ -2027,7 +2043,13 @@ function renderProfile() {
   }
 
   if (viewingOwn) {
-    const requestKeys = Object.keys(gp.friendRequests || {});
+    // Selbstheilung: zeigt eine Freundschaft/-anfrage zu einer Identität, die der God
+    // inzwischen komplett gelöscht hat (siehe deleteGlobalPlayerAsGod), NICHT mehr als
+    // "Geister-Freund" mit dem rohen Schlüssel als Namen an - und räumt den toten Verweis
+    // gleich aus der eigenen Liste raus, statt dass er für immer dort rumhängt.
+    const requestKeysRaw = Object.keys(gp.friendRequests || {});
+    const requestKeys = requestKeysRaw.filter(k => !!globalPlayers[k]);
+    requestKeysRaw.filter(k => !globalPlayers[k]).forEach(k => db.ref('globalPlayers/' + myKey + '/friendRequests/' + k).remove());
     html += `<h4 style="margin-bottom:6px;">⏳ Freundschaftsanfragen (${requestKeys.length})</h4>`;
     html += requestKeys.length === 0 ? '<p class="empty-state">Keine offenen Anfragen.</p>' : requestKeys.map(k => `
       <div style="display:flex; justify-content:space-between; align-items:center; background: var(--fal-blue-primary); padding: 6px 12px; border-radius: 8px; margin-bottom: 6px;">
@@ -2039,7 +2061,9 @@ function renderProfile() {
       </div>
     `).join('');
 
-    const friendKeys = Object.keys(gp.friends || {});
+    const friendKeysRaw = Object.keys(gp.friends || {});
+    const friendKeys = friendKeysRaw.filter(k => !!globalPlayers[k]);
+    friendKeysRaw.filter(k => !globalPlayers[k]).forEach(k => db.ref('globalPlayers/' + myKey + '/friends/' + k).remove());
     html += `<h4 style="margin:14px 0 6px;">🤝 Freunde (${friendKeys.length})</h4>`;
     html += friendKeys.length === 0 ? '<p class="empty-state">Noch keine Freunde.</p>' : friendKeys.map(k => `
       <div style="display:flex; justify-content:space-between; align-items:center; background: var(--fal-blue-primary); padding: 6px 12px; border-radius: 8px; margin-bottom: 6px;">
@@ -6317,9 +6341,10 @@ function renderTVModeContent() {
         <h2>${escapeHtml(g.letter)}</h2>
         <table class="tv-table">
           <tr><th></th><th>Team</th><th>Sp.</th><th>Diff</th><th>Pkt.</th></tr>
-          ${g.rankings.map((r, i) => `
-            <tr><td>${i + 1}.</td><td>${escapeHtml(r.name)}</td><td>${r.played}</td><td>${r.diff > 0 ? '+' : ''}${r.diff}</td><td><strong>${r.points}</strong></td></tr>
-          `).join('')}
+          ${g.rankings.map((r, i) => {
+            const team = teams.find(t => t.id === r.teamId);
+            return `<tr><td>${i + 1}.</td><td><span class="tv-team-cell">${teamCrestImg(team, 32)}${escapeHtml(r.name)}</span></td><td>${r.played}</td><td>${r.diff > 0 ? '+' : ''}${r.diff}</td><td><strong>${r.points}</strong></td></tr>`;
+          }).join('')}
         </table>
       </div>
     `).join('') + `</div>`;
@@ -6328,7 +6353,7 @@ function renderTVModeContent() {
       const t1 = teams.find(t => t.id === m.t1Id);
       const t2 = teams.find(t => t.id === m.t2Id);
       const time = m.scheduledTime ? new Date(m.scheduledTime).toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' }) : '--:--';
-      return `<div class="tv-match-row"><span class="tv-match-time">${time}</span><span>${escapeHtml(t1 ? t1.name : '?')} vs ${escapeHtml(t2 ? t2.name : '?')}</span></div>`;
+      return `<div class="tv-match-row"><span class="tv-match-time">${time}</span><span class="tv-team-cell">${teamCrestImg(t1, 40)}${escapeHtml(t1 ? t1.name : '?')}</span><span>vs</span><span class="tv-team-cell">${teamCrestImg(t2, 40)}${escapeHtml(t2 ? t2.name : '?')}</span></div>`;
     }).join('') + `</div>`;
   } else if (view === 'ko') {
     const roundNumbers = [...new Set(koMatches.map(m => m.roundNumber || 0))].sort((a, b) => a - b);
@@ -6339,7 +6364,7 @@ function renderTVModeContent() {
         const t1 = teams.find(t => t.id === m.t1Id);
         const t2 = teams.find(t => t.id === m.t2Id);
         const scoreTxt = m.played ? `${m.score1}:${m.score2}` : 'vs';
-        return `<div class="tv-ko-match">${escapeHtml(t1 ? t1.name : '?')} <strong>${scoreTxt}</strong> ${escapeHtml(t2 ? t2.name : '?')}</div>`;
+        return `<div class="tv-ko-match"><span class="tv-team-cell">${teamCrestImg(t1, 28)}${escapeHtml(t1 ? t1.name : '?')}</span> <strong>${scoreTxt}</strong> <span class="tv-team-cell">${teamCrestImg(t2, 28)}${escapeHtml(t2 ? t2.name : '?')}</span></div>`;
       }).join('') + `</div>`;
     }).join('') + `</div>`;
   }
