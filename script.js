@@ -6684,7 +6684,13 @@ function closeGagManager() {
 // bei Bedarf die (vom Effekt-Typ abhängigen) Formularfelder neu auf.
 function updateGagFormField(field, value) {
   gagFormDraft[field] = value;
-  if (field === 'effectType') { gagFormDraft.mediaData = null; gagFormDraft.mediaLabel = ''; }
+  // Nur beim Typ-Wechsel neu rendern (ändert, welche Felder überhaupt sichtbar sind - Datei-
+  // Upload vs. Preset-Auswahl, Dauer-Feld ja/nein). Bei allen anderen Feldern (v.a. beim
+  // Namens-Textfeld) würde ein Neu-Rendern bei JEDEM Tastendruck das Eingabefeld komplett neu
+  // aufbauen und damit den Fokus/Cursor verlieren - fühlt sich an, als würde es sich "schließen".
+  if (field !== 'effectType') return;
+  gagFormDraft.mediaData = null;
+  gagFormDraft.mediaLabel = '';
   renderGagManager();
 }
 // Liest eine hochgeladene Datei (Bild/Sound/Video) als data:-URL ein - Bilder werden dabei wie
@@ -6811,7 +6817,7 @@ function renderGagManager() {
 
     <h4 style="margin-bottom:6px;">+ Neuer Effekt</h4>
     <div style="display:flex; flex-direction:column; gap:8px;">
-      <input type="text" placeholder="Name (nur zur eigenen Übersicht, z.B. 'Bobs Gabelstapler')" value="${escapeHtml(gagFormDraft.name)}" oninput="updateGagFormField('name', this.value)">
+      <input type="text" id="gag-effect-name-input" placeholder="Name (nur zur eigenen Übersicht, z.B. 'Bobs Gabelstapler')" value="${escapeHtml(gagFormDraft.name)}" oninput="updateGagFormField('name', this.value)">
       <select onchange="updateGagFormField('targetPlayerKey', this.value)">
         <option value="">-- Zielperson wählen --</option>
         ${playerOptions}
