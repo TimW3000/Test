@@ -7146,10 +7146,19 @@ function renderDbExplorer() {
     </p>
     <p style="font-size:0.75em; opacity:0.6; margin-top:-6px; margin-bottom:12px;">
       Schätzung über die JSON-Textgröße (ungefähr proportional zur tatsächlichen Firebase-Größe,
-      nicht exakt identisch - die echten Werte/Limits stehen in der Firebase-Konsole). ⚠️
-      Bearbeiten/Löschen unten greift SOFORT &amp; komplett ungefiltert in die Datenbank ein,
-      ohne irgendeine der sonstigen App-Prüfungen - nur im Notfall nutzen!
+      nicht exakt identisch). ⚠️ Bearbeiten/Löschen unten greift SOFORT &amp; komplett ungefiltert
+      in die Datenbank ein, ohne irgendeine der sonstigen App-Prüfungen - nur im Notfall nutzen!
     </p>
+    <div style="background:rgba(255,255,255,0.06); border-radius:8px; padding:10px 12px; margin-bottom:14px;">
+      <p style="font-size:0.82em; margin:0 0 6px 0;">
+        📈 <strong>Tages-Downloads &amp; "wie voll ist die Datenbank wirklich"</strong> kann diese
+        Seite dir NICHT anzeigen - diese Zahlen zählt Google serverseitig über ALLE Geräte/
+        Besucher:innen hinweg mit, kein Browser (auch nicht als God) kommt da technisch dran.
+        Die Größen-Übersicht oben ist nur eine Schätzung von dem, was GERADE in der Datenbank
+        liegt - keine Download-Historie.
+      </p>
+      <a href="https://console.firebase.google.com/project/${firebaseConfig.projectId}/usage" target="_blank" rel="noopener" class="btn-secondary btn-sm" style="display:inline-block; text-decoration:none;">🔗 Echte Nutzung in der Firebase-Konsole ansehen</a>
+    </div>
     <div style="margin-bottom:14px;">
       ${breakdown.map(b => `
         <div style="margin-bottom:6px;">
