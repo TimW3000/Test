@@ -73,6 +73,7 @@ window.handleClubLogoFileSelected = handleClubLogoFileSelected;
 window.triggerTeamPhotoUpload = triggerTeamPhotoUpload;
 window.handleTeamPhotoFileSelected = handleTeamPhotoFileSelected;
 window.setTeamDisplayMode = setTeamDisplayMode;
+window.removeTeamPhoto = removeTeamPhoto;
 window.startInteractiveDraft = startInteractiveDraft;
 window.addDraftCheat = addDraftCheat;
 window.removeDraftCheat = removeDraftCheat;
@@ -131,6 +132,7 @@ window.openProfile = openProfile;
 window.closeProfile = closeProfile;
 window.renderProfilePlayerList = renderProfilePlayerList;
 window.triggerProfilePicUpload = triggerProfilePicUpload;
+window.removeProfilePic = removeProfilePic;
 window.handleProfilePicFileSelected = handleProfilePicFileSelected;
 window.saveProfileBio = saveProfileBio;
 window.saveProfileColorSettings = saveProfileColorSettings;
@@ -639,6 +641,17 @@ function setTeamDisplayMode(teamId, mode) {
   const team = teams.find(t => t.id === teamId);
   if (!canEditTeamPhoto(team)) return;
   team.displayMode = mode;
+  saveData();
+  renderAll();
+}
+// Entfernt ein hochgeladenes Team-Foto wieder komplett (fällt automatisch zurück aufs
+// Vereinswappen) - dieselben Rechte wie beim Hochladen (Team-Mitglieder selbst oder Admin/Ref).
+function removeTeamPhoto(teamId) {
+  const team = teams.find(t => t.id === teamId);
+  if (!canEditTeamPhoto(team) || !team.photo) return;
+  if (!confirm('Team-Foto wirklich entfernen? Es wird dann wieder das Vereinswappen angezeigt.')) return;
+  team.photo = null;
+  team.displayMode = 'club';
   saveData();
   renderAll();
 }
@@ -2001,7 +2014,10 @@ function renderProfile() {
           ${gp.favoriteClub ? `${clubLogoImg(gp.favoriteClub, 14)}${escapeHtml(gp.favoriteClub)}` : ''}
         </div>
       ` : ''}
-      ${viewingOwn ? `<button class="btn-secondary btn-sm" onclick="triggerProfilePicUpload()">📷 Profilbild ${gp.profilePic ? 'ändern' : 'hochladen'}</button>` : friendActionHtml}
+      ${viewingOwn ? `
+        <button class="btn-secondary btn-sm" onclick="triggerProfilePicUpload()">📷 Profilbild ${gp.profilePic ? 'ändern' : 'hochladen'}</button>
+        ${gp.profilePic ? `<button class="btn-danger btn-sm" onclick="removeProfilePic()">🗑️ Entfernen</button>` : ''}
+      ` : friendActionHtml}
     </div>
   `;
 
@@ -2143,6 +2159,14 @@ function handleProfilePicFileSelected(event) {
     db.ref('globalPlayers/' + myKey + '/profilePic').set(dataUrl)
       .catch((error) => alert('⚠️ Foto konnte nicht gespeichert werden:\n' + error.message));
   });
+}
+// Entfernt das eigene Profilbild wieder (fällt zurück auf das generische 👤-Platzhalterbild)
+function removeProfilePic() {
+  if (!myPlayerName) return;
+  if (!confirm('Profilbild wirklich entfernen?')) return;
+  const myKey = myPlayerName.trim().toLowerCase();
+  db.ref('globalPlayers/' + myKey + '/profilePic').remove()
+    .catch((error) => alert('⚠️ Foto konnte nicht entfernt werden:\n' + error.message));
 }
 // Speichert den "Über mich"-Text der eigenen Identität
 function saveProfileBio() {
@@ -5170,6 +5194,7 @@ function renderTeams() {
               <label style="font-size:0.8em; display:flex; align-items:center; gap:4px;">
                 <input type="radio" name="team-display-${t.id}" ${usingPhoto ? 'checked' : ''} onchange="setTeamDisplayMode(${t.id}, 'photo')"> Foto
               </label>
+              <button class="btn-danger btn-sm" onclick="removeTeamPhoto(${t.id})">🗑️ Foto entfernen</button>
             ` : ''}
           </div>
         ` : ''}
@@ -6769,6 +6794,19 @@ function testPlayGagEffect(id) {
   if (customEffects[id]) playGagEffect(customEffects[id]);
 }
 const GAG_EFFECT_TYPE_LABELS = { sound: '🔊 Sound', image: '🖼️ Bild', video: '🎬 Video', preset: '🎭 Vorgefertigte Animation' };
+// Schätzt die Rohgröße (Bytes) eines als data:-URL gespeicherten Mediums - base64 kodiert 3 Byte
+// als 4 Zeichen, die geschätzte Rohgröße ist also ungefähr 3/4 der String-Länge. Wichtig, weil
+// JEDER Gag-Effekt mit eigenem Bild/Sound/Video komplett in DEINER Firebase-Datenbank landet
+// (keine separate Datei-Ablage) - bei vielen/großen Videos kann das ins Datenbank-Kontingent
+// gehen, deshalb hier sichtbar machen statt es unbemerkt wachsen zu lassen.
+function estimateMediaBytes(dataUrl) {
+  if (!dataUrl) return 0;
+  return Math.round(dataUrl.length * 0.75);
+}
+function formatBytes(bytes) {
+  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(0) + ' KB';
+  return (bytes / 1024 / 1024).toFixed(1) + ' MB';
+}
 function renderGagManager() {
   const container = document.getElementById('gag-manager-container');
   if (!container) return;
@@ -6780,6 +6818,7 @@ function renderGagManager() {
   const presetOptions = Object.keys(GAG_ANIMATION_PRESETS)
     .map(key => `<option value="${key}" ${gagFormDraft.presetKey === key ? 'selected' : ''}>${escapeHtml(GAG_ANIMATION_PRESETS[key].label)}</option>`).join('');
 
+  const totalBytes = effectIds.reduce((sum, id) => sum + estimateMediaBytes(customEffects[id].mediaData), 0);
   const list = effectIds.length === 0 ? '<p class="empty-state">Noch keine Gag-Effekte angelegt.</p>' : effectIds.map((id) => {
     const e = customEffects[id];
     const targetName = (globalPlayers[e.targetPlayerKey] && globalPlayers[e.targetPlayerKey].name) || e.targetPlayerKey;
@@ -6787,7 +6826,7 @@ function renderGagManager() {
       <div style="background: var(--fal-blue-primary); padding: 8px 12px; border-radius: 8px; margin-bottom: 6px;">
         <div style="display:flex; flex-wrap:wrap; justify-content:space-between; align-items:center; gap:8px;">
           <span style="font-size:0.9em; ${e.enabled === false ? 'opacity:0.5; text-decoration:line-through;' : ''}">
-            ${GAG_EFFECT_TYPE_LABELS[e.effectType] || e.effectType} - <strong>${escapeHtml(e.name)}</strong><br>
+            ${GAG_EFFECT_TYPE_LABELS[e.effectType] || e.effectType} - <strong>${escapeHtml(e.name)}</strong>${e.mediaData ? ` <span style="opacity:0.6;">(${formatBytes(estimateMediaBytes(e.mediaData))})</span>` : ''}<br>
             <span style="font-size:0.85em; opacity:0.75;">🎯 bei: ${escapeHtml(targetName)}</span>
           </span>
           <div style="display:flex; gap:5px; flex-wrap:wrap;">
@@ -6810,6 +6849,11 @@ function renderGagManager() {
       Löst automatisch Sound/Bild/Video/Animation aus, sobald eine bestimmte Person bei einer
       Live-Auslosung (Glücksrad) gezogen wird - sichtbar für ALLE Zuschauer:innen gleichzeitig,
       nicht nur bei dir. Website-weit, unabhängig vom aktuellen Turnier.
+    </p>
+    <p style="font-size:0.8em; opacity:0.65; margin-top:-4px;">
+      ⚠️ Jede Datei landet direkt in deiner Firebase-Datenbank (keine separate Datei-Ablage) -
+      aktuell belegt: <strong>${formatBytes(totalBytes)}</strong>. Bei vielen/langen Videos lieber
+      kurz &amp; komprimiert halten statt riesige Dateien hochzuladen.
     </p>
 
     <h4 style="margin-bottom:6px;">Bestehende Effekte (${effectIds.length})</h4>
