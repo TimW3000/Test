@@ -195,10 +195,14 @@ const db = firebase.database();
 // Das "God-Passwort" gilt website-weit für den Namen "tim" (siehe isGod()) - komplett
 // unabhängig von den einzelnen, pro Turnier selbst gewählten Admin-Passwörtern.
 const GOD_PASSWORD = "1234";
+// Von oben nach unten nach Stärke/Prestige sortiert - wird z.B. bei weniger Spielern als
+// Clubs genutzt, um die OBERSTEN (stärksten) zuerst zu übernehmen (siehe Profi-Clubs-
+// Verwaltung: wer die Liste manuell kürzt, kürzt am Ende, nicht am Anfang).
 const DEFAULT_CLUBS = [
-  "Real Madrid", "FC Bayern", "ManCity", "Arsenal",
-  "FC Barcelona", "PSG", "Inter Mailand", "Leverkusen",
-  "Liverpool", "ManU", "Atletico", "BVB"
+  "Real Madrid", "FC Bayern", "FC Barcelona", "PSG",
+  "ManCity", "Liverpool", "Inter Mailand", "Arsenal",
+  "Atletico", "Leverkusen", "BVB", "ManU",
+  "Chelsea", "AC Milan", "Juventus", "Napoli"
 ];
 const DEFAULT_RULES = "Noch keine Regeln festgelegt. Der Admin kann sie hier eintragen.";
 // Feste 18er-Farbpalette fürs Glücksrad (Spieler & unbekannte Clubs)
@@ -220,7 +224,11 @@ const KNOWN_CLUB_COLORS = {
   "Liverpool": "#C8102E",
   "ManU": "#DA291C",
   "Atletico": "#CE3524",
-  "BVB": "#FDE100"
+  "BVB": "#FDE100",
+  "Chelsea": "#034694",
+  "AC Milan": "#FB090B",
+  "Juventus": "#000000",
+  "Napoli": "#12A0D7"
 };
 // Standard-Wappen für die 12 Standard-Topteams (Wikipedia/Wikimedia Commons).
 // Damit muss der Admin die Wappen-URLs nicht mehr von Hand heraussuchen und
@@ -239,7 +247,11 @@ const DEFAULT_CLUB_LOGOS = {
   "Liverpool": "https://upload.wikimedia.org/wikipedia/en/0/0c/Liverpool_FC.svg",
   "ManU": "https://upload.wikimedia.org/wikipedia/en/7/7a/Manchester_United_FC_crest.svg",
   "Atletico": "https://upload.wikimedia.org/wikipedia/en/f/f9/Atletico_Madrid_Logo_2024.svg",
-  "BVB": "https://upload.wikimedia.org/wikipedia/commons/6/67/Borussia_Dortmund_logo.svg"
+  "BVB": "https://upload.wikimedia.org/wikipedia/commons/6/67/Borussia_Dortmund_logo.svg",
+  "Chelsea": "https://upload.wikimedia.org/wikipedia/en/c/cc/Chelsea_FC.svg",
+  "AC Milan": "https://upload.wikimedia.org/wikipedia/commons/d/d0/Logo_of_AC_Milan.svg",
+  "Juventus": "https://upload.wikimedia.org/wikipedia/commons/e/ed/Juventus_FC_-_logo_black_%28Italy%2C_2020%29.svg",
+  "Napoli": "https://upload.wikimedia.org/wikipedia/commons/4/4d/SSC_Napoli_2025_%28white_and_azure%29.svg"
 };
 // ============================================================================
 // 2. ZUSTAND — globale Variablen, die den kompletten Turnier-Stand abbilden.
@@ -6483,11 +6495,45 @@ function renderTVModeContent() {
 //     es herunter. Für alle Rollen, rein lesend, kein Drucker nötig - landet einfach in
 //     der Galerie bzw. direkt im Gruppenchat.
 // ============================================================================
+// Kürzt einen Text mit "…", falls er in maxWidth nicht reinpasst - verhindert, dass lange
+// Team-/Vereinsnamen mit Nachbarelementen (Spalten, Ergebnisfeldern) überlappen.
+function truncateCanvasText(ctx, text, maxWidth) {
+  if (ctx.measureText(text).width <= maxWidth) return text;
+  let t = text;
+  while (t.length > 1 && ctx.measureText(t + '…').width > maxWidth) t = t.slice(0, -1);
+  return t + '…';
+}
+// Zeichnet ein abgerundetes Rechteck (eigene Implementierung statt ctx.roundRect, da das in
+// älteren/headless Chromium-Versionen noch fehlen kann).
+function roundedRectPath(ctx, x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r);
+  ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r);
+  ctx.arcTo(x, y, x + w, y, r);
+  ctx.closePath();
+}
+// Teilt eine Liste von Elementen auf ein Grid mit `cols` Spalten auf und berechnet die Höhe
+// jeder Grid-Zeile (= Maximum der itemHeightFn aller Elemente in dieser Zeile) - gemeinsam von
+// der Höhen-Vorausberechnung UND dem eigentlichen Zeichnen genutzt, damit beide IMMER exakt
+// dieselbe Aufteilung ergeben.
+function gridRowHeights(items, cols, itemHeightFn) {
+  const heights = [];
+  for (let i = 0; i < items.length; i += cols) {
+    let maxH = 0;
+    for (let j = i; j < Math.min(i + cols, items.length); j++) maxH = Math.max(maxH, itemHeightFn(items[j]));
+    heights.push(maxH);
+  }
+  return heights;
+}
 // mode: 'both' (Standard, Tabelle+Spielplan zusammen) | 'table' (nur Tabelle) | 'schedule' (nur
 // Spielplan). includeBlankBoxes gilt nur bei mode='schedule': zeichnet statt des digitalen
 // Ergebnisses ein klassisches leeres Ergebnisfeld (zwei Kästchen + Doppelpunkt) zum
 // handschriftlichen Eintragen mit Stift auf dem Ausdruck - für alle, die das Papier statt
-// digital tracken wollen.
+// digital tracken wollen. Tabelle(n) und Spielplan landen als Karten/Zeilen in einem Grid
+// (2 Spalten bei genug Inhalt), damit die Breite der Seite wirklich genutzt wird, statt einer
+// einzigen, sehr langen schmalen Spalte.
 async function renderScheduleToCanvas(mode, includeBlankBoxes) {
   mode = mode || 'both';
   const showTable = mode === 'both' || mode === 'table';
@@ -6497,23 +6543,44 @@ async function renderScheduleToCanvas(mode, includeBlankBoxes) {
   const standings = (showTable && hasRealGroups) ? calculateGroupStandings() : [];
   const allMatches = showSchedule ? [...groupMatches, ...koMatches] : [];
 
-  const W = 800;
-  const rowH = 26;
-  const groupHeaderH = 36;
-  const groupGap = 16;
-  const standingsH = standings.reduce((sum, g) => sum + groupHeaderH + g.rankings.length * rowH + groupGap, 0);
-  // Mit leeren Ergebnisfeldern etwas mehr Zeilenhöhe, damit die Kästchen Luft zum Atmen haben.
-  const matchRowH = includeBlankBoxes ? 36 : 26;
-  const matchesHeaderH = 44;
-  const matchesH = allMatches.length ? matchesHeaderH + allMatches.length * matchRowH : 0;
-  const headerH = 90;
-  const footerH = 36;
-  const H = Math.max(300, headerH + standingsH + matchesH + footerH + 20);
+  const W = 880;
+  const M = 36; // äußerer Seitenrand
+  const CW = W - 2 * M; // nutzbare Innenbreite
+  const headerH = 104;
+  const sectionHeaderH = 36;
+  const sectionGap = 30; // Abstand zwischen Tabellen- und Spielplan-Bereich
+
+  // --- Layout "Tabelle": Karten im Grid, 2 Spalten sobald mind. 2 Gruppen ---
+  const tableCols = standings.length >= 2 ? 2 : 1;
+  const tableColGap = 20;
+  const tableCardW = tableCols === 2 ? (CW - tableColGap) / 2 : CW;
+  const cardPad = 16;
+  const cardHeaderH = 34;
+  const standingsRowH = 25;
+  const standingsCardH = (g) => cardPad * 2 + cardHeaderH + g.rankings.length * standingsRowH;
+  const standingsRowGap = 18;
+  const standingsGridRowHeights = gridRowHeights(standings, tableCols, standingsCardH);
+  const standingsBodyH = standingsGridRowHeights.reduce((s, h) => s + h, 0) + Math.max(0, standingsGridRowHeights.length - 1) * standingsRowGap;
+  const standingsSectionH = standings.length ? sectionHeaderH + standingsBodyH : 0;
+
+  // --- Layout "Spielplan": Zeilen im Grid, 2 Spalten bei vielen Spielen ---
+  const matchCols = allMatches.length > 8 ? 2 : (allMatches.length ? 1 : 0);
+  const matchColGap = 24;
+  const matchColW = matchCols === 2 ? (CW - matchColGap) / 2 : CW;
+  const matchRowH = includeBlankBoxes ? 42 : 34;
+  const matchRowGap = 6;
+  const matchRowsPerCol = matchCols ? Math.ceil(allMatches.length / matchCols) : 0;
+  const matchesBodyH = matchRowsPerCol * (matchRowH + matchRowGap) - (matchRowsPerCol ? matchRowGap : 0);
+  const matchesSectionH = allMatches.length ? sectionHeaderH + matchesBodyH : 0;
+
+  const footerH = 40;
+  const H = Math.max(320, headerH + standingsSectionH + (standings.length && allMatches.length ? sectionGap : 0) + matchesSectionH + footerH);
 
   const canvas = document.createElement('canvas');
   canvas.width = W; canvas.height = H;
   const ctx = canvas.getContext('2d');
 
+  // --- Hintergrund + Rahmen ---
   const bgGrad = ctx.createLinearGradient(0, 0, 0, H);
   bgGrad.addColorStop(0, '#0b192c');
   bgGrad.addColorStop(1, '#1e3e62');
@@ -6523,79 +6590,193 @@ async function renderScheduleToCanvas(mode, includeBlankBoxes) {
   ctx.lineWidth = 5;
   ctx.strokeRect(2.5, 2.5, W - 5, H - 5);
 
+  // --- Kopfbereich ---
   ctx.textAlign = 'center';
   ctx.fillStyle = '#ffc800';
-  ctx.font = 'bold 26px sans-serif';
-  ctx.fillText('🏆 ' + tName, W / 2, 48);
+  ctx.font = 'bold 28px sans-serif';
+  ctx.fillText('🏆 ' + tName, W / 2, 50);
   ctx.fillStyle = '#ffffff';
   ctx.font = '14px sans-serif';
   ctx.globalAlpha = 0.7;
   const subtitle = mode === 'table' ? 'Tabelle' : mode === 'schedule' ? (includeBlankBoxes ? 'Spielplan zum Ausfüllen' : 'Spielplan') : 'Spielplan & Tabelle';
-  ctx.fillText(subtitle, W / 2, 74);
+  ctx.fillText(subtitle, W / 2, 76);
   ctx.globalAlpha = 1;
+  ctx.strokeStyle = 'rgba(255,255,255,0.15)';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(M, headerH - 16);
+  ctx.lineTo(W - M, headerH - 16);
+  ctx.stroke();
 
   let y = headerH;
-  const colX = { rank: 56, name: 80, played: 560, diff: 640, points: 730 };
-  standings.forEach((g) => {
+
+  // --- Tabelle(n) als Karten-Grid zeichnen ---
+  if (standings.length) {
     ctx.textAlign = 'left';
     ctx.fillStyle = '#ffc800';
-    ctx.font = 'bold 18px sans-serif';
-    ctx.fillText(g.letter, 40, y + 22);
-    ctx.font = '12px sans-serif';
-    ctx.globalAlpha = 0.6;
-    ['Sp.', 'Diff', 'Pkt.'].forEach((label, i) => {
-      ctx.textAlign = 'center';
-      ctx.fillText(label, [colX.played, colX.diff, colX.points][i], y + 22);
-    });
-    ctx.globalAlpha = 1;
-    y += groupHeaderH;
-    g.rankings.forEach((r, i) => {
-      ctx.fillStyle = i === 0 ? '#ffc800' : '#ffffff';
-      ctx.font = i === 0 ? 'bold 15px sans-serif' : '15px sans-serif';
-      ctx.textAlign = 'left';
-      ctx.fillText(`${i + 1}. ${r.name}`, colX.rank, y + 18);
-      ctx.textAlign = 'center';
-      ctx.fillText(String(r.played), colX.played, y + 18);
-      ctx.fillText((r.diff > 0 ? '+' : '') + r.diff, colX.diff, y + 18);
-      ctx.fillText(String(r.points), colX.points, y + 18);
-      y += rowH;
-    });
-    y += groupGap;
-  });
+    ctx.font = 'bold 19px sans-serif';
+    ctx.fillText('📊 Tabelle', M, y + 20);
+    y += sectionHeaderH;
 
+    for (let rowIdx = 0; rowIdx < standingsGridRowHeights.length; rowIdx++) {
+      const rowH2 = standingsGridRowHeights[rowIdx];
+      for (let col = 0; col < tableCols; col++) {
+        const g = standings[rowIdx * tableCols + col];
+        if (!g) continue;
+        const cardX = M + col * (tableCardW + tableColGap);
+        const cardH = standingsCardH(g);
+        // Karten-Panel
+        roundedRectPath(ctx, cardX, y, tableCardW, cardH, 10);
+        ctx.fillStyle = 'rgba(255,255,255,0.045)';
+        ctx.fill();
+        ctx.strokeStyle = 'rgba(255,255,255,0.14)';
+        ctx.lineWidth = 1;
+        ctx.stroke();
+
+        // Karten-Kopf: Gruppen-Badge + Spaltenköpfe. g.letter ist bereits der komplette Name
+        // ("Gruppe A", siehe generateGroupLetters) - fürs kompakte Badge nur den letzten
+        // Buchstaben nehmen, der volle Name steht daneben als Überschrift.
+        const innerX = cardX + cardPad;
+        const innerW = tableCardW - cardPad * 2;
+        const statsW = 150; // Sp./Diff/Pkt. zusammen
+        const nameW = innerW - statsW;
+        const statColX = [innerX + nameW + 40, innerX + nameW + 90, innerX + nameW + 140];
+        const groupBadgeLetter = g.letter.trim().slice(-1);
+        ctx.beginPath();
+        ctx.arc(innerX + 13, y + cardPad + 11, 13, 0, Math.PI * 2);
+        ctx.fillStyle = '#ffc800';
+        ctx.fill();
+        ctx.fillStyle = '#0b192c';
+        ctx.font = 'bold 13px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillText(groupBadgeLetter, innerX + 13, y + cardPad + 15);
+        ctx.fillStyle = '#ffffff';
+        ctx.font = 'bold 14px sans-serif';
+        ctx.textAlign = 'left';
+        ctx.fillText(g.letter, innerX + 32, y + cardPad + 16);
+        ctx.font = '11px sans-serif';
+        ctx.globalAlpha = 0.55;
+        ['Sp.', 'Diff', 'Pkt.'].forEach((label, i) => {
+          ctx.textAlign = 'center';
+          ctx.fillText(label, statColX[i], y + cardPad + 16);
+        });
+        ctx.globalAlpha = 1;
+
+        let ry = y + cardPad + cardHeaderH;
+        g.rankings.forEach((r, i) => {
+          if (i % 2 === 1) {
+            ctx.fillStyle = 'rgba(255,255,255,0.03)';
+            ctx.fillRect(innerX - 6, ry, innerW + 12, standingsRowH);
+          }
+          const isLeader = i === 0;
+          ctx.fillStyle = isLeader ? '#ffc800' : '#ffffff';
+          ctx.font = isLeader ? 'bold 13px sans-serif' : '13px sans-serif';
+          ctx.textAlign = 'left';
+          const nameText = truncateCanvasText(ctx, `${i + 1}. ${r.name}`, nameW - 6);
+          ctx.fillText(nameText, innerX, ry + 17);
+          ctx.textAlign = 'center';
+          ctx.fillText(String(r.played), statColX[0], ry + 17);
+          ctx.fillText((r.diff > 0 ? '+' : '') + r.diff, statColX[1], ry + 17);
+          ctx.fillText(String(r.points), statColX[2], ry + 17);
+          ry += standingsRowH;
+        });
+      }
+      y += rowH2 + standingsRowGap;
+    }
+    y += standings.length ? (sectionGap - standingsRowGap) : 0;
+  }
+
+  // --- Spielplan als Zeilen-Grid zeichnen ---
   if (allMatches.length) {
     ctx.textAlign = 'left';
     ctx.fillStyle = '#ffc800';
-    ctx.font = 'bold 18px sans-serif';
-    ctx.fillText('⏱️ Spielplan', 40, y + 22);
-    y += matchesHeaderH;
-    allMatches.forEach((m) => {
+    ctx.font = 'bold 19px sans-serif';
+    ctx.fillText('⏱️ Spielplan', M, y + 20);
+    if (includeBlankBoxes) {
+      ctx.font = '12px sans-serif';
+      ctx.globalAlpha = 0.6;
+      ctx.fillStyle = '#ffffff';
+      ctx.textAlign = 'right';
+      ctx.fillText('✍️ Ergebnis von Hand eintragen', W - M, y + 20);
+      ctx.globalAlpha = 1;
+    }
+    y += sectionHeaderH;
+
+    const pillW = 54, pillH = 22, pillGap = 12;
+    const boxSize = includeBlankBoxes ? 22 : 0;
+    const boxGap = 6, colonW = 16;
+    const boxesAreaW = includeBlankBoxes ? (boxSize * 2 + boxGap * 2 + colonW) : 0;
+
+    allMatches.forEach((m, idx) => {
+      const col = matchCols === 2 ? idx % 2 : 0;
+      const rowIdx = matchCols === 2 ? Math.floor(idx / 2) : idx;
+      const colX = M + col * (matchColW + matchColGap);
+      const rowY = y + rowIdx * (matchRowH + matchRowGap);
+
+      // Zeilen-Panel (abwechselnd leicht abgesetzt, damit lange Listen lesbar bleiben)
+      roundedRectPath(ctx, colX, rowY, matchColW, matchRowH, 8);
+      ctx.fillStyle = idx % 2 === 0 ? 'rgba(255,255,255,0.045)' : 'rgba(255,255,255,0.02)';
+      ctx.fill();
+
       const t1 = teams.find(t => t.id === m.t1Id);
       const t2 = teams.find(t => t.id === m.t2Id);
       const time = m.scheduledTime ? formatMatchTime(m.scheduledTime).replace(' Uhr', '') : '--:--';
-      ctx.font = '14px sans-serif';
+      const centerY = rowY + matchRowH / 2;
+
+      // Uhrzeit als kleines "Pill"-Badge
+      roundedRectPath(ctx, colX + 8, centerY - pillH / 2, pillW, pillH, pillH / 2);
       ctx.fillStyle = '#ffc800';
-      ctx.textAlign = 'left';
-      ctx.fillText(time, 40, y + 18);
+      ctx.fill();
+      ctx.fillStyle = '#0b192c';
+      ctx.font = 'bold 12px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText(time, colX + 8 + pillW / 2, centerY + 4);
+
+      const contentX = colX + 8 + pillW + pillGap;
+      const contentW = matchColW - (contentX - colX) - 10;
+      ctx.font = '13px sans-serif';
       ctx.fillStyle = '#ffffff';
+
       if (includeBlankBoxes) {
-        // Klassisches leeres Ergebnisfeld statt des digitalen Stands: zwei Kästchen + Doppelpunkt
-        // zum handschriftlichen Eintragen mit Stift auf dem Ausdruck.
-        ctx.fillText(`${t1 ? t1.name : '?'}  vs.  ${t2 ? t2.name : '?'}`, 120, y + 18);
-        const boxSize = 24;
-        const boxY = y + 18 - boxSize + 7;
-        ctx.strokeStyle = '#ffffff';
+        // Klassisches leeres Ergebnisfeld: Team1 ‒ [Kästchen]:[Kästchen] ‒ Team2
+        const teamW = (contentW - boxesAreaW - 16) / 2;
+        ctx.textAlign = 'left';
+        ctx.fillText(truncateCanvasText(ctx, t1 ? t1.name : '?', teamW), contentX, centerY + 4);
+        const boxesX = contentX + teamW + 8;
+        const boxY = centerY - boxSize / 2;
+        ctx.strokeStyle = 'rgba(255,255,255,0.8)';
         ctx.lineWidth = 1.5;
-        ctx.strokeRect(W - 112, boxY, boxSize, boxSize);
-        ctx.strokeRect(W - 60, boxY, boxSize, boxSize);
+        roundedRectPath(ctx, boxesX, boxY, boxSize, boxSize, 4);
+        ctx.fillStyle = 'rgba(255,255,255,0.06)';
+        ctx.fill();
+        ctx.stroke();
+        roundedRectPath(ctx, boxesX + boxSize + colonW, boxY, boxSize, boxSize, 4);
+        ctx.fill();
+        ctx.stroke();
+        ctx.fillStyle = '#ffffff';
+        ctx.font = 'bold 14px sans-serif';
         ctx.textAlign = 'center';
-        ctx.font = 'bold 16px sans-serif';
-        ctx.fillText(':', W - 86, boxY + boxSize - 6);
+        ctx.fillText(':', boxesX + boxSize + colonW / 2, centerY + 5);
+        ctx.font = '13px sans-serif';
+        ctx.textAlign = 'left';
+        ctx.fillText(truncateCanvasText(ctx, t2 ? t2.name : '?', teamW), boxesX + boxSize * 2 + colonW + 8, centerY + 4);
       } else {
         const scoreTxt = m.played ? `${m.score1}:${m.score2}` : 'vs';
-        ctx.fillText(`${t1 ? t1.name : '?'}  ${scoreTxt}  ${t2 ? t2.name : '?'}`, 120, y + 18);
+        ctx.font = 'bold 13px sans-serif';
+        const scoreW = ctx.measureText(scoreTxt).width + 16;
+        const teamW = (contentW - scoreW) / 2;
+        ctx.font = '13px sans-serif';
+        ctx.textAlign = 'left';
+        ctx.fillText(truncateCanvasText(ctx, t1 ? t1.name : '?', teamW), contentX, centerY + 4);
+        ctx.textAlign = 'center';
+        ctx.fillStyle = m.played ? '#ffc800' : 'rgba(255,255,255,0.5)';
+        ctx.font = 'bold 13px sans-serif';
+        ctx.fillText(scoreTxt, contentX + teamW + scoreW / 2, centerY + 4);
+        ctx.fillStyle = '#ffffff';
+        ctx.font = '13px sans-serif';
+        ctx.textAlign = 'right';
+        ctx.fillText(truncateCanvasText(ctx, t2 ? t2.name : '?', teamW), contentX + contentW, centerY + 4);
       }
-      y += matchRowH;
     });
   }
 
