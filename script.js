@@ -153,6 +153,14 @@ window.disableSoundEffects = disableSoundEffects;
 window.openTVMode = openTVMode;
 window.closeTVMode = closeTVMode;
 window.shareScheduleImage = shareScheduleImage;
+window.openGagManager = openGagManager;
+window.closeGagManager = closeGagManager;
+window.updateGagFormField = updateGagFormField;
+window.handleGagMediaFileSelected = handleGagMediaFileSelected;
+window.saveNewGagEffect = saveNewGagEffect;
+window.deleteCustomEffect = deleteCustomEffect;
+window.toggleCustomEffectEnabled = toggleCustomEffectEnabled;
+window.testPlayGagEffect = testPlayGagEffect;
 // ============================================================================
 // 1. FIREBASE-KONFIGURATION — Verbindungsdaten zur Online-Datenbank
 // ============================================================================
@@ -286,6 +294,11 @@ let pendingNewTournament = null; // { name, newOwnerPassword } - zwischen Admin-
 let globalPlayers = {}; // { nameLowerCase: { name, createdAt, password, passwordVersion, pendingPassword, bio, profilePic, friends, friendRequests, invites } } - Registry aller bekannten Identitäten. Das Passwort gilt (anders als früher) identitätsweit für ALLE Turniere, nicht mehr pro Turnier einzeln.
 let profileViewKey = null; // welcher Spieler wird gerade im Profil-Screen angezeigt (null = das eigene Profil), siehe openProfile()
 let globalSettings = { lockNewIdentities: false, lockNewTournaments: false }; // website-weite God-Sperren
+// Website-weite, God-verwaltete "Gag-Effekte": { pushKey: { name, triggerType, targetPlayerKey,
+// effectType ('sound'|'image'|'video'|'preset'), mediaData (data:-URL) oder presetKey, durationMs,
+// enabled, createdAt } } - läuft komplett unabhängig vom aktuellen Turnier (Running Gags gelten
+// identitätsweit, nicht nur in einem Turnier), siehe attachCustomEffectsListener/openGagManager.
+let customEffects = {};
 let godOversightData = {}; // { tournamentId: { name, players: [...] } } - nur für God geladen, siehe attachGodOversightListener
 let godOversightRef = null;
 let tournamentEntryHandled = false; // verhindert, dass handleTournamentEntry() bei jedem Live-Update erneut den Beitreten/Zuschauen-Dialog zeigt
@@ -635,6 +648,7 @@ document.addEventListener('DOMContentLoaded', () => {
   attachTournamentsMetaListener();
   attachGlobalPlayersListener();
   attachGlobalSettingsListener();
+  attachCustomEffectsListener();
   migrateOldTournamentIfNeeded().then((migratedId) => {
     if (migratedId) {
       currentTournamentId = migratedId;
@@ -1746,6 +1760,17 @@ function attachGlobalSettingsListener() {
     alert('⚠️ Website-weite Sperren konnten nicht geladen werden!\n\n' + error.message + '\n\nBitte die Firebase-Datenbankregeln für den Pfad "globalSettings" prüfen.');
   });
 }
+// Lädt fortlaufend die website-weiten "Gag-Effekte" (siehe customEffects oben) - für JEDEN
+// mitlaufen, nicht nur für den God, denn ausgelöst werden sie bei JEDEM Zuschauer live mit
+// (siehe triggerPlayerDrawnEffects); nur das BEARBEITEN im Gag-Manager ist God-exklusiv.
+function attachCustomEffectsListener() {
+  db.ref('customEffects').on('value', (snap) => {
+    customEffects = snap.val() || {};
+    renderGagManager();
+  }, (error) => {
+    console.error('Firebase Lese-Fehler (customEffects):', error);
+  });
+}
 // Nur für den God: lädt ALLE Turniere komplett (nicht nur die Meta-Liste), damit er auf
 // der Startseite z.B. ausstehende Passwort-Wünsche turnierübergreifend sehen/bestätigen kann.
 function attachGodOversightListener() {
@@ -1787,6 +1812,10 @@ function renderGodPanel() {
       Nur für dich sichtbar - hier kannst du schon eingreifen, bevor du überhaupt<br>
       ein Turnier betrittst.
     </p>
+
+    <div style="margin-bottom:16px;">
+      <button class="btn-secondary btn-sm" onclick="openGagManager()">🎭 Gag-Effekte verwalten (${Object.keys(customEffects).length})</button>
+    </div>
 
     <h4 style="margin-bottom:6px;">⏳ Ausstehende Passwort-Wünsche</h4>
     <div style="margin-bottom:16px;">
@@ -2947,6 +2976,10 @@ function handleLiveDraftUI() {
   }
   modal.style.display = 'none';
   if (animFrameId) cancelAnimationFrame(animFrameId);
+  // Kein Glücksrad mehr aktiv -> Dedup-Merker für Gag-Effekte zurücksetzen, damit eine künftige
+  // NEUE Auslosung nicht an einem zufällig identischen alten Schlüssel vorbeirutscht.
+  lastTriggeredDrawKey.team = null;
+  lastTriggeredDrawKey.group = null;
 }
 
 // Baut die Anzeige für den aktuellen Auslosungs-Schritt auf (Spieler 1 / Spieler 2 / Club)
@@ -2955,6 +2988,18 @@ function renderDraftStep() {
   if (!stage) return;
   const solo = draftState.mode === 'solo';
   const clubStep = solo ? 1 : 2;
+  // Gag-Effekte: sobald eine SPIELER-Ziehung (nicht Verein) frisch aufgelöst ist, einmalig
+  // auslösen - läuft hier bei JEDEM Client mit (nicht nur beim drehenden Admin/Ref), weil
+  // renderDraftStep() bei jedem Live-Update aus draftState erneut aufgerufen wird. Der
+  // Dedup-Schlüssel aus startTime+Schritt+Ergebnis verhindert Mehrfachauslösung beim
+  // wiederholten Neu-Rendern derselben Ziehung.
+  if (draftState.lastDrawnItem && !draftState.spinning && draftState.currentStep !== clubStep) {
+    const drawKey = draftState.startTime + ':' + draftState.currentStep + ':' + draftState.lastDrawnItem;
+    if (lastTriggeredDrawKey.team !== drawKey) {
+      lastTriggeredDrawKey.team = drawKey;
+      triggerPlayerDrawnEffects(draftState.lastDrawnItem);
+    }
+  }
   // Recovery: Die Animation sollte laut startTime/duration längst fertig sein, aber
   // spinning ist noch true (z.B. weil der lokale setTimeout durch einen Tab-Reload oder
   // Hintergrund-Drosselung verloren ging) - dann JETZT aus dem (in Firebase gespeicherten)
@@ -3863,6 +3908,16 @@ function renderGroupDraftStep() {
   }
   const isPlayers = groupDraftState.source === 'players';
   const itemLabel = isPlayers ? 'Namen' : 'Team(s)';
+  // Gag-Effekte: auch beim "Nur Namen"-Gruppenauslosungs-Rad gilt eine frisch gezogene Person
+  // als Spieler-Ziehung (im source='teams'-Modus sind es dagegen Teamnamen, keine Einzelpersonen
+  // - dafür bewusst NICHT auslösen). Gleiches Dedup-Prinzip wie beim Team-/Duo-Rad.
+  if (isPlayers && groupDraftState.lastDrawnItem && !groupDraftState.spinning) {
+    const drawKey = groupDraftState.startTime + ':' + groupDraftState.lastAssignedGroup + ':' + groupDraftState.lastDrawnItem;
+    if (lastTriggeredDrawKey.group !== drawKey) {
+      lastTriggeredDrawKey.group = drawKey;
+      triggerPlayerDrawnEffects(groupDraftState.lastDrawnItem);
+    }
+  }
   if (!groupDraftState.remainingTeams || groupDraftState.remainingTeams.length === 0) {
     stage.innerHTML = `
       <h3 style="color:#4CAF50; margin-bottom: 10px;">🎉 Alle ${isPlayers ? 'Namen wurden' : 'Teams wurden'} auf die Gruppen verteilt! 🎉</h3>
@@ -6509,4 +6564,280 @@ async function shareScheduleImage() {
     if (btn) { btn.disabled = false; btn.textContent = '📸 Spielplan als Bild'; }
     alert('Bild konnte nicht erstellt werden: ' + e.message);
   }
+}
+// ============================================================================
+// 18. GAG-EFFEKTE (Running-Gag-Infrastruktur) — God-verwaltete, website-weite Effekte
+//     (Sound/Bild/Video/vorgefertigte Animation), die automatisch ausgelöst werden, wenn eine
+//     bestimmte Person bei einem Live-Glücksrad gezogen wird. Komplett datengetrieben
+//     (customEffects in Firebase) und für JEDEN Zuschauer gleichzeitig sichtbar - genau wie
+//     der Trommelwirbel/Ding-Sound beim Glücksrad läuft die Erkennung "wurde gerade etwas NEU
+//     gezogen?" bei JEDEM Client über renderDraftStep()/renderGroupDraftStep() mit, nicht nur
+//     beim drehenden Admin/Ref. Dies ist bewusst erstmal nur die INFRASTRUKTUR (Datenmodell +
+//     Verwaltungsoberfläche + Abspiel-Engine) - die eigentlichen, kreativen Gags (eigene
+//     Sounds/Bilder/Videos je Person) kommen danach einfach als neue Einträge dazu, ohne dass
+//     hier noch etwas am Code geändert werden müsste. Aufwendigere vorgefertigte Animationen
+//     (z.B. eine Figur, die übers Rad fährt) werden als Einträge in GAG_ANIMATION_PRESETS
+//     registriert - aktuell bewusst noch leer, siehe Kommentar dort.
+// ============================================================================
+// Registry für künftige vorgefertigte Animationen: key -> { label, render(overlayEl, effect, dismiss) }.
+// render() bekommt den leeren Overlay-Container, baut dort die Animation auf (Canvas/CSS/DOM -
+// völlig frei) und ruft irgendwann selbst dismiss() auf, wenn sie fertig ist. Jeder neue Eintrag
+// hier taucht automatisch im Gag-Manager als wählbarer Effekt-Typ "Preset" auf - kein weiterer
+// Code an anderer Stelle nötig.
+const GAG_ANIMATION_PRESETS = {};
+// Maximale Dateigröße für hochgeladene Gag-Medien (Bild/Sound/Video) als data:-URL in der
+// Datenbank - Videos können schnell riesig werden, deshalb eine klare, großzügige aber
+// begrenzte Obergrenze statt eines kaputten/unendlich langsamen Uploads.
+const GAG_MEDIA_MAX_BYTES = 15 * 1024 * 1024; // 15 MB
+// Merkt sich pro Glücksrad (Team-/Duo-Rad "team", Gruppen-Namen-Rad "group"), für welche
+// Ziehung (eindeutiger Schlüssel aus startTime+Schritt+Ergebnis) schon ein Gag-Effekt ausgelöst
+// wurde - verhindert Mehrfach-Auslösung beim wiederholten Neu-Rendern derselben Ziehung. Wird
+// komplett zurückgesetzt, sobald KEIN Glücksrad mehr läuft (siehe handleLiveDraftUI).
+let lastTriggeredDrawKey = { team: null, group: null };
+// Sucht alle aktiven Gag-Effekte für eine gerade gezogene Person und spielt sie ab. name ist
+// der rohe gezogene Spielername (wie im Glücksrad angezeigt) - wird für den Abgleich auf den
+// globalPlayers-Schlüssel normalisiert (Groß-/Kleinschreibung, Leerzeichen).
+function triggerPlayerDrawnEffects(name) {
+  if (!name) return;
+  const key = name.trim().toLowerCase();
+  Object.keys(customEffects).forEach((id) => {
+    const effect = customEffects[id];
+    if (!effect || effect.enabled === false) return;
+    if (effect.triggerType !== 'player_drawn') return;
+    if ((effect.targetPlayerKey || '') !== key) return;
+    playGagEffect(effect);
+  });
+}
+// Spielt einen einzelnen Gag-Effekt ab: Sound läuft einfach nebenbei weiter (kein Overlay
+// nötig, blockiert nichts), Bild/Video/Preset bekommen ein Vollbild-Overlay ÜBER allem (auch
+// über dem Auslosungs-Modal) mit Skip-Knopf, damit ein hängendes/zu langes Video nie die ganze
+// Live-Show blockiert.
+function playGagEffect(effect) {
+  if (!effect) return;
+  if (effect.effectType === 'sound') {
+    if (!effect.mediaData || !soundEffectsEnabled()) return;
+    const audio = new Audio(effect.mediaData);
+    audio.play().catch(() => {});
+    return;
+  }
+  const overlay = document.getElementById('gag-effect-overlay');
+  if (!overlay) return;
+  let dismissed = false;
+  const dismiss = () => {
+    if (dismissed) return;
+    dismissed = true;
+    overlay.style.display = 'none';
+    overlay.innerHTML = '';
+  };
+  overlay.innerHTML = '';
+  const skipBtn = document.createElement('button');
+  skipBtn.textContent = '✕ Überspringen';
+  skipBtn.setAttribute('aria-label', 'Effekt überspringen');
+  skipBtn.style.cssText = 'position:absolute; top:16px; right:16px; width:auto; padding:8px 14px; border-radius:20px; border:none; background:rgba(255,255,255,0.15); color:#fff; font-size:0.85em; cursor:pointer; z-index:1;';
+  skipBtn.onclick = dismiss;
+  if (effect.effectType === 'image' && effect.mediaData) {
+    const img = document.createElement('img');
+    img.src = effect.mediaData;
+    img.style.cssText = 'max-width:92vw; max-height:92vh; object-fit:contain; border-radius:8px;';
+    overlay.appendChild(img);
+    setTimeout(dismiss, effect.durationMs || 3000);
+  } else if (effect.effectType === 'video' && effect.mediaData) {
+    const video = document.createElement('video');
+    video.src = effect.mediaData;
+    video.autoplay = true;
+    video.playsInline = true;
+    video.controls = false;
+    video.style.cssText = 'max-width:92vw; max-height:92vh; border-radius:8px;';
+    video.onended = dismiss;
+    overlay.appendChild(video);
+  } else if (effect.effectType === 'preset' && GAG_ANIMATION_PRESETS[effect.presetKey]) {
+    GAG_ANIMATION_PRESETS[effect.presetKey].render(overlay, effect, dismiss);
+  } else {
+    return; // kein abspielbares Medium hinterlegt - lieber nichts zeigen als ein leeres Overlay
+  }
+  overlay.appendChild(skipBtn);
+  overlay.style.display = 'flex';
+}
+// ----------------------------------------------------------------------------
+// Gag-Manager: God-exklusive Verwaltungsoberfläche (Liste + Formular), erreichbar über das
+// God-Panel (siehe renderGodPanel/openGagManager).
+// ----------------------------------------------------------------------------
+// Entwurf des "Neuer Effekt"-Formulars - bleibt über mehrere Neu-Renderings hinweg erhalten
+// (z.B. wenn sich durch einen Typ-Wechsel die sichtbaren Felder ändern), damit die Eingabe
+// dabei nicht verloren geht. Wird nur beim Öffnen des Gag-Managers bzw. nach dem Speichern
+// zurückgesetzt.
+let gagFormDraft = { name: '', targetPlayerKey: '', effectType: 'sound', durationMs: 3000, mediaData: null, mediaLabel: '', presetKey: '' };
+function resetGagFormDraft() {
+  gagFormDraft = { name: '', targetPlayerKey: '', effectType: 'sound', durationMs: 3000, mediaData: null, mediaLabel: '', presetKey: '' };
+}
+// Öffnet den Gag-Manager (nur God) - eigener Screen analog zum God-Panel.
+function openGagManager() {
+  if (!isGod()) return;
+  resetGagFormDraft();
+  renderGagManager();
+  document.getElementById('gag-manager-modal').style.display = 'flex';
+}
+function closeGagManager() {
+  document.getElementById('gag-manager-modal').style.display = 'none';
+}
+// Von den Formular-Inputs per onchange/oninput aufgerufen - aktualisiert den Entwurf und baut
+// bei Bedarf die (vom Effekt-Typ abhängigen) Formularfelder neu auf.
+function updateGagFormField(field, value) {
+  gagFormDraft[field] = value;
+  if (field === 'effectType') { gagFormDraft.mediaData = null; gagFormDraft.mediaLabel = ''; }
+  renderGagManager();
+}
+// Liest eine hochgeladene Datei (Bild/Sound/Video) als data:-URL ein - Bilder werden dabei wie
+// beim Team-/Profilfoto zusätzlich verkleinert, Sound/Video bleiben im Original, bekommen aber
+// ein hartes Größenlimit (siehe GAG_MEDIA_MAX_BYTES), damit kein kaputter Mega-Upload in der
+// Datenbank landet.
+function handleGagMediaFileSelected(event) {
+  const file = event.target.files && event.target.files[0];
+  event.target.value = '';
+  if (!file) return;
+  if (file.size > GAG_MEDIA_MAX_BYTES) {
+    return alert(`Datei zu groß (${(file.size / 1024 / 1024).toFixed(1)} MB) - maximal ${GAG_MEDIA_MAX_BYTES / 1024 / 1024} MB erlaubt. Bitte komprimieren oder kürzen.`);
+  }
+  if (gagFormDraft.effectType === 'image') {
+    if (!file.type.startsWith('image/')) return alert('Bitte eine Bilddatei auswählen!');
+    resizeImageFile(file, 1000, (dataUrl) => {
+      gagFormDraft.mediaData = dataUrl;
+      gagFormDraft.mediaLabel = file.name;
+      renderGagManager();
+    });
+    return;
+  }
+  if (gagFormDraft.effectType === 'sound' && !file.type.startsWith('audio/')) return alert('Bitte eine Audiodatei auswählen!');
+  if (gagFormDraft.effectType === 'video' && !file.type.startsWith('video/')) return alert('Bitte eine Videodatei auswählen!');
+  const reader = new FileReader();
+  reader.onload = (e) => {
+    gagFormDraft.mediaData = e.target.result;
+    gagFormDraft.mediaLabel = file.name;
+    renderGagManager();
+  };
+  reader.readAsDataURL(file);
+}
+// Speichert den aktuellen Formular-Entwurf als neuen Gag-Effekt (website-weit, sofort aktiv).
+function saveNewGagEffect() {
+  if (!isGod()) return;
+  const d = gagFormDraft;
+  if (!d.name.trim()) return alert('Bitte einen Namen für den Effekt vergeben (nur zur eigenen Übersicht).');
+  if (!d.targetPlayerKey) return alert('Bitte eine Zielperson auswählen - bei wem soll das ausgelöst werden?');
+  if (d.effectType === 'preset') {
+    if (!d.presetKey || !GAG_ANIMATION_PRESETS[d.presetKey]) return alert('Noch keine vorgefertigten Animationen hinterlegt - wähle stattdessen Sound/Bild/Video mit eigener Datei.');
+  } else if (!d.mediaData) {
+    return alert('Bitte erst eine Datei hochladen.');
+  }
+  const newEffect = {
+    name: d.name.trim(),
+    triggerType: 'player_drawn',
+    targetPlayerKey: d.targetPlayerKey,
+    effectType: d.effectType,
+    mediaData: d.effectType === 'preset' ? null : d.mediaData,
+    presetKey: d.effectType === 'preset' ? d.presetKey : null,
+    durationMs: (d.effectType === 'image' || d.effectType === 'preset') ? (parseInt(d.durationMs, 10) || 3000) : null,
+    enabled: true,
+    createdAt: Date.now()
+  };
+  db.ref('customEffects').push(newEffect).set(newEffect).then(() => {
+    resetGagFormDraft();
+    renderGagManager();
+  }).catch((error) => alert('⚠️ Speichern fehlgeschlagen:\n' + error.message));
+}
+function deleteCustomEffect(id) {
+  if (!isGod()) return;
+  const effect = customEffects[id];
+  if (!confirm(`Effekt "${(effect && effect.name) || id}" wirklich löschen?`)) return;
+  db.ref('customEffects/' + id).remove().catch((error) => alert('⚠️ Löschen fehlgeschlagen:\n' + error.message));
+}
+function toggleCustomEffectEnabled(id) {
+  if (!isGod()) return;
+  const effect = customEffects[id];
+  if (!effect) return;
+  db.ref('customEffects/' + id + '/enabled').set(effect.enabled === false).catch((error) => alert('⚠️ Konnte nicht geändert werden:\n' + error.message));
+}
+// Spielt einen gespeicherten Effekt einmal zur Probe ab, ohne auf eine echte Ziehung warten zu
+// müssen - praktisch, um vor dem Turnierabend zu checken, ob er auch wirklich funktioniert/gut
+// aussieht.
+function testPlayGagEffect(id) {
+  if (customEffects[id]) playGagEffect(customEffects[id]);
+}
+const GAG_EFFECT_TYPE_LABELS = { sound: '🔊 Sound', image: '🖼️ Bild', video: '🎬 Video', preset: '🎭 Vorgefertigte Animation' };
+function renderGagManager() {
+  const container = document.getElementById('gag-manager-container');
+  if (!container) return;
+  if (!isGod()) { container.innerHTML = ''; return; }
+  const effectIds = Object.keys(customEffects).sort((a, b) => (customEffects[a].createdAt || 0) - (customEffects[b].createdAt || 0));
+  const playerOptions = Object.keys(globalPlayers)
+    .sort((a, b) => (globalPlayers[a].name || a).localeCompare(globalPlayers[b].name || b))
+    .map(key => `<option value="${key}" ${gagFormDraft.targetPlayerKey === key ? 'selected' : ''}>${escapeHtml(globalPlayers[key].name || key)}</option>`).join('');
+  const presetOptions = Object.keys(GAG_ANIMATION_PRESETS)
+    .map(key => `<option value="${key}" ${gagFormDraft.presetKey === key ? 'selected' : ''}>${escapeHtml(GAG_ANIMATION_PRESETS[key].label)}</option>`).join('');
+
+  const list = effectIds.length === 0 ? '<p class="empty-state">Noch keine Gag-Effekte angelegt.</p>' : effectIds.map((id) => {
+    const e = customEffects[id];
+    const targetName = (globalPlayers[e.targetPlayerKey] && globalPlayers[e.targetPlayerKey].name) || e.targetPlayerKey;
+    return `
+      <div style="background: var(--fal-blue-primary); padding: 8px 12px; border-radius: 8px; margin-bottom: 6px;">
+        <div style="display:flex; flex-wrap:wrap; justify-content:space-between; align-items:center; gap:8px;">
+          <span style="font-size:0.9em; ${e.enabled === false ? 'opacity:0.5; text-decoration:line-through;' : ''}">
+            ${GAG_EFFECT_TYPE_LABELS[e.effectType] || e.effectType} - <strong>${escapeHtml(e.name)}</strong><br>
+            <span style="font-size:0.85em; opacity:0.75;">🎯 bei: ${escapeHtml(targetName)}</span>
+          </span>
+          <div style="display:flex; gap:5px; flex-wrap:wrap;">
+            <button class="btn-secondary btn-sm" onclick="testPlayGagEffect('${id}')">▶️ Testen</button>
+            <button class="btn-secondary btn-sm" onclick="toggleCustomEffectEnabled('${id}')">${e.enabled === false ? '✅ Aktivieren' : '⏸️ Pausieren'}</button>
+            <button class="btn-danger btn-sm" onclick="deleteCustomEffect('${id}')">🗑️</button>
+          </div>
+        </div>
+      </div>
+    `;
+  }).join('');
+
+  const needsMediaUpload = gagFormDraft.effectType === 'sound' || gagFormDraft.effectType === 'image' || gagFormDraft.effectType === 'video';
+  const acceptByType = { sound: 'audio/*', image: 'image/*', video: 'video/*' };
+  const showDuration = gagFormDraft.effectType === 'image' || gagFormDraft.effectType === 'preset';
+
+  container.innerHTML = `
+    <h2 style="margin-top:0;">🎭 Gag-Effekte</h2>
+    <p style="font-size:0.85em; opacity:0.8;">
+      Löst automatisch Sound/Bild/Video/Animation aus, sobald eine bestimmte Person bei einer
+      Live-Auslosung (Glücksrad) gezogen wird - sichtbar für ALLE Zuschauer:innen gleichzeitig,
+      nicht nur bei dir. Website-weit, unabhängig vom aktuellen Turnier.
+    </p>
+
+    <h4 style="margin-bottom:6px;">Bestehende Effekte (${effectIds.length})</h4>
+    <div style="max-height:220px; overflow-y:auto; margin-bottom:16px;">${list}</div>
+
+    <h4 style="margin-bottom:6px;">+ Neuer Effekt</h4>
+    <div style="display:flex; flex-direction:column; gap:8px;">
+      <input type="text" placeholder="Name (nur zur eigenen Übersicht, z.B. 'Bobs Gabelstapler')" value="${escapeHtml(gagFormDraft.name)}" oninput="updateGagFormField('name', this.value)">
+      <select onchange="updateGagFormField('targetPlayerKey', this.value)">
+        <option value="">-- Zielperson wählen --</option>
+        ${playerOptions}
+      </select>
+      <select onchange="updateGagFormField('effectType', this.value)">
+        ${Object.keys(GAG_EFFECT_TYPE_LABELS).map(k => `<option value="${k}" ${gagFormDraft.effectType === k ? 'selected' : ''}>${GAG_EFFECT_TYPE_LABELS[k]}</option>`).join('')}
+      </select>
+      ${needsMediaUpload ? `
+        <div>
+          <input type="file" id="gag-media-file-input" accept="${acceptByType[gagFormDraft.effectType]}" onchange="handleGagMediaFileSelected(event)">
+          ${gagFormDraft.mediaData ? `<p style="font-size:0.8em; color:#2ecc71; margin:4px 0 0 0;">✅ Datei bereit: ${escapeHtml(gagFormDraft.mediaLabel)}</p>` : `<p style="font-size:0.8em; opacity:0.7; margin:4px 0 0 0;">Noch keine Datei ausgewählt (max. ${GAG_MEDIA_MAX_BYTES / 1024 / 1024} MB).</p>`}
+        </div>
+      ` : `
+        <select onchange="updateGagFormField('presetKey', this.value)">
+          <option value="">-- Vorgefertigte Animation wählen --</option>
+          ${presetOptions}
+        </select>
+        ${Object.keys(GAG_ANIMATION_PRESETS).length === 0 ? '<p style="font-size:0.8em; opacity:0.7; margin:0;">Noch keine vorgefertigten Animationen hinterlegt - die kommen später dazu.</p>' : ''}
+      `}
+      ${showDuration ? `
+        <label style="font-size:0.85em; display:flex; align-items:center; gap:6px;">
+          Anzeigedauer (Sekunden):
+          <input type="number" min="1" max="30" step="0.5" value="${(gagFormDraft.durationMs / 1000).toFixed(1)}" style="width:70px;" onchange="updateGagFormField('durationMs', Math.round(parseFloat(this.value) * 1000))">
+        </label>
+      ` : ''}
+      <button class="btn-primary btn-sm" onclick="saveNewGagEffect()">💾 Effekt speichern</button>
+    </div>
+  `;
 }
