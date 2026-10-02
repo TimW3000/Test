@@ -163,6 +163,7 @@ window.saveNewGagEffect = saveNewGagEffect;
 window.deleteCustomEffect = deleteCustomEffect;
 window.toggleCustomEffectEnabled = toggleCustomEffectEnabled;
 window.testPlayGagEffect = testPlayGagEffect;
+window.prefetchPlayerDrawnEffects = prefetchPlayerDrawnEffects;
 window.openDbExplorer = openDbExplorer;
 window.closeDbExplorer = closeDbExplorer;
 window.refreshDbExplorer = refreshDbExplorer;
@@ -3034,6 +3035,14 @@ function renderDraftStep() {
       triggerPlayerDrawnEffects(draftState.lastDrawnItem);
     }
   }
+  // Das Ergebnis steht schon fest, WÄHREND das Rad noch dreht (siehe pendingTarget/spinWheel) -
+  // einen eventuell passenden Gag-Effekt deshalb schon JETZT vorab laden (siehe
+  // prefetchPlayerDrawnEffects), nicht erst wenn die Ziehung sichtbar landet. Gibt auf
+  // langsameren Verbindungen die komplette Animationszeit als Vorlauf, statt dass der Effekt
+  // dann erst noch spürbar verzögert nachkommt.
+  if (draftState.spinning && draftState.pendingTarget != null && draftState.currentStep !== clubStep) {
+    prefetchPlayerDrawnEffects(draftState.pendingTarget);
+  }
   // Recovery: Die Animation sollte laut startTime/duration längst fertig sein, aber
   // spinning ist noch true (z.B. weil der lokale setTimeout durch einen Tab-Reload oder
   // Hintergrund-Drosselung verloren ging) - dann JETZT aus dem (in Firebase gespeicherten)
@@ -3951,6 +3960,11 @@ function renderGroupDraftStep() {
       lastTriggeredDrawKey.group = drawKey;
       triggerPlayerDrawnEffects(groupDraftState.lastDrawnItem);
     }
+  }
+  // Wie beim Team-/Duo-Rad: Medium schon vorab laden, während die Animation noch läuft (siehe
+  // prefetchPlayerDrawnEffects) - der Zielname steht dank pendingTarget schon vorher fest.
+  if (isPlayers && groupDraftState.spinning && groupDraftState.pendingTarget != null) {
+    prefetchPlayerDrawnEffects(groupDraftState.pendingTarget);
   }
   if (!groupDraftState.remainingTeams || groupDraftState.remainingTeams.length === 0) {
     stage.innerHTML = `
@@ -6633,6 +6647,35 @@ let lastTriggeredDrawKey = { team: null, group: null };
 // nur unnötige WIEDERHOLTE Downloads INNERHALB derselben Seiten-Sitzung (z.B. wenn der God im
 // Gag-Manager mehrfach "Testen" klickt), persistiert nicht über einen Reload hinweg.
 let gagMediaCache = {};
+// IDs, für die GERADE ein Vorab-Download läuft (siehe prefetchPlayerDrawnEffects) - verhindert,
+// dass mehrere Neu-Renderings während derselben ~4s-Dreh-Animation denselben Download doppelt
+// anstoßen, bevor der erste überhaupt fertig ist.
+let gagPrefetchingIds = new Set();
+// Lädt das Medium eines zutreffenden Gag-Effekts schon VORAB herunter, während das Glücksrad
+// noch "dreht" (also schon BEVOR die Ziehung sichtbar landet) - der Zielname steht dank
+// draftState.pendingTarget/groupDraftState.pendingTarget nämlich schon fest, sobald die
+// Animation startet (siehe spinWheel()), nicht erst wenn sie optisch endet. Das verschafft auf
+// einer langsamen Verbindung die komplette Animationszeit (normalerweise ~4s) als Vorlauf,
+// bevor der Effekt wirklich gebraucht wird, statt dass man DANN erst auf den Download wartet
+// und der Effekt sichtbar verzögert/"laggy" nachkommt.
+function prefetchPlayerDrawnEffects(name) {
+  if (!name) return;
+  const key = name.trim().toLowerCase();
+  Object.keys(customEffects).forEach((id) => {
+    const effect = customEffects[id];
+    if (!effect || effect.enabled === false) return;
+    if (effect.triggerType !== 'player_drawn') return;
+    if ((effect.targetPlayerKey || '') !== key) return;
+    if (effect.effectType === 'preset') return;
+    if (gagMediaCache[id] || gagPrefetchingIds.has(id)) return;
+    gagPrefetchingIds.add(id);
+    db.ref('customEffectsMedia/' + id).once('value').then((snap) => {
+      const media = snap.val();
+      if (media && media.mediaData) gagMediaCache[id] = media.mediaData;
+      gagPrefetchingIds.delete(id);
+    }).catch(() => { gagPrefetchingIds.delete(id); });
+  });
+}
 // Sucht alle aktiven Gag-Effekte für eine gerade gezogene Person und spielt sie ab. name ist
 // der rohe gezogene Spielername (wie im Glücksrad angezeigt) - wird für den Abgleich auf den
 // globalPlayers-Schlüssel normalisiert (Groß-/Kleinschreibung, Leerzeichen).
