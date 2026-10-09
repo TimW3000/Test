@@ -2387,7 +2387,10 @@ function computePlayerStats(playerName, matches) {
     totalMatches: 0, wins: 0, losses: 0, draws: 0,
     goalsFor: 0, goalsAgainst: 0,
     biggestWin: null, biggestLoss: null,
-    opponentTally: {}, // { gegnerKey: { name, wins, losses, draws } } - aus SICHT dieses Spielers
+    scorelessDraws: 0, // 0:0-Unentschieden, für das "Fluch der Null"-Achievement
+    closestKOWinCount: 0, closestKOWinExample: null, // Sieg mit genau 1 Tor Unterschied in einer KO-Runde, für "Nervenkiller"
+    opponentTally: {}, // { gegnerKey: { name, wins, losses, draws, tournamentIds } } - aus SICHT dieses Spielers
+    allPartnersEver: new Set(), // alle Partner über ALLE Turniere hinweg, für "Vielgereist"
     tournamentsMap: {}
   };
   matches.forEach(m => {
@@ -2415,11 +2418,22 @@ function computePlayerStats(playerName, matches) {
     const matchInfo = { tournamentName: m.tournamentName, opponents: oppTeam, partner, myScore, oppScore, diff, round: m.round };
     if (outcome === 'win' && (!stats.biggestWin || diff > stats.biggestWin.diff)) stats.biggestWin = matchInfo;
     if (outcome === 'loss' && (!stats.biggestLoss || diff < stats.biggestLoss.diff)) stats.biggestLoss = matchInfo;
+    if (myScore === 0 && oppScore === 0) stats.scorelessDraws++;
+    // "Nervenkiller": ein Sieg mit genau 1 Tor Unterschied in einer KO-Runde (m.round gesetzt,
+    // also keine Gruppenphase) - der denkbar knappste Sieg in einem besonders nervenaufreibenden
+    // Moment des Turniers.
+    if (outcome === 'win' && diff === 1 && m.round) {
+      stats.closestKOWinCount++;
+      if (!stats.closestKOWinExample) stats.closestKOWinExample = matchInfo;
+    }
+
+    if (partner) stats.allPartnersEver.add(partner.trim().toLowerCase());
 
     oppTeam.forEach(oppName => {
       const oKey = oppName.trim().toLowerCase();
-      if (!stats.opponentTally[oKey]) stats.opponentTally[oKey] = { name: oppName, wins: 0, losses: 0, draws: 0 };
+      if (!stats.opponentTally[oKey]) stats.opponentTally[oKey] = { name: oppName, wins: 0, losses: 0, draws: 0, tournamentIds: new Set() };
       stats.opponentTally[oKey][outcomeKey]++;
+      stats.opponentTally[oKey].tournamentIds.add(m.tournamentId);
     });
 
     if (!stats.tournamentsMap[m.tournamentId]) {
@@ -2454,6 +2468,10 @@ function computePlayerStats(playerName, matches) {
     .sort((a, b) => b.losses - a.losses || (a.wins - a.losses) - (b.wins - b.losses))[0] || null;
   stats.favoriteVictim = opponents.filter(o => o.wins >= 2)
     .sort((a, b) => b.wins - a.wins || (b.wins - b.losses) - (a.wins - a.losses))[0] || null;
+  // Dauerrivale: Gegner, dem man in mind. 3 VERSCHIEDENEN Turnieren begegnet ist (nicht nur
+  // oft in einem einzigen Turnier) - für "Dauerrivale"-Achievement.
+  stats.rival = opponents.filter(o => o.tournamentIds.size >= 3)
+    .sort((a, b) => b.tournamentIds.size - a.tournamentIds.size)[0] || null;
 
   stats.tournaments = Object.keys(stats.tournamentsMap).map(tid => {
     const e = stats.tournamentsMap[tid];
@@ -2523,10 +2541,40 @@ function computeAchievements(playerKey, stats, ratingEntry, allRatings) {
   if (ratingEntry && ratingEntry.bestStreak >= 5) badges.push({ icon: '🔥', label: `${ratingEntry.bestStreak}er-Siegesserie` });
   if (stats.totalMatches >= 10 && stats.winRate >= 70) badges.push({ icon: '🎯', label: 'Scharfschütze (70%+ Siegquote)' });
   if (stats.nemesis && stats.nemesis.losses >= 3) badges.push({ icon: '😈', label: `Angst vor ${stats.nemesis.name}` });
+  if (stats.scorelessDraws >= 2) badges.push({ icon: '🥅', label: `Fluch der Null (${stats.scorelessDraws}x 0:0)` });
+  if (stats.closestKOWinCount >= 1) badges.push({ icon: '😰', label: stats.closestKOWinCount === 1 ? 'Nervenkiller' : `Nervenkiller (${stats.closestKOWinCount}x)` });
+  // Underdog-Pokal: ein Turnier gewonnen, obwohl es dabei mindestens einen Rückschlag (Niederlage
+  // oder Remis) gab - kein Durchmarsch, sondern ein Sieg trotz Startschwierigkeiten.
+  const underdogWins = stats.tournaments.filter(t => t.placement === '🏆 Turniersieger' && (t.losses > 0 || t.draws > 0)).length;
+  if (underdogWins >= 1) badges.push({ icon: '🐺', label: underdogWins === 1 ? 'Underdog-Pokal' : `${underdogWins}x Underdog-Pokal` });
   const sortedByRating = Object.keys(allRatings).sort((a, b) => allRatings[b].rating - allRatings[a].rating);
-  if (sortedByRating.length > 0 && sortedByRating[0] === playerKey && allRatings[playerKey].games > 0) {
+  const isRank1 = sortedByRating.length > 0 && sortedByRating[0] === playerKey && allRatings[playerKey].games > 0;
+  if (isRank1) {
     badges.push({ icon: '🐐', label: 'Aktuell Nr. 1 der Rangliste' });
   }
+
+  // --- Die folgenden Achievements sind alle erst nach MEHREREN Turnieren erreichbar, nicht
+  // schon innerhalb eines einzigen (langen) Turnierabends - sie belohnen echte Stammspieler. ---
+  const tournamentCount = stats.tournaments.length;
+  if (tournamentCount >= 5) badges.push({ icon: '🎟️', label: 'Stammgast (5+ Turniere)' });
+  if (tournamentCount >= 10) badges.push({ icon: '🏅', label: 'Turnier-Veteran (10+ Turniere)' });
+  const finalsCount = stats.tournaments.filter(t => t.placement === '🏆 Turniersieger' || t.placement === '🥈 Finalist').length;
+  if (finalsCount >= 3) badges.push({ icon: '🥈', label: `Finalstammgast (${finalsCount}x im Finale)` });
+  if (finalsCount >= 3 && tournamentWins === 0) badges.push({ icon: '😩', label: 'Pechvogel (oft im Finale, nie gewonnen)' });
+  if (tournamentCount >= 5 && stats.tournaments.every(t => t.placement !== 'Gruppenphase')) {
+    badges.push({ icon: '🧱', label: 'Nie out in der Vorrunde' });
+  }
+  if (tournamentCount >= 3 && stats.tournaments.every(t => t.placement === '🏆 Turniersieger' || t.placement === '🥈 Finalist')) {
+    badges.push({ icon: '💎', label: 'Fast perfekt' });
+  }
+  // Alle drei folgenden sind mit genug Spielen theoretisch auch an EINEM langen Turnierabend
+  // erreichbar (viele Spiele, viele Tore, viele Partner) - deshalb zusätzlich an eine
+  // Mindest-Turnierzahl gekoppelt, damit sie wirklich echte Langzeit-Stammspieler auszeichnen.
+  if (tournamentCount >= 5 && isRank1 && ratingEntry && ratingEntry.games >= 30) badges.push({ icon: '⭐', label: 'Turnier-Legende' });
+  if (tournamentCount >= 5 && stats.goalsFor >= 100) badges.push({ icon: '💯', label: 'Torjäger-Legende (100+ Tore)' });
+  if (stats.rival) badges.push({ icon: '🤝', label: `Dauerrivale: ${stats.rival.name}` });
+  if (tournamentCount >= 3 && stats.allPartnersEver.size >= 5) badges.push({ icon: '🧭', label: 'Vielgereist (5+ verschiedene Partner)' });
+
   return badges;
 }
 // Ermittelt die direkte Bilanz zweier Spieler gegeneinander (nur Spiele, in denen sie auf
