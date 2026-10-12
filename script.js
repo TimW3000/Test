@@ -2552,6 +2552,47 @@ function collectAllConfirmedMatches(allTournamentsData, tournamentsMeta) {
   flat.sort((a, b) => (a.time || 0) - (b.time || 0));
   return flat;
 }
+// Baut (NUR für die Elo-Rangliste) eine flache Liste aller bestätigten Spiele auf EINZELSPIEL-
+// Ebene auf, statt wie collectAllConfirmedMatches auf Team-Ebene: im Duo-Modus hat jede
+// Begegnung ein Hin- UND ein Rückspiel, die schon JETZT als zwei eigene 1v1-Duelle mit
+// jeweils einem individuellen Ergebnis gespielt werden (Hinspiel = p1 beider Teams
+// gegeneinander, Rückspiel = p2 beider Teams, bzw. über Kreuz bei m.crossed) - diese Daten
+// waren für die Statistik (siehe calculatePlayerMatchLog) schon immer da, nur die Elo-Wertung
+// hat bisher den TEAM-Durchschnitt genommen und beiden Partnern identisch gutgeschrieben.
+// Dadurch wurde ein schwächerer Partner, der von einem starken mitgezogen ("carried") wurde,
+// genauso bewertet wie der eigentliche Leistungsträger. Mit Einzelspiel-Ebene bekommt jede*r
+// Spieler*in die Elo-Änderung, die zum eigenen tatsächlichen Ergebnis passt. Solo-Turniere
+// haben ohnehin nur ein Ergebnis pro Partie (kein Rückspiel) und sind dadurch automatisch
+// schon "Einzelspiele" - für sie ändert sich an der Zählung nichts.
+function collectIndividualLegsForElo(allTournamentsData, tournamentsMeta) {
+  const legs = [];
+  Object.keys(allTournamentsData || {}).forEach((tid) => {
+    const t = allTournamentsData[tid];
+    if (!t || !t.teams) return;
+    const tCreatedAt = (tournamentsMeta[tid] && tournamentsMeta[tid].createdAt) || 0;
+    const teamById = {};
+    t.teams.forEach(team => { teamById[team.id] = team; });
+    const all = [...(t.groupMatches || []), ...(t.koMatches || [])];
+    function addLeg(m, isHin, team1, team2) {
+      const s1 = isHin ? m.score1_h : m.score1_r;
+      const s2 = isHin ? m.score2_h : m.score2_r;
+      if (s1 === null || s1 === undefined || s2 === null || s2 === undefined) return;
+      const playerA = isHin ? team1.p1 : team1.p2;
+      const playerB = isHin ? (m.crossed ? team2.p2 : team2.p1) : (m.crossed ? team2.p1 : team2.p2);
+      if (!playerA || !playerB) return;
+      legs.push({ playerA, playerB, scoreA: s1, scoreB: s2, time: m.scheduledTime || tCreatedAt });
+    }
+    all.forEach(m => {
+      if (!m || !m.confirmed) return;
+      const team1 = teamById[m.t1Id], team2 = teamById[m.t2Id];
+      if (!team1 || !team2 || !team1.p1 || !team2.p1) return;
+      addLeg(m, true, team1, team2);
+      addLeg(m, false, team1, team2);
+    });
+  });
+  legs.sort((a, b) => (a.time || 0) - (b.time || 0));
+  return legs;
+}
 // Lädt einmalig ALLE Turniere komplett (nicht nur die Meta-Liste) für Statistikzwecke und
 // ruft callback(allTournamentsData) auf. Kein Live-Listener - wird bei jedem Öffnen von
 // Profil-Statistiken bzw. der Rangliste frisch angefragt, damit die Zahlen aktuell bleiben.
@@ -2676,14 +2717,20 @@ function computePlayerStats(playerName, matches) {
   stats.goalDiff = stats.goalsFor - stats.goalsAgainst;
   return stats;
 }
-// Spielt ALLE Spiele einer flachen, chronologisch sortierten Match-Liste durch und berechnet
-// daraus eine Elo-Wertung PRO SPIELER (Team-Elo = Mittelwert der Team-Mitglieder, die dann
-// alle dieselbe Änderung gutgeschrieben/abgezogen bekommen). Funktioniert für 2er-Teams
-// (Duo-Modus) GENAUSO wie für Solo-Teams (Einzel-Modus, ein Spieler = ein Team - dann ist
-// die "Team-Wertung" einfach die eigene). Der K-Faktor sinkt mit steigender Erfahrung
-// (unsichere Anfangswertung schwankt stärker, etablierte weniger) - dasselbe Prinzip wie bei
-// echten Elo-Systemen (Schach, viele E-Sports-Ranglisten).
-function computeGlobalRatings(matches) {
+// Spielt ALLE Spiele einer flachen, chronologisch sortierten EINZELSPIEL-Liste (siehe
+// collectIndividualLegsForElo - im Duo-Modus bereits Hin-/Rückspiel-Beine als eigene 1v1-
+// Duelle, im Solo-Modus ohnehin schon 1v1) durch und berechnet daraus eine Elo-Wertung PRO
+// SPIELER. Zwei Verfeinerungen gegenüber reinem Standard-Elo:
+// 1. Margin-of-Victory: ein höherer Sieg bringt mehr Elo als ein knapper (movFactor), aber
+//    gedeckelt, damit ein einzelner Kantersieg (z.B. 10:0) nicht unverhältnismäßig viel
+//    ausmacht.
+// 2. Gegen bessere Gegner mehr: steckt schon in der Standard-Elo-Formel selbst (expectedA) -
+//    je stärker der Gegner relativ zu einem selbst eingeschätzt wird, desto kleiner die
+//    eigene Erwartung und desto größer der Ausschlag bei einem Sieg.
+// Der K-Faktor sinkt mit steigender Erfahrung (unsichere Anfangswertung schwankt stärker,
+// etablierte weniger) - dasselbe Prinzip wie bei echten Elo-Systemen (Schach, viele
+// E-Sports-Ranglisten).
+function computeGlobalRatings(legs) {
   const ratings = {};
   function ensure(name) {
     const key = name.trim().toLowerCase();
@@ -2693,16 +2740,20 @@ function computeGlobalRatings(matches) {
     return ratings[key];
   }
   function kFactor(p) { return p.games < 10 ? 40 : (p.games < 30 ? 24 : 16); }
-  matches.forEach(m => {
-    const teamA = m.team1.map(ensure);
-    const teamB = m.team2.map(ensure);
-    if (teamA.length === 0 || teamB.length === 0) return;
-    const teamARating = teamA.reduce((sum, p) => sum + p.rating, 0) / teamA.length;
-    const teamBRating = teamB.reduce((sum, p) => sum + p.rating, 0) / teamB.length;
-    const expectedA = 1 / (1 + Math.pow(10, (teamBRating - teamARating) / 400));
-    const scoreA = m.score1 > m.score2 ? 1 : (m.score1 < m.score2 ? 0 : 0.5);
+  // Ab dem 2. Tor Unterschied gibt's +15% pro weiterem Tor, gedeckelt bei +75% (6+ Tore
+  // Unterschied) - ein 1-Tor-Sieg bleibt die Basis (Faktor 1), wie bisher.
+  function movFactor(scoreA, scoreB) {
+    const diff = Math.abs(scoreA - scoreB);
+    return 1 + Math.min(Math.max(diff - 1, 0), 5) * 0.15;
+  }
+  legs.forEach(leg => {
+    const a = ensure(leg.playerA);
+    const b = ensure(leg.playerB);
+    const expectedA = 1 / (1 + Math.pow(10, (b.rating - a.rating) / 400));
+    const mov = movFactor(leg.scoreA, leg.scoreB);
+    const scoreA = leg.scoreA > leg.scoreB ? 1 : (leg.scoreA < leg.scoreB ? 0 : 0.5);
     const applyResult = (player, own, opp) => {
-      const delta = Math.round(kFactor(player) * (own - opp));
+      const delta = Math.round(kFactor(player) * mov * (own - opp));
       player.rating += delta;
       player.games++;
       if (own === 1) { player.wins++; player.streak = player.streak > 0 ? player.streak + 1 : 1; }
@@ -2710,8 +2761,8 @@ function computeGlobalRatings(matches) {
       else { player.draws++; player.streak = 0; }
       if (player.streak > player.bestStreak) player.bestStreak = player.streak;
     };
-    teamA.forEach(p => applyResult(p, scoreA, expectedA));
-    teamB.forEach(p => applyResult(p, 1 - scoreA, 1 - expectedA));
+    applyResult(a, scoreA, expectedA);
+    applyResult(b, 1 - scoreA, 1 - expectedA);
   });
   return ratings;
 }
@@ -2858,7 +2909,7 @@ function renderProfileStatsSection(key) {
     if (!stillRelevant) return;
     const matches = collectAllConfirmedMatches(allData, tournamentsList);
     const stats = computePlayerStats(key, matches);
-    const ratings = computeGlobalRatings(matches);
+    const ratings = computeGlobalRatings(collectIndividualLegsForElo(allData, tournamentsList));
     const ratingEntry = ratings[key];
     const badges = computeAchievements(key, stats, ratingEntry, ratings);
     let html = renderStatsHtml(stats, ratingEntry, ratings, badges);
@@ -2936,8 +2987,7 @@ function openLeaderboard() {
   document.getElementById('leaderboard-container').innerHTML = '<p class="empty-state">📊 Rangliste wird geladen...</p>';
   loadAllTournamentsData((allData) => {
     if (document.getElementById('leaderboard-modal').style.display === 'none') return;
-    const matches = collectAllConfirmedMatches(allData, tournamentsList);
-    const ratings = computeGlobalRatings(matches);
+    const ratings = computeGlobalRatings(collectIndividualLegsForElo(allData, tournamentsList));
     renderLeaderboard(ratings);
   });
 }
