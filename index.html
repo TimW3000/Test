@@ -115,6 +115,19 @@
     </div>
   </div>
 
+  <!-- Turnier-Import: God-exklusives Werkzeug, um ein fertiges altes Turnier (z.B. aus einer
+       früheren Website-Version/eigenem Firebase-Projekt, als JSON exportiert) als neues,
+       bereits BEENDETES Turnier anzulegen - für ein Archiv historischer Turniere. Eigenes,
+       nur einmalig beim Öffnen gerendertes Modal (nicht Teil von #god-panel-container), damit
+       Live-Updates woanders in der App nicht mitten in der Eingabe diese Felder/den Text
+       zerstören - siehe openTournamentImportModal()/renderTournamentImportModal() in script.js. -->
+  <div id="tournament-import-modal" class="modal-overlay" style="display: none;">
+    <div class="modal-content" id="tournament-import-modal-content" style="max-width: 560px; text-align: left;">
+      <p style="margin: -6px 0 10px 0; text-align:center;"><a href="#" style="color:var(--fal-yellow); font-size:0.85em; text-decoration:none;" onclick="closeTournamentImportModal(); return false;">‹ Zurück zum God-Panel</a></p>
+      <div id="tournament-import-container"></div>
+    </div>
+  </div>
+
   <!-- Datenbank-Explorer: God-exklusiver Überblick über die Firebase-Datenbank (geschätzte
        Größe pro Bereich, Online-Status) + rohe, interaktive Baum-Ansicht zum Bearbeiten/Löschen
        einzelner Werte - nur über den Verbindungsstatus-Badge im Header erreichbar, siehe

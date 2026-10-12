@@ -53,6 +53,9 @@ window.confirmPendingPassword = confirmPendingPassword;
 window.rejectPendingPassword = rejectPendingPassword;
 window.toggleRegistrationLock = toggleRegistrationLock;
 window.toggleTournamentFinished = toggleTournamentFinished;
+window.openTournamentImportModal = openTournamentImportModal;
+window.closeTournamentImportModal = closeTournamentImportModal;
+window.importHistoricalTournament = importHistoricalTournament;
 window.toggleTournamentMode = toggleTournamentMode;
 window.toggleTournamentSport = toggleTournamentSport;
 window.updateMatchInterval = updateMatchInterval;
@@ -1878,8 +1881,9 @@ function renderGodPanel() {
       ein Turnier betrittst.
     </p>
 
-    <div style="margin-bottom:16px;">
+    <div style="margin-bottom:16px; display:flex; flex-wrap:wrap; gap:8px;">
       <button class="btn-secondary btn-sm" onclick="openGagManager()">🎭 Gag-Effekte verwalten (${Object.keys(customEffects).length})</button>
+      <button class="btn-secondary btn-sm" onclick="openTournamentImportModal()">📥 Historisches Turnier importieren</button>
     </div>
 
     <h4 style="margin-bottom:6px;">⏳ Ausstehende Passwort-Wünsche</h4>
@@ -1961,6 +1965,73 @@ function renameTournamentAsGod(id) {
   if (newName === null) return;
   if (!newName.trim()) return alert('Name darf nicht leer sein.');
   db.ref('tournaments_meta/' + id + '/name').set(newName.trim()).catch((error) => alert('⚠️ Umbenennen fehlgeschlagen:\n' + error.message));
+}
+// ============================================================================
+// 4c. TURNIER-IMPORT (God-only) — legt ein fertig umgewandeltes, abgeschlossenes Turnier
+//     (z.B. aus einer früheren Website-Version/eigenem Firebase-Projekt) direkt als neues,
+//     bereits BEENDETES Turnier an - für ein Archiv historischer Turniere. Bewusst roh/
+//     ungefiltert wie der Datenbank-Explorer: nur der God darf das, und es wird nicht gegen
+//     die üblichen App-Abläufe (Beitreten, Auslosung, ...) geprüft.
+// ============================================================================
+function openTournamentImportModal() {
+  if (!isGod()) return;
+  document.getElementById('tournament-import-modal').style.display = 'flex';
+  renderTournamentImportModal();
+}
+function closeTournamentImportModal() {
+  document.getElementById('tournament-import-modal').style.display = 'none';
+}
+function renderTournamentImportModal() {
+  const container = document.getElementById('tournament-import-container');
+  if (!container || !isGod()) return;
+  container.innerHTML = `
+    <h2 style="margin-top:0;">📥 Historisches Turnier importieren</h2>
+    <p style="font-size:0.85em; opacity:0.8;">
+      Für fertig abgeschlossene Turniere aus einer alten Website-Version/einem anderen
+      Firebase-Projekt. Das JSON unten muss dieselbe Struktur haben wie ein normales Turnier
+      hier (players, teams, groups, groupMatches, koMatches, ...). Wird als neues,
+      automatisch als <strong>beendet</strong> markiertes Turnier angelegt.
+    </p>
+    <div style="display:flex; flex-direction:column; gap:10px;">
+      <input type="text" id="import-tournament-name" placeholder="Turniername (z.B. &quot;1. FAL-Turnier 2023&quot;)">
+      <input type="date" id="import-tournament-date" title="Datum, an dem das Turnier stattfand">
+      <input type="text" id="import-tournament-creator" placeholder="Ersteller (optional, Standard: tim)">
+      <textarea id="import-tournament-json" rows="10" placeholder='Turnierdaten als JSON einfügen, z.B. {"players": [...], "teams": [...], "groups": [...], "groupMatches": [...], "koMatches": [...], ...}' style="font-family:monospace; font-size:0.78em;"></textarea>
+      <button class="btn-primary" onclick="importHistoricalTournament()">📥 Als beendetes Turnier importieren</button>
+    </div>
+  `;
+}
+// Legt aus dem eingefügten JSON ein komplett neues Turnier an (eigene tournaments_meta/
+// tournaments-ID wie bei jedem normal erstellten Turnier), markiert es aber sofort als
+// beendet (siehe toggleTournamentFinished) - fehlende Felder bekommen dieselben Standardwerte
+// wie ein frisch erstelltes Turnier (siehe finalizeCreateTournament), weil Firebase nicht
+// gesetzte Felder beim Laden ohnehin über die "|| Standardwert"-Fallbacks in
+// attachTournamentListener auffüllt.
+function importHistoricalTournament() {
+  if (!isGod()) return;
+  const name = (document.getElementById('import-tournament-name').value || '').trim();
+  const dateStr = document.getElementById('import-tournament-date').value;
+  const createdBy = (document.getElementById('import-tournament-creator').value || '').trim() || 'tim';
+  const jsonStr = document.getElementById('import-tournament-json').value;
+  if (!name) return alert('⚠️ Bitte einen Turniernamen eingeben!');
+  let data;
+  try { data = JSON.parse(jsonStr); } catch (e) { return alert('⚠️ Ungültiges JSON:\n' + e.message); }
+  if (!data || !Array.isArray(data.players) || !Array.isArray(data.teams)) {
+    return alert('⚠️ Das JSON braucht mindestens "players" und "teams" als Array.');
+  }
+  const createdAt = dateStr ? new Date(dateStr + 'T12:00:00').getTime() : Date.now();
+  if (!confirm(`"${name}" als neues, beendetes Turnier importieren?\n\nSpieler: ${data.players.length}, Teams: ${data.teams.length}`)) return;
+  const newRef = db.ref('tournaments_meta').push();
+  const id = newRef.key;
+  newRef.set({ name, createdAt, createdBy, finished: true, finishedAt: createdAt }).catch((error) => {
+    alert('⚠️ Import fehlgeschlagen (Meta):\n' + error.message);
+  });
+  db.ref('tournaments/' + id).set({ ...data, finished: true, finishedAt: createdAt }).then(() => {
+    alert(`✅ "${name}" wurde als beendetes Turnier importiert!`);
+    closeTournamentImportModal();
+  }).catch((error) => {
+    alert('⚠️ Import fehlgeschlagen (Turnierdaten):\n' + error.message);
+  });
 }
 // Schaltet eine website-weite Sperre um (nur God)
 function toggleGlobalLock(key) {
