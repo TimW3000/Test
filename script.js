@@ -56,6 +56,7 @@ window.toggleTournamentFinished = toggleTournamentFinished;
 window.openTournamentImportModal = openTournamentImportModal;
 window.closeTournamentImportModal = closeTournamentImportModal;
 window.importHistoricalTournament = importHistoricalTournament;
+window.registerImportedPlayersAsGlobalIdentities = registerImportedPlayersAsGlobalIdentities;
 window.toggleTournamentMode = toggleTournamentMode;
 window.toggleTournamentSport = toggleTournamentSport;
 window.updateMatchInterval = updateMatchInterval;
@@ -1990,7 +1991,10 @@ function renderTournamentImportModal() {
       Für fertig abgeschlossene Turniere aus einer alten Website-Version/einem anderen
       Firebase-Projekt. Das JSON unten muss dieselbe Struktur haben wie ein normales Turnier
       hier (players, teams, groups, groupMatches, koMatches, ...). Wird als neues,
-      automatisch als <strong>beendet</strong> markiertes Turnier angelegt.
+      automatisch als <strong>beendet</strong> markiertes Turnier angelegt. Alle enthaltenen
+      Spieler, die noch keine eigene Identität auf der Website haben, werden dabei automatisch
+      als registriert angelegt (nur Name, kein Passwort) - bereits existierende Identitäten
+      bleiben unverändert.
     </p>
     <div style="display:flex; flex-direction:column; gap:10px;">
       <input type="text" id="import-tournament-name" placeholder="Turniername (z.B. &quot;1. FAL-Turnier 2023&quot;)">
@@ -2001,12 +2005,30 @@ function renderTournamentImportModal() {
     </div>
   `;
 }
+// Legt für jeden importierten Spieler, der noch KEINE website-weite Identität hat, einen
+// leichten globalPlayers-Eintrag an (nur Name + Erstelldatum, kein Passwort) - genau wie bei
+// einer normalen Neu-Registrierung (siehe finalizeGlobalIdentity). Bereits existierende
+// Identitäten (z.B. "tim") werden dabei NICHT berührt, damit nichts (Passwort, Profilbild,
+// Freunde, ...) überschrieben wird. Ohne das würde ein Klick auf einen alten Spielernamen im
+// importierten Turnier nur "Spieler nicht gefunden" zeigen, obwohl er nie gelöscht wurde,
+// sondern schlicht noch nie eine eigene Identität hatte.
+function registerImportedPlayersAsGlobalIdentities(playerNames, createdAt) {
+  playerNames.forEach((name) => {
+    if (!name) return;
+    const key = name.trim().toLowerCase();
+    if (!key || globalPlayers[key]) return;
+    db.ref('globalPlayers/' + key).set({ name: name.trim(), createdAt }).catch((error) => {
+      console.error('Konnte Identität "' + name + '" nicht registrieren:', error);
+    });
+  });
+}
 // Legt aus dem eingefügten JSON ein komplett neues Turnier an (eigene tournaments_meta/
 // tournaments-ID wie bei jedem normal erstellten Turnier), markiert es aber sofort als
 // beendet (siehe toggleTournamentFinished) - fehlende Felder bekommen dieselben Standardwerte
 // wie ein frisch erstelltes Turnier (siehe finalizeCreateTournament), weil Firebase nicht
 // gesetzte Felder beim Laden ohnehin über die "|| Standardwert"-Fallbacks in
-// attachTournamentListener auffüllt.
+// attachTournamentListener auffüllt. Registriert zusätzlich alle importierten Spieler als
+// vollwertige website-weite Identitäten (siehe registerImportedPlayersAsGlobalIdentities).
 function importHistoricalTournament() {
   if (!isGod()) return;
   const name = (document.getElementById('import-tournament-name').value || '').trim();
@@ -2026,6 +2048,7 @@ function importHistoricalTournament() {
   newRef.set({ name, createdAt, createdBy, finished: true, finishedAt: createdAt }).catch((error) => {
     alert('⚠️ Import fehlgeschlagen (Meta):\n' + error.message);
   });
+  registerImportedPlayersAsGlobalIdentities(data.players.map(p => p.name), createdAt);
   db.ref('tournaments/' + id).set({ ...data, finished: true, finishedAt: createdAt }).then(() => {
     alert(`✅ "${name}" wurde als beendetes Turnier importiert!`);
     closeTournamentImportModal();
