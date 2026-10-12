@@ -52,6 +52,7 @@ window.requestOwnPassword = requestOwnPassword;
 window.confirmPendingPassword = confirmPendingPassword;
 window.rejectPendingPassword = rejectPendingPassword;
 window.toggleRegistrationLock = toggleRegistrationLock;
+window.toggleTournamentFinished = toggleTournamentFinished;
 window.toggleTournamentMode = toggleTournamentMode;
 window.toggleTournamentSport = toggleTournamentSport;
 window.updateMatchInterval = updateMatchInterval;
@@ -303,6 +304,11 @@ let registrationLocked = false;
 // jeder darf frei beitreten. Wird direkt bei der Turniererstellung abgefragt (optional),
 // siehe confirmCreateTournament/finalizeCreateTournament + joinCurrentTournamentAsPlayer.
 let joinPassword = null;
+// Rein organisatorische Markierung "Turnier beendet" (siehe toggleTournamentFinished) - ändert
+// nichts an Spielständen/Rechten, sortiert das Turnier auf der Startseite aber in den Bereich
+// "Beendete Turniere" ein (z.B. für Archiv-/historische Turniere).
+let finished = false;
+let finishedAt = null;
 // Wie sich das FAL-Coin-Symbol in der Übersicht verhält: 'none' (still), 'spin' (dreht sich),
 // 'bounce' (wippt), 'pulse' (pulsiert), 'party' (dreht+hüpft+leuchtet) oder 'fireworks'
 // (Glitzer-Explosion) - admin-einstellbar, siehe setCoinAnimation().
@@ -310,7 +316,7 @@ let coinAnimation = 'none';
 // Welches Turnier ist gerade aktiv? Jedes Turnier wird komplett getrennt in Firebase
 // unter tournaments/{currentTournamentId} gespeichert (siehe Abschnitt "Turnier-Auswahl").
 let currentTournamentId = localStorage.getItem('fifa_current_tournament') || null;
-let tournamentsList = {}; // { id: { name, createdAt, createdBy } } - für die Turnierauswahl-Startseite
+let tournamentsList = {}; // { id: { name, createdAt, createdBy, finished, finishedAt } } - für die Turnierauswahl-Startseite
 let tournamentRef = null; // aktuell aktiver Firebase-Listener-Pfad, zum sauberen Wechseln
 // Die eigene Identität ist jetzt GLOBAL (website-weit dieselbe, nicht mehr pro Turnier) -
 // wird VOR der Turnierauswahl festgelegt, siehe Abschnitt 3b (Globale Identität).
@@ -1116,6 +1122,8 @@ function resetLocalStateToDefaults() {
   tipsEvaluated = false;
   registrationLocked = false;
   joinPassword = null;
+  finished = false;
+  finishedAt = null;
   coinAnimation = 'none';
   draftState = { active: false, currentStep: 0, tempP1: null, tempP2: null, remainingPlayers: [], remainingClubs: [], spinning: false, startTime: null, targetAngle: 0, duration: 4000, lastDrawnItem: null, pairs: [], pendingTarget: null };
   groupDraftState = { active: false, spinning: false, remainingTeams: [], groupLetters: [], targetGroupIndex: 0, assignments: {}, lastDrawnItem: null, lastAssignedGroup: null, startTime: null, targetAngle: 0, duration: 4000, pendingTarget: null };
@@ -1175,6 +1183,8 @@ function attachTournamentListener() {
     tipsEvaluated = data.tipsEvaluated || false;
     registrationLocked = data.registrationLocked || false;
     joinPassword = data.joinPassword || null;
+    finished = data.finished || false;
+    finishedAt = data.finishedAt || null;
     coinAnimation = data.coinAnimation || 'none';
     draftState = data.draftState || { active: false, currentStep: 0, tempP1: null, tempP2: null, remainingPlayers: [], remainingClubs: [], spinning: false, startTime: null, targetAngle: 0, duration: 4000, lastDrawnItem: null, pairs: [] };
     groupDraftState = data.groupDraftState || { active: false, spinning: false, remainingTeams: [], groupLetters: [], targetGroupIndex: 0, assignments: {}, lastDrawnItem: null, lastAssignedGroup: null, startTime: null, targetAngle: 0, duration: 4000 };
@@ -1239,6 +1249,8 @@ function saveData() {
     tipsEvaluated,
     registrationLocked,
     joinPassword,
+    finished,
+    finishedAt,
     coinAnimation,
     draftState,
     groupDraftState,
@@ -1274,11 +1286,11 @@ function attachTournamentsMetaListener() {
 function renderLandingPage() {
   const container = document.getElementById('landing-page-list');
   if (container) {
-    const ids = Object.keys(tournamentsList).sort((a, b) => (tournamentsList[b].createdAt || 0) - (tournamentsList[a].createdAt || 0));
-    if (ids.length === 0) {
+    const allIds = Object.keys(tournamentsList).sort((a, b) => (tournamentsList[b].createdAt || 0) - (tournamentsList[a].createdAt || 0));
+    if (allIds.length === 0) {
       container.innerHTML = '<p class="empty-state">Noch keine Turniere vorhanden. Erstelle unten das erste!</p>';
     } else {
-      container.innerHTML = ids.map(id => {
+      const renderRow = (id) => {
         const t = tournamentsList[id] || {};
         const metaParts = [];
         if (t.createdBy) metaParts.push(`von <strong>${escapeHtml(t.createdBy)}</strong>`);
@@ -1286,7 +1298,7 @@ function renderLandingPage() {
         return `
           <div style="display:flex; align-items:stretch; gap:6px; margin:4px 0;">
             <button class="btn-secondary role-btn" style="text-align:left; flex:1; margin:0;" onclick="enterTournament('${id}')">
-              🏆 ${escapeHtml(t.name)}
+              ${t.finished ? '🏁' : '🏆'} ${escapeHtml(t.name)}
               ${metaParts.length ? `<div style="font-size:0.75em; opacity:0.7; font-weight:normal; margin-top:2px;">${metaParts.join(' ')}</div>` : ''}
             </button>
             ${isGod() ? `
@@ -1295,7 +1307,21 @@ function renderLandingPage() {
             ` : ''}
           </div>
         `;
-      }).join('');
+      };
+      const activeIds = allIds.filter(id => !tournamentsList[id].finished);
+      const finishedIds = allIds.filter(id => tournamentsList[id].finished);
+      let html = activeIds.length
+        ? activeIds.map(renderRow).join('')
+        : '<p class="empty-state">Aktuell kein laufendes Turnier.</p>';
+      if (finishedIds.length) {
+        html += `
+          <details style="margin-top:14px;">
+            <summary style="cursor:pointer; opacity:0.85;"><strong>🏁 Beendete Turniere (${finishedIds.length})</strong></summary>
+            <div style="margin-top:8px;">${finishedIds.map(renderRow).join('')}</div>
+          </details>
+        `;
+      }
+      container.innerHTML = html;
     }
   }
   const newTournamentSection = document.getElementById('new-tournament-section');
@@ -3610,6 +3636,21 @@ function toggleRegistrationLock() {
   registrationLocked = !registrationLocked;
   saveData();
 }
+// Markiert das aktuelle Turnier als beendet (oder öffnet ein beendetes wieder) - rein
+// organisatorisch für die Übersicht auf der Startseite (siehe renderLandingPage), ändert
+// nichts an Spielständen oder Rechten. Nur der Ersteller/Admin dieses Turniers oder der God
+// dürfen das (wie beim Löschen eines Turniers), nicht jeder Ref. Wird zusätzlich nach
+// tournaments_meta gespiegelt, damit die Startseite es ohne das komplette Turnier zu laden
+// anzeigen kann.
+function toggleTournamentFinished() {
+  if (!isAdmin() || !currentTournamentId) return;
+  finished = !finished;
+  finishedAt = finished ? Date.now() : null;
+  saveData();
+  db.ref('tournaments_meta/' + currentTournamentId).update({ finished, finishedAt })
+    .catch((error) => alert('⚠️ Turnierstatus konnte nicht aktualisiert werden:\n' + error.message));
+  renderAdminPanel();
+}
 // Wechselt zwischen Duo- (2er-Teams) und Solo-Modus (1 Spieler pro Verein) - nur solange
 // noch keine Teams gelost wurden (siehe teams.length===0-Check in renderAdminPanel).
 function toggleTournamentMode() {
@@ -5699,6 +5740,15 @@ function renderAdminPanel() {
           ${joinPassword ? '<button class="btn-danger btn-sm" onclick="clearTournamentJoinPassword()">Entfernen</button>' : ''}
         </div>
       </div>
+      ${isAdmin() ? `
+      <div style="display:flex; align-items:center; justify-content:space-between; background:rgba(0,0,0,0.2); padding:8px 12px; border-radius:8px; margin-bottom:12px; flex-wrap:wrap; gap:8px;">
+        <span style="font-size:0.9em;">
+          ${finished ? `🏁 Turnier als beendet markiert${finishedAt ? ` (${new Date(finishedAt).toLocaleDateString('de-DE')})` : ''}` : '▶️ Turnier läuft noch'}<br>
+          <span style="font-size:0.85em; opacity:0.7;">(nur für die Übersicht - ändert nichts an Spielständen)</span>
+        </span>
+        <button class="btn-secondary btn-sm" onclick="toggleTournamentFinished()">${finished ? 'Wieder öffnen' : 'Als beendet markieren'}</button>
+      </div>
+      ` : ''}
     `;
   }
   if (playerListEl) {
