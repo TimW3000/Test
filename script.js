@@ -6117,27 +6117,87 @@ function getBestAndWorstResult(playerName) {
   const sorted = [...log].sort((a, b) => (b.goalsFor - b.goalsAgainst) - (a.goalsFor - a.goalsAgainst));
   return { best: sorted[0], worst: sorted[sorted.length - 1] };
 }
-// Vergibt einen launigen "Wrapped"-Titel, indem die Stats mit allen anderen
-// Spielern verglichen werden (nach dem Vorbild von Spotify Wrapped)
+// Ermittelt, wie weit das TEAM eines Spielers in der KO-Phase DIESES Turniers gekommen ist:
+// 1 = Turniersieger, 2 = Finalist (Finale verloren), 3 = 3. Platz, 4 = 4. Platz, null = noch
+// nicht so weit gekommen (oder Turnier läuft noch/kein KO). Analog zur turnierübergreifenden
+// Variante in computePlayerStats(), aber nur für dieses eine, aktuell offene Turnier.
+function getTournamentPlacementForPlayer(playerName) {
+  const myTeamObj = teams.find(t => t.p1 === playerName || t.p2 === playerName);
+  if (!myTeamObj) return null;
+  const finale = koMatches.find(m => m.round === '🏆 FINALE');
+  if (finale && finale.played && (finale.t1Id === myTeamObj.id || finale.t2Id === myTeamObj.id)) {
+    const won = (finale.t1Id === myTeamObj.id) ? finale.score1 > finale.score2 : finale.score2 > finale.score1;
+    return won ? 1 : 2;
+  }
+  const thirdPlace = koMatches.find(m => m.round === '🥉 Spiel um Platz 3');
+  if (thirdPlace && thirdPlace.played && (thirdPlace.t1Id === myTeamObj.id || thirdPlace.t2Id === myTeamObj.id)) {
+    const won = (thirdPlace.t1Id === myTeamObj.id) ? thirdPlace.score1 > thirdPlace.score2 : thirdPlace.score2 > thirdPlace.score1;
+    return won ? 3 : 4;
+  }
+  return null;
+}
+// Findet den 1-basierten Rang eines Spielers in einer bereits sortierten Stats-Liste (nach
+// dem jeweils interessanten Kriterium), oder null, wenn er dort gar nicht vorkommt.
+function findStatRank(sortedStats, playerName) {
+  const idx = sortedStats.findIndex(s => s.name === playerName);
+  return idx === -1 ? null : idx + 1;
+}
+// Vergibt einen launigen "Wrapped"-Titel, indem die Stats mit allen anderen Spielern
+// verglichen werden (nach dem Vorbild von Spotify Wrapped) - nicht nur Platz 1 pro Kategorie,
+// sondern auch Platz 2/3, damit mehr Leute einen individuellen (statt generischen) Titel
+// bekommen. Trotzdem immer nur EIN Titel pro Person - der jeweils prestigeträchtigste zuerst.
 function getWrappedTitle(playerName) {
   const allStats = calculatePlayerStats().filter(s => s.played > 0);
   const me = allStats.find(s => s.name === playerName);
   if (!me) return { emoji: '🎮', title: 'Turnier-Teilnehmer', text: 'Noch keine Spiele erfasst.' };
-  const topScorer = [...allStats].sort((a, b) => b.goals - a.goals)[0];
-  const bestWinrate = allStats.filter(s => s.played >= 2).sort((a, b) => (b.wins / b.played) - (a.wins / a.played))[0];
-  const bestDefense = allStats.filter(s => s.played >= 2).sort((a, b) => (a.conceded / a.played) - (b.conceded / b.played))[0];
+
+  const byGoals = [...allStats].sort((a, b) => b.goals - a.goals);
+  const byWinrate = allStats.filter(s => s.played >= 2).sort((a, b) => (b.wins / b.played) - (a.wins / a.played));
+  const byFewestConceded = allStats.filter(s => s.played >= 2).sort((a, b) => (a.conceded / a.played) - (b.conceded / b.played));
+  const byMostConceded = allStats.filter(s => s.played >= 2).sort((a, b) => (b.conceded / b.played) - (a.conceded / a.played));
   const balanceEntries = Object.entries(userBalances);
   const richest = balanceEntries.length ? [...balanceEntries].sort((a, b) => b[1] - a[1])[0][0] : null;
   const poorest = balanceEntries.length ? [...balanceEntries].sort((a, b) => a[1] - b[1])[0][0] : null;
 
-  if (topScorer && topScorer.name === playerName && topScorer.goals > 0) {
+  const placement = getTournamentPlacementForPlayer(playerName);
+  const goalsRank = me.goals > 0 ? findStatRank(byGoals, playerName) : null;
+  const winrateRank = findStatRank(byWinrate, playerName);
+  const fewestConcededRank = findStatRank(byFewestConceded, playerName);
+  const mostConcededRank = findStatRank(byMostConceded, playerName);
+  const avgConceded = (me.conceded / me.played).toFixed(1);
+
+  if (placement === 1) {
+    return { emoji: '🏆', title: 'Turniersieger', text: 'Das ganze Turnier gewonnen – geht nicht besser!' };
+  }
+  if (goalsRank === 1) {
     return { emoji: '⚽', title: 'Tormaschine des Turniers', text: `${me.goals} Tore erzielt – niemand hat öfter getroffen!` };
   }
-  if (bestWinrate && bestWinrate.name === playerName && bestWinrate.wins > 0) {
+  if (winrateRank === 1 && me.wins > 0) {
     return { emoji: '👑', title: 'Seriensieger', text: `${me.wins} von ${me.played} Spielen gewonnen – beste Siegquote im ganzen Turnier!` };
   }
-  if (bestDefense && bestDefense.name === playerName) {
-    return { emoji: '🛡️', title: 'Die Mauer', text: `Nur Ø ${(me.conceded / me.played).toFixed(1)} Gegentore pro Spiel – die beste Abwehr im Turnier!` };
+  if (fewestConcededRank === 1) {
+    return { emoji: '🛡️', title: 'Die Mauer', text: `Nur Ø ${avgConceded} Gegentore pro Spiel – die beste Abwehr im Turnier!` };
+  }
+  if (mostConcededRank === 1) {
+    return { emoji: '🎯', title: 'Die Schießbude', text: `Ø ${avgConceded} Gegentore pro Spiel – da war immer was los vor dem eigenen Tor!` };
+  }
+  if (placement === 2) {
+    return { emoji: '🥈', title: 'Finalist', text: 'Bis ins Finale gekommen – nur knapp am Titel vorbeigeschrammt!' };
+  }
+  if (placement === 3) {
+    return { emoji: '🥉', title: 'Bronze-Held', text: 'Das Spiel um Platz 3 gewonnen – aufs Treppchen geschafft!' };
+  }
+  if (goalsRank === 2) {
+    return { emoji: '🥈', title: 'Vize-Knipser', text: `${me.goals} Tore erzielt – zweitbester Torschütze im Turnier!` };
+  }
+  if (goalsRank === 3) {
+    return { emoji: '🥉', title: 'Dritter im Toreschießen', text: `${me.goals} Tore erzielt – drittbester Torschütze im Turnier!` };
+  }
+  if (fewestConcededRank === 2) {
+    return { emoji: '🥈', title: 'Fast die Mauer', text: `Nur Ø ${avgConceded} Gegentore pro Spiel – zweitbeste Abwehr im Turnier!` };
+  }
+  if (mostConcededRank === 2) {
+    return { emoji: '😅', title: 'Fast die Schießbude', text: `Ø ${avgConceded} Gegentore pro Spiel – zweitmeiste Gegentore im Turnier!` };
   }
   if (richest === playerName && userBalances[playerName] > 100) {
     return { emoji: '💰', title: 'Zocker-König', text: `${userBalances[playerName]} FAL-Coins auf dem Konto – am cleversten gewettet!` };
