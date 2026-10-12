@@ -2112,6 +2112,11 @@ function importHistoricalTournament() {
       : '';
     alert(`✅ "${name}" wurde als beendetes Turnier importiert!${skippedNote}`);
     closeTournamentImportModal();
+    // Das Import-Modal liegt ÜBER dem God-Panel-Modal (beide gleichzeitig "offen") - ohne das
+    // hier würde das God-Panel nach dem Schließen des Import-Modals weiter als unsichtbare
+    // Overlay-Schicht herumliegen und jeden weiteren Klick (z.B. auf einen Tab im frisch
+    // importierten Turnier) abfangen, obwohl man es selbst gar nicht mehr sieht.
+    closeGodPanel();
   }).catch((error) => {
     alert('⚠️ Import fehlgeschlagen (Turnierdaten):\n' + error.message);
   });
@@ -5540,7 +5545,7 @@ function renderGroups() {
   if (groups[0] && groups[0].members !== undefined) {
     container.innerHTML = groups.map(g => `
       <div class="admin-card">
-        <h3 style="color:var(--fal-yellow); margin-top:0;">Gruppe ${g.letter}</h3>
+        <h3 style="color:var(--fal-yellow); margin-top:0;">${g.letter}</h3>
         <ul style="margin:0; padding-left:20px;">
           ${g.members.map(name => `<li>${escapeHtml(name)}</li>`).join('') || '<li style="opacity:0.6;">leer</li>'}
         </ul>
@@ -5552,7 +5557,7 @@ function renderGroups() {
   const scoreColLabel = tournamentSport === 'darts' ? 'Sätze' : 'Tore';
   let html = standings.map(g => `
     <div class="admin-card">
-      <h3 style="color:var(--fal-yellow); margin-top:0;">Gruppe ${g.letter}</h3>
+      <h3 style="color:var(--fal-yellow); margin-top:0;">${g.letter}</h3>
       <div class="table-container">
         <table>
           <thead>
