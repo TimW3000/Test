@@ -109,6 +109,7 @@ window.advanceKORound = advanceKORound;
 window.saveRules = saveRules;
 window.submitTip = submitTip;
 window.placeBet = placeBet;
+window.spinSlotMachine = spinSlotMachine;
 window.openWrapped = openWrapped;
 window.closeWrapped = closeWrapped;
 window.setCoinAnimation = setCoinAnimation;
@@ -5197,6 +5198,7 @@ function renderAll() {
   renderMatches();
   renderAdminPanel();
   renderBettingSystem();
+  renderSlotMachine();
   // Hat man gerade ein Darts-Live-Overlay offen (egal ob selbst werfend oder nur zuschauend),
   // hier live mit aktualisieren - genau wie handleLiveDraftUI() es fürs Glücksrad tut.
   if (openDartsMatchId != null) renderDartsMatch();
@@ -6125,6 +6127,117 @@ function evaluateBetsForMatch(matchId, isKO, winningTeamId) {
   saveData();
 }
 // ============================================================================
+// 11a. GLÜCKSSPIELAUTOMAT — rein zum Spaß mit den FAL-Coins, kein Bezug zu echten
+//      Turnierspielen. 3 gewichtete Walzen, 3 gleiche Symbole = Gewinn (abhängig vom
+//      Symbol), 2 gleiche = Einsatz zurück, sonst verloren.
+// ============================================================================
+const SLOT_SYMBOLS = [
+  { emoji: '🍒', weight: 35, payout: 2 },
+  { emoji: '⚽', weight: 30, payout: 3 },
+  { emoji: '🍀', weight: 20, payout: 5 },
+  { emoji: '💰', weight: 10, payout: 10 },
+  { emoji: '7️⃣', weight: 5, payout: 20 }
+];
+// Rein lokaler Zustand (nicht synchronisiert) - jeder spielt für sich, nur die daraus
+// resultierende Kontostand-Änderung landet über saveData() in der gemeinsamen Datenbank.
+let slotMachineState = { spinning: false, lastResult: null };
+function pickWeightedSlotSymbol() {
+  const total = SLOT_SYMBOLS.reduce((sum, s) => sum + s.weight, 0);
+  let r = Math.random() * total;
+  for (const sym of SLOT_SYMBOLS) {
+    if (r < sym.weight) return sym;
+    r -= sym.weight;
+  }
+  return SLOT_SYMBOLS[SLOT_SYMBOLS.length - 1];
+}
+function spinSlotMachine() {
+  if (!myPlayerName) return alert('Bitte melde dich erst mit einem Namen an!');
+  if (slotMachineState.spinning) return;
+  const input = document.getElementById('slot-bet-amount');
+  const amount = input ? parseInt(input.value, 10) : NaN;
+  const currentBalance = getUserBalance(myPlayerName);
+  if (isNaN(amount) || amount <= 0) return alert('Bitte einen gültigen Einsatz eingeben!');
+  if (amount > currentBalance) return alert('Du hast nicht genügend FAL-Coins!');
+
+  userBalances[myPlayerName] = currentBalance - amount; // Einsatz sofort abziehen
+  slotMachineState.spinning = true;
+  slotMachineState.lastResult = null;
+  renderSlotMachine();
+
+  const finalSymbols = [pickWeightedSlotSymbol(), pickWeightedSlotSymbol(), pickWeightedSlotSymbol()];
+  const reelEls = [0, 1, 2].map(i => document.getElementById('slot-reel-' + i));
+  const maxTicks = 14;
+  let ticks = 0;
+  // Die 3 Walzen rasten nacheinander ein (links zuerst), wie bei einem echten Automaten -
+  // dasselbe "Trommelwirbel"-Klickgeräusch wie beim Glücksrad, siehe maybePlayWheelTick.
+  const flickerInterval = setInterval(() => {
+    ticks++;
+    reelEls.forEach((el, i) => {
+      if (!el) return;
+      el.textContent = (ticks >= maxTicks - (2 - i) * 3) ? finalSymbols[i].emoji : pickWeightedSlotSymbol().emoji;
+    });
+    playSound('drumroll-tick');
+    if (ticks >= maxTicks) {
+      clearInterval(flickerInterval);
+      finishSlotSpin(amount, finalSymbols);
+    }
+  }, 90);
+}
+function finishSlotSpin(amount, symbols) {
+  const [a, b, c] = symbols;
+  let winAmount = 0, resultLabel = '';
+  if (a.emoji === b.emoji && b.emoji === c.emoji) {
+    winAmount = amount * a.payout;
+    resultLabel = `🎉 JACKPOT! 3x ${a.emoji} – ${winAmount} Coins gewonnen!`;
+    playSound('jackpot');
+  } else if (a.emoji === b.emoji || b.emoji === c.emoji || a.emoji === c.emoji) {
+    winAmount = amount;
+    resultLabel = `😏 2 gleiche – Einsatz zurück (${winAmount} Coins)`;
+    playSound('ding');
+  } else {
+    winAmount = 0;
+    resultLabel = `💸 Leider nichts – ${amount} Coins verloren`;
+    playSound('slot-lose');
+  }
+  userBalances[myPlayerName] = (userBalances[myPlayerName] || 0) + winAmount;
+  slotMachineState.spinning = false;
+  slotMachineState.lastResult = { symbols: symbols.map(s => s.emoji), resultLabel };
+  saveData();
+  renderAll();
+}
+// Baut die Glücksspielautomat-Karte auf - überspringt sich SELBST während eine Drehung läuft
+// (die Animation steuert ihre eigenen DOM-Updates direkt, siehe spinSlotMachine), damit ein
+// Live-Update von anderswo (z.B. ein Spielergebnis eines anderen Spielers) eine laufende
+// Drehung nicht mitten drin abwürgt.
+function renderSlotMachine() {
+  const container = document.getElementById('slot-machine-container');
+  if (!container || slotMachineState.spinning) return;
+  if (!myPlayerName) {
+    container.innerHTML = '<p style="opacity:0.7;">👀 Melde dich mit einem Namen an, um mitzuspielen.</p>';
+    return;
+  }
+  const amountInput = document.getElementById('slot-bet-amount');
+  const hadFocus = document.activeElement === amountInput;
+  const prevValue = amountInput ? amountInput.value : '';
+  const currentBalance = getUserBalance(myPlayerName);
+  const symbols = slotMachineState.lastResult ? slotMachineState.lastResult.symbols : ['❔', '❔', '❔'];
+  container.innerHTML = `
+    <div style="display:flex; justify-content:center; gap:10px; font-size:2.2em; margin-bottom:10px;">
+      <span id="slot-reel-0" style="background:rgba(0,0,0,0.3); border-radius:8px; padding:6px 14px;">${symbols[0]}</span>
+      <span id="slot-reel-1" style="background:rgba(0,0,0,0.3); border-radius:8px; padding:6px 14px;">${symbols[1]}</span>
+      <span id="slot-reel-2" style="background:rgba(0,0,0,0.3); border-radius:8px; padding:6px 14px;">${symbols[2]}</span>
+    </div>
+    ${slotMachineState.lastResult ? `<p style="text-align:center; font-size:0.9em; margin-bottom:10px;">${slotMachineState.lastResult.resultLabel}</p>` : ''}
+    <div style="display:flex; gap:8px; align-items:center; justify-content:center; flex-wrap:wrap;">
+      <input type="number" id="slot-bet-amount" placeholder="Einsatz" min="1" max="${currentBalance}" style="width:100px;" value="${escapeHtml(prevValue)}">
+      <button class="btn-primary" onclick="spinSlotMachine()">🎰 Drehen</button>
+    </div>
+    <p style="font-size:0.75em; opacity:0.6; text-align:center; margin-top:8px;">3 gleiche Symbole = dicker Gewinn, 2 gleiche = Einsatz zurück, sonst weg. Rein zum Spaß mit den FAL-Coins!</p>
+  `;
+  const newInput = document.getElementById('slot-bet-amount');
+  if (newInput && hadFocus) newInput.focus();
+}
+// ============================================================================
 // 12. TURNIER-WRAPPED — eine persönliche Rückblick-Karte pro Spieler nach dem
 //     Finale, im Stil von "Spotify Wrapped": eigene Tore, bestes Ergebnis,
 //     Coin-Bilanz und ein launiger Titel, der aus den Stats abgeleitet wird.
@@ -6744,6 +6857,13 @@ function playSound(effect) {
     case 'victory': // Turniersieger steht fest
       [523, 659, 784, 1047, 1319].forEach((f, i) => playTone(ctx, f, now + i * 0.12, 0.4, 'triangle', 0.22));
       playTone(ctx, 1568, now + 0.6, 0.6, 'triangle', 0.25);
+      break;
+    case 'jackpot': // Glücksspielautomat: 3x gleiches Symbol
+      [523, 659, 784, 1047, 1319, 1568, 2093].forEach((f, i) => playTone(ctx, f, now + i * 0.07, 0.3, 'square', 0.18));
+      break;
+    case 'slot-lose': // Glücksspielautomat: nichts gewonnen
+      playTone(ctx, 300, now, 0.3, 'sawtooth', 0.15);
+      playTone(ctx, 180, now + 0.12, 0.35, 'sawtooth', 0.15);
       break;
   }
 }
