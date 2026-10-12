@@ -6140,7 +6140,7 @@ const SLOT_SYMBOLS = [
 ];
 // Rein lokaler Zustand (nicht synchronisiert) - jeder spielt für sich, nur die daraus
 // resultierende Kontostand-Änderung landet über saveData() in der gemeinsamen Datenbank.
-let slotMachineState = { spinning: false, lastResult: null };
+let slotMachineState = { spinning: false, lastResult: null, confettiPlayedFor: null };
 function pickWeightedSlotSymbol() {
   const total = SLOT_SYMBOLS.reduce((sum, s) => sum + s.weight, 0);
   let r = Math.random() * total;
@@ -6169,12 +6169,15 @@ function spinSlotMachine() {
   const maxTicks = 14;
   let ticks = 0;
   // Die 3 Walzen rasten nacheinander ein (links zuerst), wie bei einem echten Automaten -
-  // dasselbe "Trommelwirbel"-Klickgeräusch wie beim Glücksrad, siehe maybePlayWheelTick.
+  // dasselbe "Trommelwirbel"-Klickgeräusch wie beim Glücksrad, siehe maybePlayWheelTick. Pro
+  // Tick kurz die "slot-reel-tick"-Klasse (siehe style.css) für einen kleinen Punch-Effekt.
   const flickerInterval = setInterval(() => {
     ticks++;
     reelEls.forEach((el, i) => {
       if (!el) return;
       el.textContent = (ticks >= maxTicks - (2 - i) * 3) ? finalSymbols[i].emoji : pickWeightedSlotSymbol().emoji;
+      el.classList.add('slot-reel-tick');
+      setTimeout(() => el.classList.remove('slot-reel-tick'), 70);
     });
     playSound('drumroll-tick');
     if (ticks >= maxTicks) {
@@ -6183,25 +6186,60 @@ function spinSlotMachine() {
     }
   }, 90);
 }
+// Lässt ein paar Dutzend kleine, bunte Konfetti-Teile über dem übergebenen Element fallen -
+// rein dekorativ fürs Jackpot-Gefühl. Bewusst in einem EIGENEN, fest positionierten Overlay
+// direkt an document.body (NICHT als Kind von #slot-machine-container!): der Container wird
+// kurz nach dem Speichern durch den eigenen echoenden Live-Listener nochmal neu gerendert
+// (siehe renderSlotMachine) - als Kind wäre das Konfetti dabei sofort wieder weg, bevor man
+// es überhaupt sieht. Das Overlay räumt sich nach der Animation von selbst wieder ab (siehe
+// @keyframes slot-confetti-fall in style.css).
+function spawnSlotConfetti(anchorEl) {
+  const rect = anchorEl.getBoundingClientRect();
+  const overlay = document.createElement('div');
+  overlay.style.cssText = `position:fixed; left:${rect.left}px; top:${rect.top}px; width:${rect.width}px; height:0; pointer-events:none; z-index:9999;`;
+  document.body.appendChild(overlay);
+  const colors = ['#ffc800', '#ff4d4d', '#2ecc71', '#ffffff', '#1e3e62'];
+  for (let i = 0; i < 36; i++) {
+    const piece = document.createElement('div');
+    piece.className = 'slot-confetti-piece';
+    piece.style.left = Math.random() * 100 + '%';
+    piece.style.background = colors[Math.floor(Math.random() * colors.length)];
+    piece.style.animationDelay = (Math.random() * 0.3) + 's';
+    piece.style.animationDuration = (1 + Math.random() * 0.6) + 's';
+    piece.style.transform = `rotate(${Math.random() * 360}deg)`;
+    overlay.appendChild(piece);
+  }
+  setTimeout(() => overlay.remove(), 2200);
+}
 function finishSlotSpin(amount, symbols) {
   const [a, b, c] = symbols;
-  let winAmount = 0, resultLabel = '';
+  let winAmount = 0, resultLabel = '', resultType = '', isJackpot = false;
   if (a.emoji === b.emoji && b.emoji === c.emoji) {
     winAmount = amount * a.payout;
     resultLabel = `🎉 JACKPOT! 3x ${a.emoji} – ${winAmount} Coins gewonnen!`;
+    resultType = 'win';
+    isJackpot = true;
     playSound('jackpot');
+    if (navigator.vibrate) navigator.vibrate([80, 40, 80, 40, 220]);
   } else if (a.emoji === b.emoji || b.emoji === c.emoji || a.emoji === c.emoji) {
     winAmount = amount;
     resultLabel = `😏 2 gleiche – Einsatz zurück (${winAmount} Coins)`;
+    resultType = 'push';
     playSound('ding');
   } else {
     winAmount = 0;
     resultLabel = `💸 Leider nichts – ${amount} Coins verloren`;
+    resultType = 'lose';
     playSound('slot-lose');
   }
   userBalances[myPlayerName] = (userBalances[myPlayerName] || 0) + winAmount;
   slotMachineState.spinning = false;
-  slotMachineState.lastResult = { symbols: symbols.map(s => s.emoji), resultLabel };
+  slotMachineState.lastResult = { symbols: symbols.map(s => s.emoji), resultLabel, resultType, isJackpot };
+  // saveData() löst (über den echoenden Live-Listener, siehe attachTournamentListener) KURZ
+  // danach selbst nochmal renderAll() aus - ein hier direkt im Anschluss per DOM-Manipulation
+  // gesetzter Konfetti-/Glow-Effekt wäre durch den dabei neu aufgebauten Container sofort
+  // wieder weg. Deshalb übernimmt renderSlotMachine() selbst das Triggern (einmalig pro neuem
+  // Ergebnis, siehe dortiger confettiPlayedFor-Vergleich) - das übersteht jeden Re-Render.
   saveData();
   renderAll();
 }
@@ -6220,14 +6258,19 @@ function renderSlotMachine() {
   const hadFocus = document.activeElement === amountInput;
   const prevValue = amountInput ? amountInput.value : '';
   const currentBalance = getUserBalance(myPlayerName);
-  const symbols = slotMachineState.lastResult ? slotMachineState.lastResult.symbols : ['❔', '❔', '❔'];
+  const result = slotMachineState.lastResult;
+  const symbols = result ? result.symbols : ['❔', '❔', '❔'];
+  const resultClass = result ? `slot-result-${result.resultType}` : '';
+  const frameClass = 'slot-reels-frame' + (result && result.isJackpot ? ' slot-jackpot' : '');
   container.innerHTML = `
-    <div style="display:flex; justify-content:center; gap:10px; font-size:2.2em; margin-bottom:10px;">
-      <span id="slot-reel-0" style="background:rgba(0,0,0,0.3); border-radius:8px; padding:6px 14px;">${symbols[0]}</span>
-      <span id="slot-reel-1" style="background:rgba(0,0,0,0.3); border-radius:8px; padding:6px 14px;">${symbols[1]}</span>
-      <span id="slot-reel-2" style="background:rgba(0,0,0,0.3); border-radius:8px; padding:6px 14px;">${symbols[2]}</span>
+    <div style="position:relative; display:flex; justify-content:center; margin-bottom:12px;">
+      <div class="${frameClass}">
+        <span id="slot-reel-0" class="slot-reel" style="font-size:1.8em;">${symbols[0]}</span>
+        <span id="slot-reel-1" class="slot-reel" style="font-size:1.8em;">${symbols[1]}</span>
+        <span id="slot-reel-2" class="slot-reel" style="font-size:1.8em;">${symbols[2]}</span>
+      </div>
     </div>
-    ${slotMachineState.lastResult ? `<p style="text-align:center; font-size:0.9em; margin-bottom:10px;">${slotMachineState.lastResult.resultLabel}</p>` : ''}
+    ${result ? `<p class="slot-result-label ${resultClass}" style="text-align:center; font-size:0.95em; margin-bottom:10px;">${result.resultLabel}</p>` : ''}
     <div style="display:flex; gap:8px; align-items:center; justify-content:center; flex-wrap:wrap;">
       <input type="number" id="slot-bet-amount" placeholder="Einsatz" min="1" max="${currentBalance}" style="width:100px;" value="${escapeHtml(prevValue)}">
       <button class="btn-primary" onclick="spinSlotMachine()">🎰 Drehen</button>
@@ -6236,6 +6279,14 @@ function renderSlotMachine() {
   `;
   const newInput = document.getElementById('slot-bet-amount');
   if (newInput && hadFocus) newInput.focus();
+  // Konfetti nur EINMAL pro neuem Ergebnis spawnen, nicht bei jedem Re-Render desselben
+  // Ergebnisses (z.B. durch den eigenen echoenden Live-Listener direkt nach dem Speichern,
+  // oder durch spätere, unabhängige Datenänderungen von anderswo).
+  if (result && result.isJackpot && slotMachineState.confettiPlayedFor !== result) {
+    slotMachineState.confettiPlayedFor = result;
+    const frame = container.querySelector('.slot-reels-frame');
+    if (frame) spawnSlotConfetti(frame);
+  }
 }
 // ============================================================================
 // 12. TURNIER-WRAPPED — eine persönliche Rückblick-Karte pro Spieler nach dem
