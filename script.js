@@ -201,6 +201,18 @@ const db = firebase.database();
 // Das "God-Passwort" gilt website-weit für den Namen "tim" (siehe isGod()) - komplett
 // unabhängig von den einzelnen, pro Turnier selbst gewählten Admin-Passwörtern.
 const GOD_PASSWORD = "1234";
+// Firebase-Schlüssel (hier: ein Spielername, kleingeschrieben als Pfad-Segment unter
+// globalPlayers/...) dürfen laut offizieller Realtime-Database-Beschränkung keines dieser
+// Zeichen enthalten - sonst wirft db.ref(...) SOFORT (synchron) eine Ausnahme. Zentral
+// geprüft, damit so ein Name gar nicht erst mit einer unverständlichen Fehlermeldung (oder
+// schlimmer: unbemerkt) scheitert, siehe registerGlobalIdentity() und
+// registerImportedPlayersAsGlobalIdentities().
+const FORBIDDEN_NAME_CHARS_REGEX = /[.#$\[\]/\x00-\x1F\x7F]/;
+function findForbiddenNameChars(name) {
+  const found = [];
+  for (const ch of name) { if (FORBIDDEN_NAME_CHARS_REGEX.test(ch) && !found.includes(ch)) found.push(ch); }
+  return found;
+}
 // Von oben nach unten nach Stärke/Prestige sortiert - wird z.B. bei weniger Spielern als
 // Clubs genutzt, um die OBERSTEN (stärksten) zuerst zu übernehmen (siehe Profi-Clubs-
 // Verwaltung: wer die Liste manuell kürzt, kürzt am Ende, nicht am Anfang).
@@ -785,6 +797,10 @@ function registerGlobalIdentity() {
   const input = document.getElementById('global-self-name');
   const name = input ? input.value.trim() : '';
   if (!name) return alert('Bitte einen Namen eingeben!');
+  const forbidden = findForbiddenNameChars(name);
+  if (forbidden.length) {
+    return alert(`⚠️ Der Name darf diese(s) Zeichen nicht enthalten: ${forbidden.join(' ')}\n\n(Technische Einschränkung der Datenbank - bitte den Namen leicht anpassen.)`);
+  }
   if (globalPlayers[name.toLowerCase()]) return alert('Dieser Name ist schon vergeben - bitte über "Ich bin schon bekannt" auswählen.');
   if (name.toLowerCase() === 'tim') { promptGodPassword(name); return; }
   if (globalSettings.lockNewIdentities) return alert('🔒 Das Anlegen neuer Spieler ist aktuell gesperrt.');
@@ -2032,29 +2048,23 @@ function renderTournamentImportModal() {
 // Freunde, ...) überschrieben wird. Ohne das würde ein Klick auf einen alten Spielernamen im
 // importierten Turnier nur "Spieler nicht gefunden" zeigen, obwohl er nie gelöscht wurde,
 // sondern schlicht noch nie eine eigene Identität hatte.
+// Gibt die Liste der Namen zurück, die (wegen eines für Firebase-Schlüssel verbotenen
+// Zeichens, siehe FORBIDDEN_NAME_CHARS_REGEX) NICHT registriert werden konnten - zählen im
+// Turnier selbst trotzdem ganz normal als Teilnehmer, siehe importHistoricalTournament(), das
+// diese Liste dem Admin direkt anzeigt (statt sie nur im Konsolen-Log zu verstecken).
 function registerImportedPlayersAsGlobalIdentities(playerNames, createdAt) {
+  const skipped = [];
   playerNames.forEach((name) => {
     if (!name) return;
     const key = name.trim().toLowerCase();
     if (!key || globalPlayers[key]) return;
-    try {
-      // Firebase-Schlüssel dürfen u.a. kein ".", "#", "$", "[", "]" oder "/" enthalten - ein
-      // alter Spielername mit so einem Zeichen (z.B. "JK#Sieg3:1!") lässt db.ref(...) SOFORT
-      // (synchron!) eine Ausnahme werfen, nicht erst asynchron beim .set(). Unabgefangen würde
-      // das die komplette forEach-Schleife abbrechen UND (viel schlimmer) den Aufrufer
-      // mitreißen - in importHistoricalTournament() z.B. den direkt danach folgenden Aufruf,
-      // der die eigentlichen Turnierdaten speichert, komplett verhindern. Deshalb hier pro
-      // Name einzeln abfangen, damit ein einziger unglücklicher alter Name nicht den ganzen
-      // Import (oder die Registrierung aller anderen Spieler) kaputt macht.
-      db.ref('globalPlayers/' + key).set({ name: name.trim(), createdAt }).catch((error) => {
-        console.warn('Konnte Identität "' + name + '" nicht registrieren:', error);
-      });
-    } catch (error) {
-      // Erwartbarer Einzelfall (siehe oben), kein echter Fehler - deshalb warn() statt error(),
-      // bleibt aber trotzdem fürs spätere Nachschauen (z.B. per F12) sichtbar.
-      console.warn('Konnte Identität "' + name + '" nicht registrieren (vermutlich ungültiges Zeichen im Namen):', error);
-    }
+    const forbidden = findForbiddenNameChars(key);
+    if (forbidden.length) { skipped.push(name); return; }
+    db.ref('globalPlayers/' + key).set({ name: name.trim(), createdAt }).catch((error) => {
+      console.warn('Konnte Identität "' + name + '" nicht registrieren:', error);
+    });
   });
+  return skipped;
 }
 // Legt aus dem eingefügten JSON ein komplett neues Turnier an (eigene tournaments_meta/
 // tournaments-ID wie bei jedem normal erstellten Turnier), markiert es aber sofort als
@@ -2092,11 +2102,15 @@ function importHistoricalTournament() {
   });
   // WICHTIG: zuerst die eigentlichen Turnierdaten speichern, DANACH erst die Spieler als
   // Identitäten registrieren - nicht umgekehrt. registerImportedPlayersAsGlobalIdentities()
-  // fängt zwar jetzt selbst Fehler pro Name ab, aber so bleibt der kritische Teil (die
-  // Turnierdaten selbst) auch robust gegen jeden zukünftigen Fehler in der Registrierung.
+  // überspringt Namen mit verbotenen Zeichen zwar jetzt schon vorher sauber selbst, aber so
+  // bleibt der kritische Teil (die Turnierdaten selbst) auch robust gegen jeden zukünftigen
+  // Fehler in der Registrierung.
   db.ref('tournaments/' + id).set({ ...data, finished: true, finishedAt: createdAt }).then(() => {
-    registerImportedPlayersAsGlobalIdentities(data.players.map(p => p.name), createdAt);
-    alert(`✅ "${name}" wurde als beendetes Turnier importiert!`);
+    const skipped = registerImportedPlayersAsGlobalIdentities(data.players.map(p => p.name), createdAt);
+    const skippedNote = skipped.length
+      ? `\n\n⚠️ Diese Namen enthalten ein für die Datenbank verbotenes Zeichen (. # $ [ ] /) und haben deshalb KEINE eigene Identität bekommen - zählen aber ganz normal als Turnier-Teilnehmer:\n${skipped.join(', ')}`
+      : '';
+    alert(`✅ "${name}" wurde als beendetes Turnier importiert!${skippedNote}`);
     closeTournamentImportModal();
   }).catch((error) => {
     alert('⚠️ Import fehlgeschlagen (Turnierdaten):\n' + error.message);
