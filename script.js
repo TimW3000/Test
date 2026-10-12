@@ -2037,9 +2037,23 @@ function registerImportedPlayersAsGlobalIdentities(playerNames, createdAt) {
     if (!name) return;
     const key = name.trim().toLowerCase();
     if (!key || globalPlayers[key]) return;
-    db.ref('globalPlayers/' + key).set({ name: name.trim(), createdAt }).catch((error) => {
-      console.error('Konnte Identität "' + name + '" nicht registrieren:', error);
-    });
+    try {
+      // Firebase-Schlüssel dürfen u.a. kein ".", "#", "$", "[", "]" oder "/" enthalten - ein
+      // alter Spielername mit so einem Zeichen (z.B. "JK#Sieg3:1!") lässt db.ref(...) SOFORT
+      // (synchron!) eine Ausnahme werfen, nicht erst asynchron beim .set(). Unabgefangen würde
+      // das die komplette forEach-Schleife abbrechen UND (viel schlimmer) den Aufrufer
+      // mitreißen - in importHistoricalTournament() z.B. den direkt danach folgenden Aufruf,
+      // der die eigentlichen Turnierdaten speichert, komplett verhindern. Deshalb hier pro
+      // Name einzeln abfangen, damit ein einziger unglücklicher alter Name nicht den ganzen
+      // Import (oder die Registrierung aller anderen Spieler) kaputt macht.
+      db.ref('globalPlayers/' + key).set({ name: name.trim(), createdAt }).catch((error) => {
+        console.warn('Konnte Identität "' + name + '" nicht registrieren:', error);
+      });
+    } catch (error) {
+      // Erwartbarer Einzelfall (siehe oben), kein echter Fehler - deshalb warn() statt error(),
+      // bleibt aber trotzdem fürs spätere Nachschauen (z.B. per F12) sichtbar.
+      console.warn('Konnte Identität "' + name + '" nicht registrieren (vermutlich ungültiges Zeichen im Namen):', error);
+    }
   });
 }
 // Legt aus dem eingefügten JSON ein komplett neues Turnier an (eigene tournaments_meta/
@@ -2076,8 +2090,12 @@ function importHistoricalTournament() {
   newRef.set({ name, createdAt, createdBy, finished: true, finishedAt: createdAt }).catch((error) => {
     alert('⚠️ Import fehlgeschlagen (Meta):\n' + error.message);
   });
-  registerImportedPlayersAsGlobalIdentities(data.players.map(p => p.name), createdAt);
+  // WICHTIG: zuerst die eigentlichen Turnierdaten speichern, DANACH erst die Spieler als
+  // Identitäten registrieren - nicht umgekehrt. registerImportedPlayersAsGlobalIdentities()
+  // fängt zwar jetzt selbst Fehler pro Name ab, aber so bleibt der kritische Teil (die
+  // Turnierdaten selbst) auch robust gegen jeden zukünftigen Fehler in der Registrierung.
   db.ref('tournaments/' + id).set({ ...data, finished: true, finishedAt: createdAt }).then(() => {
+    registerImportedPlayersAsGlobalIdentities(data.players.map(p => p.name), createdAt);
     alert(`✅ "${name}" wurde als beendetes Turnier importiert!`);
     closeTournamentImportModal();
   }).catch((error) => {
