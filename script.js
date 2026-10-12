@@ -2058,8 +2058,16 @@ function importHistoricalTournament() {
   if (!name) return alert('⚠️ Bitte einen Turniernamen eingeben!');
   let data;
   try { data = JSON.parse(jsonStr); } catch (e) { return alert('⚠️ Ungültiges JSON:\n' + e.message); }
+  // Ein roher Firebase-Export (Realtime Database -> Export JSON) hat die eigentlichen
+  // Turnierdaten noch unter einem "tournament"-Schlüssel verschachtelt (altes
+  // Einzel-Turnier-System, siehe migrateOldTournamentIfNeeded) statt direkt oben wie hier
+  // erwartet - automatisch entpacken, damit sowohl die Rohdatei als auch ein schon manuell
+  // umgewandeltes JSON funktionieren.
+  if (data && !Array.isArray(data.players) && data.tournament && Array.isArray(data.tournament.players)) {
+    data = data.tournament;
+  }
   if (!data || !Array.isArray(data.players) || !Array.isArray(data.teams)) {
-    return alert('⚠️ Das JSON braucht mindestens "players" und "teams" als Array.');
+    return alert('⚠️ Das JSON braucht mindestens "players" und "teams" als Array.\n\nTipp: Falls das der rohe Firebase-Export ist, müssen die Turnierdaten entweder direkt oben im JSON stehen, oder unter einem "tournament"-Schlüssel (wird automatisch erkannt).');
   }
   const createdAt = dateStr ? new Date(dateStr + 'T12:00:00').getTime() : Date.now();
   if (!confirm(`"${name}" als neues, beendetes Turnier importieren?\n\nSpieler: ${data.players.length}, Teams: ${data.teams.length}`)) return;
