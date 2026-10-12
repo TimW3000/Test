@@ -57,6 +57,7 @@ window.openTournamentImportModal = openTournamentImportModal;
 window.closeTournamentImportModal = closeTournamentImportModal;
 window.importHistoricalTournament = importHistoricalTournament;
 window.registerImportedPlayersAsGlobalIdentities = registerImportedPlayersAsGlobalIdentities;
+window.handleImportJsonFileSelected = handleImportJsonFileSelected;
 window.toggleTournamentMode = toggleTournamentMode;
 window.toggleTournamentSport = toggleTournamentSport;
 window.updateMatchInterval = updateMatchInterval;
@@ -1982,6 +1983,21 @@ function openTournamentImportModal() {
 function closeTournamentImportModal() {
   document.getElementById('tournament-import-modal').style.display = 'none';
 }
+// Liest eine ausgewählte .json-Datei direkt ein und füllt damit das Textfeld - zuverlässiger
+// als Copy-Paste (v.a. am Handy, wo das Kopieren aus einer Dateivorschau/anderen App den Text
+// oft mitten im JSON abschneidet, siehe gemeldeter "Unexpected EOF"-Fehler).
+function handleImportJsonFileSelected(event) {
+  const file = event.target.files && event.target.files[0];
+  event.target.value = '';
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = () => {
+    const textarea = document.getElementById('import-tournament-json');
+    if (textarea) textarea.value = reader.result;
+  };
+  reader.onerror = () => alert('⚠️ Datei konnte nicht gelesen werden.');
+  reader.readAsText(file);
+}
 function renderTournamentImportModal() {
   const container = document.getElementById('tournament-import-container');
   if (!container || !isGod()) return;
@@ -2000,6 +2016,10 @@ function renderTournamentImportModal() {
       <input type="text" id="import-tournament-name" placeholder="Turniername (z.B. &quot;1. FAL-Turnier 2023&quot;)">
       <input type="date" id="import-tournament-date" title="Datum, an dem das Turnier stattfand">
       <input type="text" id="import-tournament-creator" placeholder="Ersteller (optional, Standard: tim)">
+      <div>
+        <input type="file" id="import-tournament-file-input" accept="application/json,.json" onchange="handleImportJsonFileSelected(event)">
+        <p style="font-size:0.78em; opacity:0.65; margin:4px 0 0 0;">.json-Datei auswählen (zuverlässiger als Einfügen, v.a. am Handy) - füllt das Feld unten automatisch aus.</p>
+      </div>
       <textarea id="import-tournament-json" rows="10" placeholder='Turnierdaten als JSON einfügen, z.B. {"players": [...], "teams": [...], "groups": [...], "groupMatches": [...], "koMatches": [...], ...}' style="font-family:monospace; font-size:0.78em;"></textarea>
       <button class="btn-primary" onclick="importHistoricalTournament()">📥 Als beendetes Turnier importieren</button>
     </div>
