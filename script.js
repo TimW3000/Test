@@ -4709,9 +4709,14 @@ function advanceKORound() {
       koMatches.push(m);
     });
     assignScheduledTimes(koMatches, Date.now());
+    // Kleiner Bonus zum Start der KO-Phase: jede(r) bekommt nochmal 100 FAL-Coins drauf -
+    // Sicherheitsnetz, falls sich jemand in der Gruppenphase schon komplett verzockt hat.
+    // Läuft nur genau hier, weil dieser Zweig (koMatches.length === 0) nur EINMAL pro
+    // Turnier durchlaufen wird (danach ist koMatches ja nie wieder leer).
+    players.forEach(p => { userBalances[p.name] = getUserBalance(p.name) + 100; });
     saveData();
     showTab('matches');
-    alert(`🎉 ${roundName} wurde ausgelost!${byeNote}`);
+    alert(`🎉 ${roundName} wurde ausgelost!${byeNote}\n\n🪙 Jede(r) hat nochmal 100 FAL-Coins bekommen!`);
     return;
   }
 
@@ -5339,6 +5344,7 @@ function renderAll() {
   renderMatches();
   renderAdminPanel();
   renderBettingSystem();
+  renderSlotPaytable();
   renderSlotMachine();
   renderBigSlotMachine();
   // Hat man gerade ein Darts-Live-Overlay offen (egal ob selbst werfend oder nur zuschauend),
@@ -6369,6 +6375,40 @@ function pickWeightedSlotSymbol() {
   }
   return symbols[symbols.length - 1];
 }
+// ---- Walzen-Streifen-Animation (von BEIDEN Automaten genutzt) ----
+// Statt wie früher nur den Text einer Walze im Sekundentakt auszutauschen ("Flicker"), baut
+// jede Walze jetzt einen SENKRECHTEN Streifen aus ein paar zufälligen "Blur"-Symbolen + den
+// tatsächlichen Endsymbolen ganz unten, und lässt ihn per CSS-Transition mit Ausklang-Kurve
+// genau auf den Endsymbolen zum Stehen kommen - das wirkt deutlich "echter" als ein reiner
+// Text-Austausch, bleibt aber reines CSS (kein Canvas/Physik-Motor nötig).
+const REEL_CELL_PX = 54;
+// "finalItemClasses" (optional) ordnet den ECHTEN Endsymbolen (nicht den Blur-Symbolen davor)
+// je eine zusätzliche CSS-Klasse zu - genutzt für die Gewinnlinien-Markierung (siehe
+// finishSlotSpin/finishBigSlotSpin: "slot-symbol-win" auf genau den getroffenen Zellen).
+function buildReelStripHtml(finalSymbolsTopToBottom, blurCount, finalItemClasses) {
+  const items = [];
+  for (let i = 0; i < blurCount; i++) items.push({ symbol: pickWeightedSlotSymbol(), cls: '' });
+  finalSymbolsTopToBottom.forEach((s, i) => items.push({ symbol: s, cls: (finalItemClasses && finalItemClasses[i]) || '' }));
+  return items.map(it => `
+    <div style="height:${REEL_CELL_PX}px; box-sizing:border-box; padding:2px; display:flex; align-items:center; justify-content:center;">
+      <div class="slot-strip-cell ${it.cls}" style="width:100%; height:100%; border-radius:8px; display:flex; align-items:center; justify-content:center;">${slotSymbolVisualHtml(it.symbol, Math.round(REEL_CELL_PX * 0.56))}</div>
+    </div>
+  `).join('');
+}
+// Animiert EINEN Walzen-Streifen von ganz oben bis exakt auf die letzten "visibleCount"
+// Symbole (= die echten Endsymbole, siehe buildReelStripHtml) herunter. "totalItems" ist die
+// GESAMTZAHL der Symbole im Streifen (Blur + Endsymbole).
+function animateReelStrip(stripEl, totalItems, visibleCount, delayMs, durationMs) {
+  if (!stripEl) return;
+  stripEl.style.transition = 'none';
+  stripEl.style.transform = 'translateY(0px)';
+  void stripEl.offsetHeight; // Reflow erzwingen, damit der Reset oben wirklich zuerst greift
+  setTimeout(() => {
+    const finalOffset = (totalItems - visibleCount) * REEL_CELL_PX;
+    stripEl.style.transition = `transform ${durationMs}ms cubic-bezier(0.14, 0.72, 0.18, 1)`;
+    stripEl.style.transform = `translateY(-${finalOffset}px)`;
+  }, delayMs);
+}
 // "Happy Hour" (siehe toggleHappyHour, admin-schaltbar pro Turnier): solange aktiv, wird JEDER
 // 2. Spin (über BEIDE Automaten zusammengezählt) erzwungen zum Hauptgewinn. Rein lokaler
 // Zähler pro Gerät (bewusst nicht synchronisiert) - das ist ein Spaß-Gag für einen gemeinsamen
@@ -6415,6 +6455,26 @@ function removeSlotSymbolImage(symbolId) {
   db.ref('globalSettings/slotSymbols').set(symbols).catch((error) => alert('⚠️ Konnte nicht entfernt werden:\n' + error.message));
 }
 // Baut die Admin/God-only Übersicht zum Verwalten der Symbol-Tabelle auf (website-weit, gilt
+// Zeigt JEDEM Spieler (nicht nur Admin/God) die Gewinntabelle - die "Wertigkeit" jedes
+// Symbols (Auszahlung, absteigend sortiert), gilt für BEIDE Automaten, da sie sich die
+// Symbol-Tabelle teilen. Bewusst OHNE Gewinnchance/Gewicht (das bleibt die Admin-Detailansicht,
+// siehe renderAdminSlotSymbolsPanel) - hier geht's nur darum, welches Symbol wie viel wert ist.
+function renderSlotPaytable() {
+  const container = document.getElementById('slot-paytable-container');
+  if (!container) return;
+  const symbols = [...getSlotSymbols()].sort((a, b) => b.payout - a.payout);
+  const jackpotId = getSlotJackpotSymbolId();
+  container.innerHTML = symbols.map(s => `
+    <div style="display:flex; align-items:center; justify-content:space-between; gap:10px; background: rgba(0,0,0,0.2); padding:6px 12px; border-radius:8px; margin-bottom:5px;">
+      <div style="display:flex; align-items:center; gap:10px;">
+        ${slotSymbolVisualHtml(s, 28)}
+        ${s.id === jackpotId ? '<span style="font-size:0.78em; color:var(--fal-yellow);">🏆 Hauptgewinn</span>' : ''}
+      </div>
+      <span style="font-weight:bold; color:var(--fal-yellow);">${s.payout}x Einsatz</span>
+    </div>
+  `).join('');
+}
+// Baut die Admin/God-only Übersicht zum Verwalten der Symbol-Tabelle auf (website-weit, gilt
 // für BEIDE Automaten) - Vorschau, Gewinnchance (nur Anzeige), Auszahlung (editierbar) und
 // Bild-Upload/-Entfernen.
 function renderAdminSlotSymbolsPanel() {
@@ -6442,6 +6502,13 @@ function renderAdminSlotSymbolsPanel() {
 // Rein lokaler Zustand (nicht synchronisiert) - jeder spielt für sich, nur die daraus
 // resultierende Kontostand-Änderung landet über saveData() in der gemeinsamen Datenbank.
 let slotMachineState = { spinning: false, lastResult: null, confettiPlayedFor: null };
+// Timing-Plan für die 3 Walzen: jede startet etwas später und läuft etwas länger als die
+// vorherige - rastet also "von links nach rechts" nacheinander ein, wie bei einem echten
+// Automaten (siehe animateReelStrip). Bewusst so knapp gehalten, dass die GESAMTE Animation
+// unter 1.6s bleibt (siehe SLOT_SPIN_TOTAL_MS unten).
+const SLOT_REEL_DELAYS_MS = [0, 200, 400];
+const SLOT_REEL_DURATIONS_MS = [700, 750, 800];
+const SLOT_SPIN_TOTAL_MS = Math.max(...SLOT_REEL_DELAYS_MS.map((d, i) => d + SLOT_REEL_DURATIONS_MS[i])) + 50;
 function spinSlotMachine() {
   if (!myPlayerName) return alert('Bitte melde dich erst mit einem Namen an!');
   if (slotMachineState.spinning) return;
@@ -6454,33 +6521,29 @@ function spinSlotMachine() {
   userBalances[myPlayerName] = currentBalance - amount; // Einsatz sofort abziehen
   slotMachineState.spinning = true;
   slotMachineState.lastResult = null;
-  renderSlotMachine();
 
   const forceJackpot = maybeForceHappyHourJackpot();
   const jackpotSymbol = getSlotSymbolById(getSlotJackpotSymbolId());
   const finalSymbols = forceJackpot
     ? [jackpotSymbol, jackpotSymbol, jackpotSymbol]
     : [pickWeightedSlotSymbol(), pickWeightedSlotSymbol(), pickWeightedSlotSymbol()];
-  const reelEls = [0, 1, 2].map(i => document.getElementById('slot-reel-' + i));
-  const maxTicks = 14;
-  let ticks = 0;
-  // Die 3 Walzen rasten nacheinander ein (links zuerst), wie bei einem echten Automaten -
-  // dasselbe "Trommelwirbel"-Klickgeräusch wie beim Glücksrad, siehe maybePlayWheelTick. Pro
-  // Tick kurz die "slot-reel-tick"-Klasse (siehe style.css) für einen kleinen Punch-Effekt.
-  const flickerInterval = setInterval(() => {
-    ticks++;
-    reelEls.forEach((el, i) => {
-      if (!el) return;
-      el.textContent = (ticks >= maxTicks - (2 - i) * 3) ? finalSymbols[i].emoji : pickWeightedSlotSymbol().emoji;
-      el.classList.add('slot-reel-tick');
-      setTimeout(() => el.classList.remove('slot-reel-tick'), 70);
-    });
-    playSound('drumroll-tick');
-    if (ticks >= maxTicks) {
-      clearInterval(flickerInterval);
-      finishSlotSpin(amount, finalSymbols);
-    }
-  }, 90);
+  // Die Streifen-Elemente stammen noch vom VORHERIGEN Render (renderSlotMachine überspringt
+  // sich ja selbst, solange "spinning" true ist) - deshalb hier NICHT neu rendern, sondern
+  // direkt die bestehenden Streifen befüllen und animieren.
+  [0, 1, 2].forEach((i) => {
+    const stripEl = document.getElementById('slot-reel-strip-' + i);
+    if (!stripEl) return;
+    const blurCount = 10;
+    stripEl.innerHTML = buildReelStripHtml([finalSymbols[i]], blurCount);
+    animateReelStrip(stripEl, blurCount + 1, 1, SLOT_REEL_DELAYS_MS[i], SLOT_REEL_DURATIONS_MS[i]);
+  });
+  // Trommelwirbel-Klickgeräusch (rein akustisch, unabhängig von der jetzt rein CSS-
+  // gesteuerten visuellen Animation) - dasselbe Geräusch wie beim Glücksrad.
+  const tickSoundInterval = setInterval(() => playSound('drumroll-tick'), 90);
+  setTimeout(() => {
+    clearInterval(tickSoundInterval);
+    finishSlotSpin(amount, finalSymbols);
+  }, SLOT_SPIN_TOTAL_MS);
 }
 // Lässt ein paar Dutzend kleine, bunte Konfetti-Teile über dem übergebenen Element fallen -
 // rein dekorativ fürs Jackpot-Gefühl. Bewusst in einem EIGENEN, fest positionierten Overlay
@@ -6509,18 +6572,32 @@ function spawnSlotConfetti(anchorEl) {
 }
 function finishSlotSpin(amount, symbols) {
   const [a, b, c] = symbols;
-  let winAmount = 0, resultLabel = '', resultType = '', isJackpot = false;
+  let winAmount = 0, resultLabel = '', resultType = '', isJackpot = false, winningReelIndexes = [];
   if (a.id === b.id && b.id === c.id) {
     winAmount = amount * a.payout;
     resultLabel = `🎉 JACKPOT! 3x ${a.emoji} – ${winAmount} Coins gewonnen!`;
     resultType = 'win';
     isJackpot = true;
+    winningReelIndexes = [0, 1, 2];
     playSound('jackpot');
     if (navigator.vibrate) navigator.vibrate([80, 40, 80, 40, 220]);
-  } else if (a.id === b.id || b.id === c.id || a.id === c.id) {
+  } else if (a.id === b.id) {
     winAmount = amount;
     resultLabel = `😏 2 gleiche – Einsatz zurück (${winAmount} Coins)`;
     resultType = 'push';
+    winningReelIndexes = [0, 1];
+    playSound('ding');
+  } else if (b.id === c.id) {
+    winAmount = amount;
+    resultLabel = `😏 2 gleiche – Einsatz zurück (${winAmount} Coins)`;
+    resultType = 'push';
+    winningReelIndexes = [1, 2];
+    playSound('ding');
+  } else if (a.id === c.id) {
+    winAmount = amount;
+    resultLabel = `😏 2 gleiche – Einsatz zurück (${winAmount} Coins)`;
+    resultType = 'push';
+    winningReelIndexes = [0, 2];
     playSound('ding');
   } else {
     winAmount = 0;
@@ -6530,7 +6607,7 @@ function finishSlotSpin(amount, symbols) {
   }
   userBalances[myPlayerName] = (userBalances[myPlayerName] || 0) + winAmount;
   slotMachineState.spinning = false;
-  slotMachineState.lastResult = { symbolIds: symbols.map(s => s.id), symbols: symbols.map(s => s.emoji), resultLabel, resultType, isJackpot };
+  slotMachineState.lastResult = { symbolIds: symbols.map(s => s.id), symbols: symbols.map(s => s.emoji), resultLabel, resultType, isJackpot, winningReelIndexes };
   // saveData() löst (über den echoenden Live-Listener, siehe attachTournamentListener) KURZ
   // danach selbst nochmal renderAll() aus - ein hier direkt im Anschluss per DOM-Manipulation
   // gesetzter Konfetti-/Glow-Effekt wäre durch den dabei neu aufgebauten Container sofort
@@ -6555,18 +6632,18 @@ function renderSlotMachine() {
   const prevValue = amountInput ? amountInput.value : '';
   const currentBalance = getUserBalance(myPlayerName);
   const result = slotMachineState.lastResult;
-  const reelContents = result
-    ? result.symbolIds.map(id => slotSymbolVisualHtml(getSlotSymbolById(id), 34))
-    : [0, 1, 2].map(() => slotSymbolVisualHtml(null, 34));
+  const finalSymbols = result ? result.symbolIds.map(id => getSlotSymbolById(id)) : [null, null, null];
+  const winningSet = new Set((result && result.winningReelIndexes) || []);
   const resultClass = result ? `slot-result-${result.resultType}` : '';
   const frameClass = 'slot-reels-frame' + (result && result.isJackpot ? ' slot-jackpot' : '');
+  const reelsHtml = [0, 1, 2].map(i => `
+    <span id="slot-reel-${i}" class="slot-reel">
+      <span class="slot-reel-viewport" style="height:${REEL_CELL_PX}px; width:${REEL_CELL_PX}px;"><span class="slot-reel-strip" id="slot-reel-strip-${i}">${buildReelStripHtml([finalSymbols[i] || { emoji: '❔', image: null }], 0, [winningSet.has(i) ? 'slot-symbol-win' : ''])}</span></span>
+    </span>
+  `).join('');
   container.innerHTML = `
     <div style="position:relative; display:flex; justify-content:center; margin-bottom:12px;">
-      <div class="${frameClass}">
-        <span id="slot-reel-0" class="slot-reel">${reelContents[0]}</span>
-        <span id="slot-reel-1" class="slot-reel">${reelContents[1]}</span>
-        <span id="slot-reel-2" class="slot-reel">${reelContents[2]}</span>
-      </div>
+      <div class="${frameClass}">${reelsHtml}</div>
     </div>
     ${result ? `<p class="slot-result-label ${resultClass}" style="text-align:center; font-size:0.95em; margin-bottom:10px;">${result.resultLabel}</p>` : ''}
     <div style="display:flex; gap:8px; align-items:center; justify-content:center; flex-wrap:wrap;">
@@ -6630,6 +6707,11 @@ function setBigSlotLines(numLines) {
   bigSlotState.selectedLines = numLines;
   renderBigSlotMachine();
 }
+// Timing-Plan für die 5 Walzen (siehe SLOT_REEL_DELAYS_MS/-DURATIONS_MS beim kleinen
+// Automaten) - 5 statt 3 Einträge, sonst dasselbe Prinzip.
+const BIG_SLOT_REEL_DELAYS_MS = [0, 150, 300, 450, 600];
+const BIG_SLOT_REEL_DURATIONS_MS = [700, 750, 800, 850, 900];
+const BIG_SLOT_SPIN_TOTAL_MS = Math.max(...BIG_SLOT_REEL_DELAYS_MS.map((d, i) => d + BIG_SLOT_REEL_DURATIONS_MS[i])) + 50;
 function spinBigSlotMachine() {
   if (!myPlayerName) return alert('Bitte melde dich erst mit einem Namen an!');
   if (bigSlotState.spinning) return;
@@ -6644,41 +6726,36 @@ function spinBigSlotMachine() {
   userBalances[myPlayerName] = currentBalance - totalBet;
   bigSlotState.spinning = true;
   bigSlotState.lastResult = null;
-  renderBigSlotMachine();
 
   const forceJackpot = maybeForceHappyHourJackpot();
   const jackpotSymbol = getSlotSymbolById(getSlotJackpotSymbolId());
   const grid = forceJackpot
     ? [0, 1, 2, 3, 4].map(() => [jackpotSymbol, jackpotSymbol, jackpotSymbol])
     : pickBigSlotGrid();
-  const cellEls = [0, 1, 2, 3, 4].map(col => [0, 1, 2].map(row => document.getElementById(`big-slot-cell-${col}-${row}`)));
-  const maxTicks = 16;
-  let ticks = 0;
-  // Die 5 Walzen rasten nacheinander ein (links zuerst), genau wie beim kleinen Automaten.
-  const flickerInterval = setInterval(() => {
-    ticks++;
-    for (let col = 0; col < 5; col++) {
-      const settled = ticks >= maxTicks - (4 - col) * 2;
-      for (let row = 0; row < 3; row++) {
-        const el = cellEls[col][row];
-        if (!el) continue;
-        el.textContent = settled ? grid[col][row].emoji : pickWeightedSlotSymbol().emoji;
-        el.classList.add('slot-reel-tick');
-        setTimeout(() => el.classList.remove('slot-reel-tick'), 70);
-      }
-    }
-    playSound('drumroll-tick');
-    if (ticks >= maxTicks) {
-      clearInterval(flickerInterval);
-      finishBigSlotSpin(betPerLine, numLines, grid);
-    }
-  }, 90);
+  // Analog zum kleinen Automaten: die Streifen-Elemente stammen noch vom vorherigen Render,
+  // hier nur befüllen + animieren statt neu zu rendern.
+  [0, 1, 2, 3, 4].forEach((col) => {
+    const stripEl = document.getElementById('big-slot-strip-' + col);
+    if (!stripEl) return;
+    const blurCount = 9;
+    stripEl.innerHTML = buildReelStripHtml(grid[col], blurCount);
+    animateReelStrip(stripEl, blurCount + 3, 3, BIG_SLOT_REEL_DELAYS_MS[col], BIG_SLOT_REEL_DURATIONS_MS[col]);
+  });
+  const tickSoundInterval = setInterval(() => playSound('drumroll-tick'), 90);
+  setTimeout(() => {
+    clearInterval(tickSoundInterval);
+    finishBigSlotSpin(betPerLine, numLines, grid);
+  }, BIG_SLOT_SPIN_TOTAL_MS);
 }
 function finishBigSlotSpin(betPerLine, numLines, grid) {
   const activeLines = BIG_SLOT_PAYLINES.slice(0, numLines);
+  const winningCellKeys = new Set();
   const lineResults = activeLines
     .map((lineRows, i) => {
       const r = evaluateBigSlotLine(grid, lineRows, betPerLine);
+      if (r) {
+        for (let col = 0; col < r.matchCount; col++) winningCellKeys.add(col + '-' + lineRows[col]);
+      }
       return r ? { ...r, lineNumber: i + 1 } : null;
     })
     .filter(Boolean);
@@ -6690,6 +6767,7 @@ function finishBigSlotSpin(betPerLine, numLines, grid) {
   bigSlotState.lastResult = {
     grid: grid.map(col => col.map(s => s.id)),
     lineResults,
+    winningCells: [...winningCellKeys],
     totalWin,
     isJackpot,
     totalBet: betPerLine * numLines
@@ -6700,7 +6778,9 @@ function finishBigSlotSpin(betPerLine, numLines, grid) {
   renderAll();
 }
 // Baut die Karte des großen Slots auf - überspringt sich SELBST während einer Drehung
-// (analog zu renderSlotMachine).
+// (analog zu renderSlotMachine). Jede der 5 Walzen ist ein eigener senkrechter Streifen,
+// dessen Sichtfenster genau 3 Zeilen zeigt (siehe REEL_CELL_PX/buildReelStripHtml) - die
+// getroffenen Zellen einer Gewinnlinie werden einzeln markiert (siehe winningCells).
 function renderBigSlotMachine() {
   const container = document.getElementById('big-slot-container');
   if (!container || bigSlotState.spinning) return;
@@ -6715,13 +6795,20 @@ function renderBigSlotMachine() {
   const result = bigSlotState.lastResult;
   const numLines = bigSlotState.selectedLines;
   const grid = result ? result.grid.map(col => col.map(id => getSlotSymbolById(id))) : [0, 1, 2, 3, 4].map(() => [null, null, null]);
+  const winningCellsSet = new Set((result && result.winningCells) || []);
   const frameClass = 'big-slot-frame' + (result && result.isJackpot ? ' slot-jackpot' : '');
 
-  const gridHtml = [0, 1, 2].map(row => `
-    <div class="big-slot-row">
-      ${[0, 1, 2, 3, 4].map(col => `<span id="big-slot-cell-${col}-${row}" class="big-slot-cell">${grid[col][row] ? slotSymbolVisualHtml(grid[col][row], 26) : '❔'}</span>`).join('')}
-    </div>
-  `).join('');
+  const colsHtml = [0, 1, 2, 3, 4].map((col) => {
+    const finalSymbols = [0, 1, 2].map(row => grid[col][row] || { emoji: '❔', image: null });
+    const finalClasses = [0, 1, 2].map(row => (winningCellsSet.has(col + '-' + row) ? 'slot-symbol-win' : ''));
+    return `
+      <span class="big-slot-col">
+        <span class="big-slot-viewport" style="height:${REEL_CELL_PX * 3}px; width:${REEL_CELL_PX}px;">
+          <span class="big-slot-strip" id="big-slot-strip-${col}">${buildReelStripHtml(finalSymbols, 0, finalClasses)}</span>
+        </span>
+      </span>
+    `;
+  }).join('');
 
   const resultHtml = !result ? '' : (result.lineResults.length
     ? `<div style="text-align:center; margin-bottom:8px;">
@@ -6732,7 +6819,7 @@ function renderBigSlotMachine() {
 
   container.innerHTML = `
     <div style="display:flex; justify-content:center; margin-bottom:10px;">
-      <div class="${frameClass}">${gridHtml}</div>
+      <div class="${frameClass}">${colsHtml}</div>
     </div>
     ${resultHtml}
     <div style="display:flex; gap:10px; align-items:center; justify-content:center; flex-wrap:wrap; margin-bottom:8px;">

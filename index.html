@@ -647,16 +647,25 @@
         </div>
       </div>
 
-      <!-- GLÜCKSSPIELAUTOMAT: rein zum Spaß mit den FAL-Coins, siehe spinSlotMachine() -->
+      <!-- SPIELE: beide Glücksspielautomaten zusammengefasst in einem ausklappbaren Bereich,
+           siehe spinSlotMachine()/spinBigSlotMachine() -->
       <div class="admin-card" style="margin-top: 20px;">
-        <h3 style="color:var(--fal-yellow, #f1c40f); margin-top:0;">🎰 Glücksspielautomat</h3>
-        <div id="slot-machine-container"></div>
-      </div>
-
-      <!-- GROSSER SLOT: 5 Walzen x 3 Reihen, wählbare Gewinnlinien, siehe spinBigSlotMachine() -->
-      <div class="admin-card" style="margin-top: 20px;">
-        <h3 style="color:var(--fal-yellow, #f1c40f); margin-top:0;">🎰🎰 5-Walzen-Jackpot</h3>
-        <div id="big-slot-container"></div>
+        <details>
+          <summary><h3 style="display:inline; color:var(--fal-yellow, #f1c40f);">🎮 Spiele</h3></summary>
+          <details style="margin:14px 0 18px 0;">
+            <summary style="cursor:pointer; opacity:0.85;"><strong>📋 Gewinntabelle (Symbol-Werte)</strong></summary>
+            <p style="font-size:0.8em; opacity:0.7; margin:6px 0;">Gilt für BEIDE Automaten - sortiert vom höchsten zum niedrigsten Gewinn.</p>
+            <div id="slot-paytable-container"></div>
+          </details>
+          <div>
+            <h4 style="color:var(--fal-yellow, #f1c40f); margin-top:0;">🎰 Glücksspielautomat</h4>
+            <div id="slot-machine-container"></div>
+          </div>
+          <div style="margin-top:22px; padding-top:16px; border-top:1px solid rgba(255,255,255,0.1);">
+            <h4 style="color:var(--fal-yellow, #f1c40f); margin-top:0;">🎰🎰 5-Walzen-Jackpot</h4>
+            <div id="big-slot-container"></div>
+          </div>
+        </details>
       </div>
     </section>
 
