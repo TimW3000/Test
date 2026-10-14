@@ -113,6 +113,7 @@ window.spinSlotMachine = spinSlotMachine;
 window.adjustPlayerCoins = adjustPlayerCoins;
 window.toggleHappyHour = toggleHappyHour;
 window.adjustSlotSymbolPayout = adjustSlotSymbolPayout;
+window.adjustSlotSymbolWeight = adjustSlotSymbolWeight;
 window.triggerSlotSymbolImageUpload = triggerSlotSymbolImageUpload;
 window.handleSlotSymbolImageSelected = handleSlotSymbolImageSelected;
 window.removeSlotSymbolImage = removeSlotSymbolImage;
@@ -6383,6 +6384,10 @@ function pickWeightedSlotSymbol() {
 // genau auf den Endsymbolen zum Stehen kommen - das wirkt deutlich "echter" als ein reiner
 // Text-Austausch, bleibt aber reines CSS (kein Canvas/Physik-Motor nötig).
 const REEL_CELL_PX = 54;
+// Muss zur .slot-strip-cell-Basis-box-shadow in style.css passen - wird gebraucht, wenn wir für
+// mehrfach-markierte Zellen (siehe finalItemRings) die box-shadow per Inline-Style ERSETZEN statt
+// nur ergänzen (ein Inline-"box-shadow" überschreibt sonst komplett die CSS-Klassen-Regel).
+const SLOT_STRIP_CELL_BASE_SHADOW = 'inset 0 2px 4px rgba(0,0,0,0.25), 0 2px 3px rgba(0,0,0,0.4)';
 // Farbe für die Gewinn-Markierung beim kleinen 3-Walzen-Automaten (der kennt nur "gewonnen
 // oder nicht", keine einzelnen Linien wie der große Slot - siehe BIG_SLOT_LINE_COLORS dort).
 const SLOT_WIN_COLOR = '#2ecc71';
@@ -6390,17 +6395,22 @@ const SLOT_WIN_COLOR = '#2ecc71';
 // Blur-Symbolen davor) je eine zusätzliche CSS-Klasse + Farbe zu - genutzt für die Gewinn-
 // linien-Markierung (siehe finishSlotSpin/finishBigSlotSpin: "slot-symbol-win" + die Farbe der
 // jeweils getroffenen Linie auf genau den getroffenen Zellen, siehe BIG_SLOT_LINE_COLORS).
-function buildReelStripHtml(finalSymbolsTopToBottom, blurCount, finalItemClasses, finalItemColors) {
+// "finalItemRings" (optional): für Zellen, die zu MEHREREN gleichzeitig gewonnenen Linien
+// gehören, eine fertige box-shadow-Deklaration mit mehreren konzentrischen Ringen (eine Farbe
+// pro Linie) - siehe finishBigSlotSpin/renderBigSlotMachine. Bei nur EINER Linie reicht die
+// normale "color" + CSS-Klasse (siehe oben), die rings-Variante ist nur fürs Mehrfach-Treffer.
+function buildReelStripHtml(finalSymbolsTopToBottom, blurCount, finalItemClasses, finalItemColors, finalItemRings) {
   const items = [];
-  for (let i = 0; i < blurCount; i++) items.push({ symbol: pickWeightedSlotSymbol(), cls: '', color: '' });
+  for (let i = 0; i < blurCount; i++) items.push({ symbol: pickWeightedSlotSymbol(), cls: '', color: '', ring: '' });
   finalSymbolsTopToBottom.forEach((s, i) => items.push({
     symbol: s,
     cls: (finalItemClasses && finalItemClasses[i]) || '',
-    color: (finalItemColors && finalItemColors[i]) || ''
+    color: (finalItemColors && finalItemColors[i]) || '',
+    ring: (finalItemRings && finalItemRings[i]) || ''
   }));
   return items.map(it => `
     <div style="height:${REEL_CELL_PX}px; box-sizing:border-box; padding:2px; display:flex; align-items:center; justify-content:center;">
-      <div class="slot-strip-cell ${it.cls}" style="width:100%; height:100%; border-radius:8px; display:flex; align-items:center; justify-content:center;${it.color ? ` color:${it.color};` : ''}">${slotSymbolVisualHtml(it.symbol, Math.round(REEL_CELL_PX * 0.56))}</div>
+      <div class="slot-strip-cell ${it.cls}" style="width:100%; height:100%; border-radius:8px; display:flex; align-items:center; justify-content:center;${it.color ? ` color:${it.color};` : ''}${it.ring ? ` box-shadow:${it.ring};` : ''}">${slotSymbolVisualHtml(it.symbol, Math.round(REEL_CELL_PX * 0.56))}</div>
     </div>
   `).join('');
 }
@@ -6435,6 +6445,27 @@ function adjustSlotSymbolPayout(symbolId, newPayoutRaw) {
   if (isNaN(payout) || payout <= 0) return alert('Bitte eine gültige Auszahlung eingeben!');
   const symbols = getSlotSymbols().map(s => s.id === symbolId ? { ...s, payout } : s);
   db.ref('globalSettings/slotSymbols').set(symbols).catch((error) => alert('⚠️ Konnte nicht gespeichert werden:\n' + error.message));
+}
+// Admin/God: Gewinnchance (Gewicht) EINES Symbols als Prozentwert setzen. Alle ANDEREN Symbole
+// werden automatisch proportional zu ihrem bisherigen Verhältnis zueinander herunter-/hochskaliert,
+// damit die Summe aller Gewichte wieder exakt 100 ergibt - "Gewicht" entspricht danach direkt
+// "% Chance" (siehe renderAdminSlotSymbolsPanel). Randfall: hing bisher ALLES Gewicht am Ziel-
+// Symbol selbst (die anderen waren komplett bei 0), wird der Rest gleichmäßig auf sie verteilt,
+// weil es dann kein sinnvolles "bisheriges Verhältnis" zum Skalieren gibt.
+function adjustSlotSymbolWeight(symbolId, newPercentRaw) {
+  if (!isAdmin()) return;
+  const newPercent = parseFloat(newPercentRaw);
+  if (isNaN(newPercent) || newPercent <= 0 || newPercent >= 100) return alert('Bitte einen Wert zwischen 0 und 100 eingeben!');
+  const symbols = getSlotSymbols();
+  if (!symbols.some(s => s.id === symbolId)) return;
+  const totalOthers = symbols.reduce((sum, s) => sum + (s.id === symbolId ? 0 : s.weight), 0);
+  const remainingPercent = 100 - newPercent;
+  const updated = symbols.map((s) => {
+    if (s.id === symbolId) return { ...s, weight: newPercent };
+    if (totalOthers <= 0) return { ...s, weight: remainingPercent / (symbols.length - 1) };
+    return { ...s, weight: (s.weight / totalOthers) * remainingPercent };
+  });
+  db.ref('globalSettings/slotSymbols').set(updated).catch((error) => alert('⚠️ Konnte nicht gespeichert werden:\n' + error.message));
 }
 // Merkt sich, für welches Symbol gerade ein Bild hochgeladen wird (zwischen Öffnen der
 // Dateiauswahl und der tatsächlichen Auswahl liegt ja ein Moment Wartezeit) - analog zu
@@ -6494,16 +6525,26 @@ function renderAdminSlotSymbolsPanel() {
   const totalWeight = symbols.reduce((sum, s) => sum + s.weight, 0);
   const jackpotId = getSlotJackpotSymbolId();
   container.innerHTML = symbols.map((s) => `
-    <div style="display:flex; align-items:center; justify-content:space-between; gap:10px; background: var(--fal-blue-primary); padding:8px 12px; border-radius:8px; margin-bottom:6px; flex-wrap:wrap;">
-      <div style="display:flex; align-items:center; gap:10px;">
-        ${slotSymbolVisualHtml(s, 32)}
-        <span style="font-size:0.8em; opacity:0.75;">${Math.round(s.weight / totalWeight * 100)}% Chance${s.id === jackpotId ? ' · 🏆 Hauptgewinn' : ''}</span>
+    <div style="background: var(--fal-blue-primary); padding:8px 12px; border-radius:8px; margin-bottom:6px;">
+      <div style="display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap; margin-bottom:6px;">
+        <div style="display:flex; align-items:center; gap:10px;">
+          ${slotSymbolVisualHtml(s, 32)}
+          <span style="font-size:0.8em; opacity:0.75;">${s.id === jackpotId ? '🏆 Hauptgewinn' : ''}</span>
+        </div>
+        <div style="display:flex; align-items:center; gap:6px;">
+          <button class="btn-secondary btn-sm" title="Bild hochladen" onclick="triggerSlotSymbolImageUpload('${s.id}')">📷</button>
+          ${s.image ? `<button class="btn-danger btn-sm" title="Bild entfernen" onclick="removeSlotSymbolImage('${s.id}')">🗑️</button>` : ''}
+        </div>
       </div>
-      <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
+      <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap; margin-bottom:6px;">
+        <label style="font-size:0.8em; opacity:0.8;">Auszahlung</label>
         <input type="number" id="slot-payout-input-${s.id}" min="0.1" step="0.1" value="${s.payout}" style="width:70px;">
         <button class="btn-secondary btn-sm" onclick="adjustSlotSymbolPayout('${s.id}', document.getElementById('slot-payout-input-${s.id}').value)">Speichern</button>
-        <button class="btn-secondary btn-sm" title="Bild hochladen" onclick="triggerSlotSymbolImageUpload('${s.id}')">📷</button>
-        ${s.image ? `<button class="btn-danger btn-sm" title="Bild entfernen" onclick="removeSlotSymbolImage('${s.id}')">🗑️</button>` : ''}
+      </div>
+      <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
+        <label style="font-size:0.8em; opacity:0.8;">Gewinnchance (%)</label>
+        <input type="number" id="slot-weight-input-${s.id}" min="0.1" max="99.9" step="0.1" value="${(s.weight / totalWeight * 100).toFixed(1)}" style="width:70px;">
+        <button class="btn-secondary btn-sm" onclick="adjustSlotSymbolWeight('${s.id}', document.getElementById('slot-weight-input-${s.id}').value)">Speichern</button>
       </div>
     </div>
   `).join('');
@@ -6799,9 +6840,10 @@ function spinBigSlotMachine() {
 }
 function finishBigSlotSpin(betPerLine, numLines, grid) {
   const activeLines = BIG_SLOT_PAYLINES.slice(0, numLines);
-  // Jede getroffene Zelle merkt sich, zu welcher(n) Linie(n) sie gehört (siehe
-  // BIG_SLOT_LINE_COLORS) - trifft eine Zelle auf MEHREREN Linien gleichzeitig, gewinnt beim
-  // Einfärben die ZUERST ausgewertete Linie (niedrigere Liniennummer).
+  // Jede getroffene Zelle merkt sich ALLE Linien, zu denen sie gehört (siehe
+  // BIG_SLOT_LINE_COLORS) - trifft eine Zelle auf MEHREREN Linien gleichzeitig, bekommt sie
+  // beim Rendern konzentrische Ringe in jeder beteiligten Farbe statt nur einer (siehe
+  // renderBigSlotMachine).
   const winningCellsByKey = {};
   const lineResults = activeLines
     .map((lineRows, i) => {
@@ -6809,7 +6851,8 @@ function finishBigSlotSpin(betPerLine, numLines, grid) {
       if (r) {
         for (let col = 0; col < r.matchCount; col++) {
           const key = col + '-' + lineRows[col];
-          if (!winningCellsByKey[key]) winningCellsByKey[key] = { col, row: lineRows[col], lineNumber: i + 1 };
+          if (!winningCellsByKey[key]) winningCellsByKey[key] = { col, row: lineRows[col], lineNumbers: [] };
+          winningCellsByKey[key].lineNumbers.push(i + 1);
         }
       }
       return r ? { ...r, lineNumber: i + 1 } : null;
@@ -6862,21 +6905,37 @@ function renderBigSlotMachine() {
   const hadFocus = document.activeElement === betInput;
   const prevValue = betInput ? betInput.value : '';
   const grid = result ? result.grid.map(col => col.map(id => getSlotSymbolById(id))) : [0, 1, 2, 3, 4].map(() => [null, null, null]);
-  // "col-row" -> Farbe der (ersten) Linie, die diese Zelle getroffen hat (siehe finishBigSlotSpin)
-  const winningCellColors = {};
+  // "col-row" -> alle Linien-Nummern, die diese Zelle getroffen haben (siehe finishBigSlotSpin)
+  const winningCellLines = {};
   ((result && result.winningCells) || []).forEach((wc) => {
-    winningCellColors[wc.col + '-' + wc.row] = BIG_SLOT_LINE_COLORS[(wc.lineNumber - 1) % BIG_SLOT_LINE_COLORS.length];
+    winningCellLines[wc.col + '-' + wc.row] = wc.lineNumbers;
   });
   const frameClass = 'big-slot-frame' + (result && result.isJackpot ? ' slot-jackpot' : '');
 
   const colsHtml = [0, 1, 2, 3, 4].map((col) => {
     const finalSymbols = [0, 1, 2].map(row => grid[col][row] || { emoji: '❔', image: null });
-    const finalClasses = [0, 1, 2].map(row => (winningCellColors[col + '-' + row] ? 'slot-symbol-win' : ''));
-    const finalColors = [0, 1, 2].map(row => winningCellColors[col + '-' + row] || '');
+    const finalClasses = [0, 1, 2].map((row) => {
+      const lns = winningCellLines[col + '-' + row];
+      if (!lns) return '';
+      return lns.length > 1 ? 'slot-symbol-win-multi' : 'slot-symbol-win';
+    });
+    // Bei genau EINER Linie: einfarbiger Pulse über "color"+currentColor (siehe CSS). Bei
+    // MEHREREN gleichzeitig getroffenen Linien: eine Farbe reicht nicht - stattdessen ein Ring
+    // PRO beteiligter Linie, konzentrisch ineinander (siehe SLOT_STRIP_CELL_BASE_SHADOW).
+    const finalColors = [0, 1, 2].map((row) => {
+      const lns = winningCellLines[col + '-' + row];
+      return (lns && lns.length === 1) ? BIG_SLOT_LINE_COLORS[(lns[0] - 1) % BIG_SLOT_LINE_COLORS.length] : '';
+    });
+    const finalRings = [0, 1, 2].map((row) => {
+      const lns = winningCellLines[col + '-' + row];
+      if (!lns || lns.length <= 1) return '';
+      const rings = lns.map((ln, idx) => `0 0 0 ${2 + idx * 2}px ${BIG_SLOT_LINE_COLORS[(ln - 1) % BIG_SLOT_LINE_COLORS.length]}`).join(', ');
+      return `${SLOT_STRIP_CELL_BASE_SHADOW}, ${rings}`;
+    });
     return `
       <span class="big-slot-col">
         <span class="big-slot-viewport" style="height:${REEL_CELL_PX * 3}px; width:${REEL_CELL_PX}px;">
-          <span class="big-slot-strip" id="big-slot-strip-${col}">${buildReelStripHtml(finalSymbols, 0, finalClasses, finalColors)}</span>
+          <span class="big-slot-strip" id="big-slot-strip-${col}">${buildReelStripHtml(finalSymbols, 0, finalClasses, finalColors, finalRings)}</span>
         </span>
       </span>
     `;
