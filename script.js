@@ -374,6 +374,11 @@ let lastNotifiedGlobalPlayerSnapshot = null; // letzter bekannter Stand der eige
 let notifiedUpcomingMatchIds = new Set(); // welche eigenen Spiele die "gleich geht's los"-Benachrichtigung schon bekommen haben, siehe checkForUpcomingOwnMatchNotification()
 let isFirebaseConnected = null; // null = noch unbekannt, true/false = Verbindungsstatus (siehe .info/connected weiter unten)
 let userBalances = {};  // { "Name": 100 }
+// Leichte, persistente Zusatz-Statistik pro Spieler UND Turnier zu den beiden Glücksspiel-
+// automaten (Rohdaten der einzelnen Drehungen selbst werden NICHT gespeichert, nur diese
+// Summen) - Grundlage für die Glücksspiel-Achievements, siehe computeAchievements/
+// collectSlotStatsAcrossTournaments. { "Name": { spins, jackpots, biggestWin, wentBroke } }
+let slotStats = {};
 let bets = [];          // { matchId, isKO, playerName, chosenTeamId, amount }
 // Status-Variablen für das Auslosungs-System (Duo-Draft) - UNVERÄNDERT
 let draftState = { active: false, currentStep: 0, tempP1: null, tempP2: null, remainingPlayers: [], remainingClubs: [], spinning: false, startTime: null, targetAngle: 0, duration: 4000, lastDrawnItem: null, pairs: [], pendingTarget: null };
@@ -1176,6 +1181,7 @@ function resetLocalStateToDefaults() {
   draftState = { active: false, currentStep: 0, tempP1: null, tempP2: null, remainingPlayers: [], remainingClubs: [], spinning: false, startTime: null, targetAngle: 0, duration: 4000, lastDrawnItem: null, pairs: [], pendingTarget: null };
   groupDraftState = { active: false, spinning: false, remainingTeams: [], groupLetters: [], targetGroupIndex: 0, assignments: {}, lastDrawnItem: null, lastAssignedGroup: null, startTime: null, targetAngle: 0, duration: 4000, pendingTarget: null };
   userBalances = {};
+  slotStats = {};
   bets = [];
   tournamentEntryHandled = false;
   myPlayerWasPresent = false;
@@ -1239,6 +1245,7 @@ function attachTournamentListener() {
     groupDraftState = data.groupDraftState || { active: false, spinning: false, remainingTeams: [], groupLetters: [], targetGroupIndex: 0, assignments: {}, lastDrawnItem: null, lastAssignedGroup: null, startTime: null, targetAngle: 0, duration: 4000 };
     normalizeGroupDraftState(groupDraftState);
     userBalances = data.userBalances || {};
+    slotStats = data.slotStats || {};
     bets = data.bets || [];
 
     // Beim allerersten Laden nach dem Betreten entscheidet handleTournamentEntry(), ob man
@@ -1305,6 +1312,7 @@ function saveData() {
     draftState,
     groupDraftState,
     userBalances,
+    slotStats,
     bets
   }).catch((error) => {
     // Ohne diesen Catch-Block schlägt ein blockiertes Speichern (z.B. durch zu strenge
@@ -2519,6 +2527,13 @@ function renamePlayerIdentity(newNameRaw) {
           updates[base + 'userBalances/' + newName] = balances[bName];
         }
       });
+      const slotStatsEntries = t.slotStats || {};
+      Object.keys(slotStatsEntries).forEach((sName) => {
+        if (sName.trim().toLowerCase() === oldKey && sName !== newName) {
+          updates[base + 'slotStats/' + sName] = null;
+          updates[base + 'slotStats/' + newName] = slotStatsEntries[sName];
+        }
+      });
       (t.bets || []).forEach((bet, i) => {
         if (bet.playerName && bet.playerName.trim().toLowerCase() === oldKey) updates[base + 'bets/' + i + '/playerName'] = newName;
       });
@@ -2909,9 +2924,27 @@ function computeGlobalRatings(legs) {
   });
   return ratings;
 }
-// Leitet aus Statistik + Elo-Wertung eine kleine Auswahl an Erfolgs-Badges für EINEN
-// Spieler ab - rein anzeigend, ohne Einfluss auf irgendwelche Rechte.
-function computeAchievements(playerKey, stats, ratingEntry, allRatings) {
+// Sammelt die persistente Glücksspiel-Zusatzstatistik (siehe recordSlotSpinResult) EINES
+// Spielers über ALLE Turniere hinweg auf - Grundlage für die Glücksspiel-Achievements.
+function collectSlotStatsAcrossTournaments(allTournamentsData, playerKey) {
+  const agg = { spins: 0, jackpots: 0, biggestWin: 0, wentBroke: false };
+  Object.values(allTournamentsData || {}).forEach((t) => {
+    if (!t || !t.slotStats) return;
+    const matchKey = Object.keys(t.slotStats).find(k => k.trim().toLowerCase() === playerKey);
+    if (!matchKey) return;
+    const entry = t.slotStats[matchKey];
+    agg.spins += entry.spins || 0;
+    agg.jackpots += entry.jackpots || 0;
+    if ((entry.biggestWin || 0) > agg.biggestWin) agg.biggestWin = entry.biggestWin;
+    if (entry.wentBroke) agg.wentBroke = true;
+  });
+  return agg;
+}
+// Leitet aus Statistik + Elo-Wertung + Glücksspiel-Statistik eine kleine Auswahl an Erfolgs-
+// Badges für EINEN Spieler ab - rein anzeigend, ohne Einfluss auf irgendwelche Rechte.
+// "gamblingStats" ist optional (siehe collectSlotStatsAcrossTournaments) - ohne sie werden
+// einfach keine Glücksspiel-Achievements vergeben.
+function computeAchievements(playerKey, stats, ratingEntry, allRatings, gamblingStats) {
   const badges = [];
   const tournamentWins = stats.tournaments.filter(t => t.placement === '🏆 Turniersieger').length;
   if (tournamentWins >= 1) badges.push({ icon: '🏆', label: tournamentWins === 1 ? 'Turniersieger' : `${tournamentWins}x Turniersieger` });
@@ -2953,6 +2986,16 @@ function computeAchievements(playerKey, stats, ratingEntry, allRatings) {
   if (tournamentCount >= 5 && stats.goalsFor >= 100) badges.push({ icon: '💯', label: 'Torjäger-Legende (100+ Tore)' });
   if (stats.rival) badges.push({ icon: '🤝', label: `Dauerrivale: ${stats.rival.name}` });
   if (tournamentCount >= 3 && stats.allPartnersEver.size >= 5) badges.push({ icon: '🧭', label: 'Vielgereist (5+ verschiedene Partner)' });
+
+  // --- Glücksspiel-Achievements (Glücksspielautomat + 5-Walzen-Jackpot, siehe recordSlotSpinResult
+  // /collectSlotStatsAcrossTournaments) - unabhängig von Turnierspielen erreichbar. ---
+  if (gamblingStats) {
+    if (gamblingStats.spins >= 10) badges.push({ icon: '🎰', label: `Spielernatur (${gamblingStats.spins}x gedreht)` });
+    if (gamblingStats.jackpots >= 1) badges.push({ icon: '🍀', label: gamblingStats.jackpots === 1 ? 'Glückspilz' : `Glückspilz (${gamblingStats.jackpots}x Hauptgewinn)` });
+    if (gamblingStats.jackpots >= 5) badges.push({ icon: '🍀👑', label: 'Dauerglück' });
+    if (gamblingStats.biggestWin >= 100) badges.push({ icon: '💰', label: `Großer Wurf (${gamblingStats.biggestWin} Coins in einem Spin)` });
+    if (gamblingStats.wentBroke) badges.push({ icon: '📉', label: 'Alles verzockt' });
+  }
 
   return badges;
 }
@@ -3054,7 +3097,8 @@ function renderProfileStatsSection(key) {
     const stats = computePlayerStats(key, matches);
     const ratings = computeGlobalRatings(collectIndividualLegsForElo(allData, tournamentsList));
     const ratingEntry = ratings[key];
-    const badges = computeAchievements(key, stats, ratingEntry, ratings);
+    const gamblingStats = collectSlotStatsAcrossTournaments(allData, key);
+    const badges = computeAchievements(key, stats, ratingEntry, ratings, gamblingStats);
     let html = renderStatsHtml(stats, ratingEntry, ratings, badges);
     // Kopf-an-Kopf-Bilanz nur beim Ansehen eines FREMDEN Profils (nicht des eigenen) -
     // nutzt dieselben schon geladenen Match-Daten, kein zusätzlicher Netzwerk-Roundtrip.
@@ -3067,21 +3111,28 @@ function renderProfileStatsSection(key) {
 }
 // Baut das HTML für den Statistik-Abschnitt eines Profils auf
 function renderStatsHtml(stats, ratingEntry, allRatings, badges) {
+  let html = '<hr style="margin:16px 0; opacity:0.3;">';
+  html += '<h4 style="margin-bottom:6px;">🏅 Erfolge</h4>';
+  // Badges IMMER zeigen (auch ohne bestätigte Turnierspiele) - Glücksspiel-Achievements sind
+  // z.B. unabhängig von Turnieren erreichbar. Bei 0 Badges ein klares "noch nichts freigeschaltet"
+  // statt einfach gar nichts anzuzeigen, damit es nicht wie ein Bug ("wo sind meine Erfolge?!")
+  // statt wie ein "noch nicht erreicht" wirkt.
+  if (badges.length > 0) {
+    html += `<div style="display:flex; flex-wrap:wrap; gap:6px; margin-bottom:14px;">
+      ${badges.map(b => `<span title="${escapeHtml(b.label)}" style="background:var(--fal-blue-primary); border-radius:20px; padding:4px 10px; font-size:0.85em;">${b.icon} ${escapeHtml(b.label)}</span>`).join('')}
+    </div>`;
+  } else {
+    html += '<p style="font-size:0.85em; opacity:0.6; margin-bottom:14px;">Noch keine Erfolge freigeschaltet - weiterspielen (oder drehen 🎰)!</p>';
+  }
+
   if (stats.totalMatches === 0) {
-    return '<hr style="margin:16px 0; opacity:0.3;"><p class="empty-state">Noch keine bestätigten Spiele - hier stehen bald Statistiken.</p>';
+    html += '<p class="empty-state">Noch keine bestätigten Turnierspiele - hier stehen bald Statistiken.</p>';
+    return html;
   }
   const sortedByRating = Object.keys(allRatings).sort((a, b) => allRatings[b].rating - allRatings[a].rating);
   const rank = ratingEntry ? sortedByRating.indexOf(ratingEntry.key) + 1 : null;
 
-  let html = '<hr style="margin:16px 0; opacity:0.3;">';
   html += '<h4 style="margin-bottom:6px;">📊 Statistiken</h4>';
-
-  if (badges.length > 0) {
-    html += `<div style="display:flex; flex-wrap:wrap; gap:6px; margin-bottom:12px;">
-      ${badges.map(b => `<span title="${escapeHtml(b.label)}" style="background:var(--fal-blue-primary); border-radius:20px; padding:4px 10px; font-size:0.85em;">${b.icon} ${escapeHtml(b.label)}</span>`).join('')}
-    </div>`;
-  }
-
   html += `
     <div style="display:grid; grid-template-columns:1fr 1fr 1fr; gap:8px; text-align:center; margin-bottom:14px;">
       <div style="background:var(--fal-blue-primary); border-radius:8px; padding:8px;">
@@ -4843,6 +4894,10 @@ function resetBettingSystem() {
   tips = {};
   tipsEvaluated = false;
   userBalances = {};
+  // slotStats (Grundlage für die Glücksspiel-Achievements) bleibt hier BEWUSST erhalten - das
+  // ist nur ein Economy-Reset (Kontostände), kein Turnier-Reset; Lebenszeit-Erfolge wie "schon
+  // mal einen Jackpot geknackt" sollen dadurch nicht verloren gehen (genau wie Match-Achievements
+  // ja auch nicht verschwinden, nur weil Wetten/Coins zurückgesetzt werden).
   groupMatches.forEach(m => { m.betsEvaluated = false; });
   koMatches.forEach(m => { m.betsEvaluated = false; });
   saveData();
@@ -4864,6 +4919,7 @@ function resetTournament() {
     registrationLocked = false;
     draftState = { active: false, currentStep: 0, tempP1: null, tempP2: null, remainingPlayers: [], remainingClubs: [], spinning: false, startTime: null, targetAngle: 0, duration: 4000, lastDrawnItem: null, pairs: [], pendingTarget: null };
     userBalances = {};
+    slotStats = {};
     bets = [];
     saveData();
   }
@@ -6621,6 +6677,18 @@ function spawnSlotConfetti(anchorEl) {
   }
   setTimeout(() => overlay.remove(), 2200);
 }
+// Schreibt die leichte, persistente Zusatz-Statistik EINER Drehung fort (egal welcher der
+// beiden Automaten) - Grundlage für die Glücksspiel-Achievements (siehe
+// collectSlotStatsAcrossTournaments/computeAchievements). Rohdaten einzelner Drehungen werden
+// bewusst NICHT gespeichert, nur diese laufenden Summen.
+function recordSlotSpinResult(playerName, winAmount, isJackpot) {
+  if (!slotStats[playerName]) slotStats[playerName] = { spins: 0, jackpots: 0, biggestWin: 0, wentBroke: false };
+  const s = slotStats[playerName];
+  s.spins++;
+  if (isJackpot) s.jackpots++;
+  if (winAmount > s.biggestWin) s.biggestWin = winAmount;
+  if (getUserBalance(playerName) === 0) s.wentBroke = true;
+}
 function finishSlotSpin(amount, symbols) {
   const [a, b, c] = symbols;
   let winAmount = 0, resultLabel = '', resultType = '', isJackpot = false, winningReelIndexes = [];
@@ -6657,6 +6725,10 @@ function finishSlotSpin(amount, symbols) {
     playSound('slot-lose');
   }
   userBalances[myPlayerName] = (userBalances[myPlayerName] || 0) + winAmount;
+  // Für die Achievement-Statistik zählt als "Jackpot" nur ein Treffer mit dem TATSÄCHLICHEN
+  // Hauptgewinn-Symbol (🏆), nicht jedes beliebige 3-of-a-kind (das löst zwar auch den
+  // Glow/Konfetti-Effekt aus, aber z.B. 3x Kirsche soll kein "Glückspilz"-Achievement geben).
+  recordSlotSpinResult(myPlayerName, winAmount, isJackpot && a.id === getSlotJackpotSymbolId());
   slotMachineState.spinning = false;
   slotMachineState.lastResult = { symbolIds: symbols.map(s => s.id), symbols: symbols.map(s => s.emoji), resultLabel, resultType, isJackpot, winningReelIndexes };
   // saveData() löst (über den echoenden Live-Listener, siehe attachTournamentListener) KURZ
@@ -6862,6 +6934,7 @@ function finishBigSlotSpin(betPerLine, numLines, grid) {
   const jackpotId = getSlotJackpotSymbolId();
   const isJackpot = lineResults.some(r => r.symbol.id === jackpotId && r.matchCount === 5);
   userBalances[myPlayerName] = (userBalances[myPlayerName] || 0) + totalWin;
+  recordSlotSpinResult(myPlayerName, totalWin, isJackpot);
   bigSlotState.spinning = false;
   bigSlotState.lastResult = {
     grid: grid.map(col => col.map(s => s.id)),
