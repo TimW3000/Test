@@ -337,7 +337,7 @@
             <li><strong>Tippspiel</strong>: einmalig, bevor das allererste Spiel des gesamten Turniers beginnt, auf den Gesamtsieger setzen (Quote = Anzahl Teams : 1). Danach ist der Tipp für immer fix, egal was passiert.</li>
             <li><code>🏆 Wettkönige Top 5</code> zeigt die aktuell reichsten Wetter dieses Turniers.</li>
             <li><strong>🎰 Glücksspielautomat</strong>: reiner Spaß-Zeitvertreib mit den FAL-Coins, ohne jeden Bezug zu echten Turnierspielen - Einsatz eingeben und drehen. 3 gleiche Symbole bringen einen Gewinn (abhängig vom Symbol), 2 gleiche geben den Einsatz zurück, sonst ist er weg. Das FAL-Wappen ist der Hauptgewinn.</li>
-            <li><strong>🎰🎰 5-Walzen-Jackpot</strong>: klassischer Casino-Slot mit 5 Walzen x 3 Reihen. Anzahl Gewinnlinien wählen (1/3/5/10), Einsatz PRO Linie eingeben (Gesamteinsatz = Einsatz × Linien) und drehen. 3, 4 oder 5 gleiche Symbole von links auf einer aktiven Linie gewinnen (mehr Treffer = mehr Gewinn), mehrere Linien können gleichzeitig treffen.</li>
+            <li><strong>🎰🎰 5-Walzen-Jackpot</strong>: klassischer Casino-Slot mit 5 Walzen x 3 Reihen. Anzahl Gewinnlinien wählen (1/3/5/10), Einsatz PRO Linie eingeben (Gesamteinsatz = Einsatz × Linien) und drehen. 3, 4 oder 5 gleiche Symbole von links auf einer aktiven Linie gewinnen (mehr Treffer = mehr Gewinn). Die <strong>Gewinnlinien-Übersicht</strong> zeigt, welches Muster jede Linien-Nummer bedeutet. Treffen mehrere Linien gleichzeitig, wird jede in ihrer EIGENEN Farbe markiert (Grün, Blau, Rot, ...) - dieselbe Farbe taucht auch beim Ergebnis-Text auf.</li>
             <li><strong>💰 FAL-Coins verwalten</strong> (Admin-Tab, nur Admin/God): Kontostand eines Spielers manuell anpassen - Betrag eingeben, dann ➕ gutschreiben oder ➖ abziehen. Gilt nur für dieses eine Turnier.</li>
             <li><strong>🎰 Slot-Symbole verwalten</strong> (Admin-Tab, nur Admin/God, website-weit): Auszahlung pro Symbol einstellen und/oder ein eigenes Bild hochladen (ersetzt das Emoji in beiden Automaten) - die Gewinnchance selbst bleibt fest.</li>
             <li><strong>🎉 Happy Hour</strong> (Admin-Tab, nur Admin/God): manueller Schalter pro Turnier - solange aktiv, ist jeder 2. Spin an beiden Automaten garantiert der Hauptgewinn. Bleibt an, bis wieder ausgeschaltet.</li>
@@ -663,6 +663,11 @@
           </div>
           <div style="margin-top:22px; padding-top:16px; border-top:1px solid rgba(255,255,255,0.1);">
             <h4 style="color:var(--fal-yellow, #f1c40f); margin-top:0;">🎰🎰 5-Walzen-Jackpot</h4>
+            <details style="margin-bottom:14px;">
+              <summary style="cursor:pointer; opacity:0.85;"><strong>📐 Gewinnlinien-Übersicht</strong></summary>
+              <p style="font-size:0.8em; opacity:0.7; margin:6px 0;">Zeigt, welches Muster jede Linien-Nummer bedeutet - "Linien: 3" aktiviert z.B. die Linien 1-3 von hier.</p>
+              <div id="big-slot-paylines-legend" style="display:flex; flex-wrap:wrap; gap:8px;"></div>
+            </details>
             <div id="big-slot-container"></div>
           </div>
         </details>

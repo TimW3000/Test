@@ -5345,6 +5345,7 @@ function renderAll() {
   renderAdminPanel();
   renderBettingSystem();
   renderSlotPaytable();
+  renderBigSlotPaylinesLegend();
   renderSlotMachine();
   renderBigSlotMachine();
   // Hat man gerade ein Darts-Live-Overlay offen (egal ob selbst werfend oder nur zuschauend),
@@ -6382,16 +6383,24 @@ function pickWeightedSlotSymbol() {
 // genau auf den Endsymbolen zum Stehen kommen - das wirkt deutlich "echter" als ein reiner
 // Text-Austausch, bleibt aber reines CSS (kein Canvas/Physik-Motor nötig).
 const REEL_CELL_PX = 54;
-// "finalItemClasses" (optional) ordnet den ECHTEN Endsymbolen (nicht den Blur-Symbolen davor)
-// je eine zusätzliche CSS-Klasse zu - genutzt für die Gewinnlinien-Markierung (siehe
-// finishSlotSpin/finishBigSlotSpin: "slot-symbol-win" auf genau den getroffenen Zellen).
-function buildReelStripHtml(finalSymbolsTopToBottom, blurCount, finalItemClasses) {
+// Farbe für die Gewinn-Markierung beim kleinen 3-Walzen-Automaten (der kennt nur "gewonnen
+// oder nicht", keine einzelnen Linien wie der große Slot - siehe BIG_SLOT_LINE_COLORS dort).
+const SLOT_WIN_COLOR = '#2ecc71';
+// "finalItemClasses"/"finalItemColors" (optional) ordnen den ECHTEN Endsymbolen (nicht den
+// Blur-Symbolen davor) je eine zusätzliche CSS-Klasse + Farbe zu - genutzt für die Gewinn-
+// linien-Markierung (siehe finishSlotSpin/finishBigSlotSpin: "slot-symbol-win" + die Farbe der
+// jeweils getroffenen Linie auf genau den getroffenen Zellen, siehe BIG_SLOT_LINE_COLORS).
+function buildReelStripHtml(finalSymbolsTopToBottom, blurCount, finalItemClasses, finalItemColors) {
   const items = [];
-  for (let i = 0; i < blurCount; i++) items.push({ symbol: pickWeightedSlotSymbol(), cls: '' });
-  finalSymbolsTopToBottom.forEach((s, i) => items.push({ symbol: s, cls: (finalItemClasses && finalItemClasses[i]) || '' }));
+  for (let i = 0; i < blurCount; i++) items.push({ symbol: pickWeightedSlotSymbol(), cls: '', color: '' });
+  finalSymbolsTopToBottom.forEach((s, i) => items.push({
+    symbol: s,
+    cls: (finalItemClasses && finalItemClasses[i]) || '',
+    color: (finalItemColors && finalItemColors[i]) || ''
+  }));
   return items.map(it => `
     <div style="height:${REEL_CELL_PX}px; box-sizing:border-box; padding:2px; display:flex; align-items:center; justify-content:center;">
-      <div class="slot-strip-cell ${it.cls}" style="width:100%; height:100%; border-radius:8px; display:flex; align-items:center; justify-content:center;">${slotSymbolVisualHtml(it.symbol, Math.round(REEL_CELL_PX * 0.56))}</div>
+      <div class="slot-strip-cell ${it.cls}" style="width:100%; height:100%; border-radius:8px; display:flex; align-items:center; justify-content:center;${it.color ? ` color:${it.color};` : ''}">${slotSymbolVisualHtml(it.symbol, Math.round(REEL_CELL_PX * 0.56))}</div>
     </div>
   `).join('');
 }
@@ -6501,13 +6510,14 @@ function renderAdminSlotSymbolsPanel() {
 }
 // Rein lokaler Zustand (nicht synchronisiert) - jeder spielt für sich, nur die daraus
 // resultierende Kontostand-Änderung landet über saveData() in der gemeinsamen Datenbank.
-let slotMachineState = { spinning: false, lastResult: null, confettiPlayedFor: null };
+let slotMachineState = { spinning: false, lastResult: null, confettiPlayedFor: null, lastRenderedResult: undefined };
 // Timing-Plan für die 3 Walzen: jede startet etwas später und läuft etwas länger als die
 // vorherige - rastet also "von links nach rechts" nacheinander ein, wie bei einem echten
-// Automaten (siehe animateReelStrip). Bewusst so knapp gehalten, dass die GESAMTE Animation
-// unter 1.6s bleibt (siehe SLOT_SPIN_TOTAL_MS unten).
-const SLOT_REEL_DELAYS_MS = [0, 200, 400];
-const SLOT_REEL_DURATIONS_MS = [700, 750, 800];
+// Automaten (siehe animateReelStrip). Bewusst spürbar lang (knapp 2s), damit die letzte Walze
+// wirklich noch ein bisschen "zittert", statt dass alles wie EIN einziger Durchlauf ohne
+// Spannung wirkt.
+const SLOT_REEL_DELAYS_MS = [0, 300, 650];
+const SLOT_REEL_DURATIONS_MS = [900, 1050, 1250];
 const SLOT_SPIN_TOTAL_MS = Math.max(...SLOT_REEL_DELAYS_MS.map((d, i) => d + SLOT_REEL_DURATIONS_MS[i])) + 50;
 function spinSlotMachine() {
   if (!myPlayerName) return alert('Bitte melde dich erst mit einem Namen an!');
@@ -6625,20 +6635,34 @@ function renderSlotMachine() {
   if (!container || slotMachineState.spinning) return;
   if (!myPlayerName) {
     container.innerHTML = '<p style="opacity:0.7;">👀 Melde dich mit einem Namen an, um mitzuspielen.</p>';
+    slotMachineState.lastRenderedResult = undefined;
     return;
   }
+  const currentBalance = getUserBalance(myPlayerName);
+  const result = slotMachineState.lastResult;
+  // Für DIESEN Automaten hat sich seit dem letzten Aufbau nichts geändert - das passiert z.B.,
+  // wenn der ANDERE Automat gerade gedreht wurde (der löst über renderAll() auch hier einen
+  // Render-Aufruf aus). Dann NUR den Kontostand auffrischen statt die Walzen komplett neu
+  // aufzubauen, sonst würde die CSS-Gewinn-Animation (Glow/Pulse) bei JEDER fremden Aktion
+  // erneut abspielen, obwohl für diesen Automaten gar nichts Neues passiert ist.
+  if (result === slotMachineState.lastRenderedResult) {
+    const amountInput = document.getElementById('slot-bet-amount');
+    if (amountInput) amountInput.max = currentBalance;
+    const balanceEl = document.getElementById('slot-balance-text');
+    if (balanceEl) balanceEl.textContent = currentBalance;
+    return;
+  }
+  slotMachineState.lastRenderedResult = result;
   const amountInput = document.getElementById('slot-bet-amount');
   const hadFocus = document.activeElement === amountInput;
   const prevValue = amountInput ? amountInput.value : '';
-  const currentBalance = getUserBalance(myPlayerName);
-  const result = slotMachineState.lastResult;
   const finalSymbols = result ? result.symbolIds.map(id => getSlotSymbolById(id)) : [null, null, null];
   const winningSet = new Set((result && result.winningReelIndexes) || []);
   const resultClass = result ? `slot-result-${result.resultType}` : '';
   const frameClass = 'slot-reels-frame' + (result && result.isJackpot ? ' slot-jackpot' : '');
   const reelsHtml = [0, 1, 2].map(i => `
     <span id="slot-reel-${i}" class="slot-reel">
-      <span class="slot-reel-viewport" style="height:${REEL_CELL_PX}px; width:${REEL_CELL_PX}px;"><span class="slot-reel-strip" id="slot-reel-strip-${i}">${buildReelStripHtml([finalSymbols[i] || { emoji: '❔', image: null }], 0, [winningSet.has(i) ? 'slot-symbol-win' : ''])}</span></span>
+      <span class="slot-reel-viewport" style="height:${REEL_CELL_PX}px; width:${REEL_CELL_PX}px;"><span class="slot-reel-strip" id="slot-reel-strip-${i}">${buildReelStripHtml([finalSymbols[i] || { emoji: '❔', image: null }], 0, [winningSet.has(i) ? 'slot-symbol-win' : ''], [winningSet.has(i) ? SLOT_WIN_COLOR : ''])}</span></span>
     </span>
   `).join('');
   container.innerHTML = `
@@ -6646,6 +6670,7 @@ function renderSlotMachine() {
       <div class="${frameClass}">${reelsHtml}</div>
     </div>
     ${result ? `<p class="slot-result-label ${resultClass}" style="text-align:center; font-size:0.95em; margin-bottom:10px;">${result.resultLabel}</p>` : ''}
+    <p style="text-align:center; font-size:0.9em; margin-bottom:8px;">Kontostand: <strong id="slot-balance-text">${currentBalance}</strong> ${coinIcon(16)}</p>
     <div style="display:flex; gap:8px; align-items:center; justify-content:center; flex-wrap:wrap;">
       <input type="number" id="slot-bet-amount" placeholder="Einsatz" min="1" max="${currentBalance}" style="width:100px;" value="${escapeHtml(prevValue)}">
       <button class="btn-primary" onclick="spinSlotMachine()">🎰 Drehen</button>
@@ -6685,7 +6710,32 @@ const BIG_SLOT_PAYLINES = [
   [0, 1, 1, 1, 0]  // 10: flaches V
 ];
 const BIG_SLOT_LINE_PACKAGES = [1, 3, 5, 10];
-let bigSlotState = { spinning: false, lastResult: null, confettiPlayedFor: null, selectedLines: 1 };
+// Je Linie eine eigene, gut unterscheidbare Farbe - fürs Markieren getroffener Zellen (siehe
+// finishBigSlotSpin) UND für die Gewinnlinien-Übersicht (siehe renderBigSlotPaylinesLegend).
+const BIG_SLOT_LINE_COLORS = ['#2ecc71', '#3498db', '#e74c3c', '#9b59b6', '#f39c12', '#1abc9c', '#e67e22', '#e84393', '#00cec9', '#fd79a8'];
+// Baut eine kleine visuelle Übersicht aller 10 Gewinnlinien auf: pro Linie ein Mini-Gitter
+// (5 Walzen x 3 Reihen), bei dem die Zellen DIESER Linie in ihrer Farbe markiert sind - reine
+// Hilfestellung, damit z.B. "Linie 4" nicht nur eine abstrakte Nummer ist, sondern man auf
+// einen Blick sieht, dass das die V-Form ist.
+function renderBigSlotPaylinesLegend() {
+  const container = document.getElementById('big-slot-paylines-legend');
+  if (!container) return;
+  container.innerHTML = BIG_SLOT_PAYLINES.map((lineRows, i) => {
+    const color = BIG_SLOT_LINE_COLORS[i % BIG_SLOT_LINE_COLORS.length];
+    const miniRows = [0, 1, 2].map(row => `
+      <div style="display:flex; gap:2px;">
+        ${[0, 1, 2, 3, 4].map(col => `<span style="width:9px; height:9px; border-radius:2px; background:${lineRows[col] === row ? color : 'rgba(255,255,255,0.15)'};"></span>`).join('')}
+      </div>
+    `).join('');
+    return `
+      <div style="display:flex; flex-direction:column; align-items:center; gap:4px; background:rgba(0,0,0,0.2); padding:6px 8px; border-radius:8px;">
+        <div style="display:flex; flex-direction:column; gap:2px;">${miniRows}</div>
+        <span style="font-size:0.72em; color:${color}; font-weight:bold;">Linie ${i + 1}</span>
+      </div>
+    `;
+  }).join('');
+}
+let bigSlotState = { spinning: false, lastResult: null, confettiPlayedFor: null, selectedLines: 1, lastRenderedResult: undefined, lastRenderedLines: undefined };
 function pickBigSlotGrid() {
   return [0, 1, 2, 3, 4].map(() => [pickWeightedSlotSymbol(), pickWeightedSlotSymbol(), pickWeightedSlotSymbol()]);
 }
@@ -6709,8 +6759,8 @@ function setBigSlotLines(numLines) {
 }
 // Timing-Plan für die 5 Walzen (siehe SLOT_REEL_DELAYS_MS/-DURATIONS_MS beim kleinen
 // Automaten) - 5 statt 3 Einträge, sonst dasselbe Prinzip.
-const BIG_SLOT_REEL_DELAYS_MS = [0, 150, 300, 450, 600];
-const BIG_SLOT_REEL_DURATIONS_MS = [700, 750, 800, 850, 900];
+const BIG_SLOT_REEL_DELAYS_MS = [0, 250, 500, 800, 1150];
+const BIG_SLOT_REEL_DURATIONS_MS = [850, 950, 1050, 1150, 1300];
 const BIG_SLOT_SPIN_TOTAL_MS = Math.max(...BIG_SLOT_REEL_DELAYS_MS.map((d, i) => d + BIG_SLOT_REEL_DURATIONS_MS[i])) + 50;
 function spinBigSlotMachine() {
   if (!myPlayerName) return alert('Bitte melde dich erst mit einem Namen an!');
@@ -6749,12 +6799,18 @@ function spinBigSlotMachine() {
 }
 function finishBigSlotSpin(betPerLine, numLines, grid) {
   const activeLines = BIG_SLOT_PAYLINES.slice(0, numLines);
-  const winningCellKeys = new Set();
+  // Jede getroffene Zelle merkt sich, zu welcher(n) Linie(n) sie gehört (siehe
+  // BIG_SLOT_LINE_COLORS) - trifft eine Zelle auf MEHREREN Linien gleichzeitig, gewinnt beim
+  // Einfärben die ZUERST ausgewertete Linie (niedrigere Liniennummer).
+  const winningCellsByKey = {};
   const lineResults = activeLines
     .map((lineRows, i) => {
       const r = evaluateBigSlotLine(grid, lineRows, betPerLine);
       if (r) {
-        for (let col = 0; col < r.matchCount; col++) winningCellKeys.add(col + '-' + lineRows[col]);
+        for (let col = 0; col < r.matchCount; col++) {
+          const key = col + '-' + lineRows[col];
+          if (!winningCellsByKey[key]) winningCellsByKey[key] = { col, row: lineRows[col], lineNumber: i + 1 };
+        }
       }
       return r ? { ...r, lineNumber: i + 1 } : null;
     })
@@ -6767,7 +6823,7 @@ function finishBigSlotSpin(betPerLine, numLines, grid) {
   bigSlotState.lastResult = {
     grid: grid.map(col => col.map(s => s.id)),
     lineResults,
-    winningCells: [...winningCellKeys],
+    winningCells: Object.values(winningCellsByKey),
     totalWin,
     isJackpot,
     totalBet: betPerLine * numLines
@@ -6786,25 +6842,41 @@ function renderBigSlotMachine() {
   if (!container || bigSlotState.spinning) return;
   if (!myPlayerName) {
     container.innerHTML = '<p style="opacity:0.7;">👀 Melde dich mit einem Namen an, um mitzuspielen.</p>';
+    bigSlotState.lastRenderedResult = undefined;
+    bigSlotState.lastRenderedLines = undefined;
     return;
   }
-  const betInput = document.getElementById('big-slot-bet-per-line');
-  const hadFocus = document.activeElement === betInput;
-  const prevValue = betInput ? betInput.value : '';
   const currentBalance = getUserBalance(myPlayerName);
   const result = bigSlotState.lastResult;
   const numLines = bigSlotState.selectedLines;
+  // Für DIESEN Automaten hat sich nichts geändert (siehe ausführlicher Kommentar in
+  // renderSlotMachine) - nur den Kontostand auffrischen, Walzen NICHT neu aufbauen.
+  if (result === bigSlotState.lastRenderedResult && numLines === bigSlotState.lastRenderedLines) {
+    const balanceEl = document.getElementById('big-slot-balance-text');
+    if (balanceEl) balanceEl.textContent = currentBalance;
+    return;
+  }
+  bigSlotState.lastRenderedResult = result;
+  bigSlotState.lastRenderedLines = numLines;
+  const betInput = document.getElementById('big-slot-bet-per-line');
+  const hadFocus = document.activeElement === betInput;
+  const prevValue = betInput ? betInput.value : '';
   const grid = result ? result.grid.map(col => col.map(id => getSlotSymbolById(id))) : [0, 1, 2, 3, 4].map(() => [null, null, null]);
-  const winningCellsSet = new Set((result && result.winningCells) || []);
+  // "col-row" -> Farbe der (ersten) Linie, die diese Zelle getroffen hat (siehe finishBigSlotSpin)
+  const winningCellColors = {};
+  ((result && result.winningCells) || []).forEach((wc) => {
+    winningCellColors[wc.col + '-' + wc.row] = BIG_SLOT_LINE_COLORS[(wc.lineNumber - 1) % BIG_SLOT_LINE_COLORS.length];
+  });
   const frameClass = 'big-slot-frame' + (result && result.isJackpot ? ' slot-jackpot' : '');
 
   const colsHtml = [0, 1, 2, 3, 4].map((col) => {
     const finalSymbols = [0, 1, 2].map(row => grid[col][row] || { emoji: '❔', image: null });
-    const finalClasses = [0, 1, 2].map(row => (winningCellsSet.has(col + '-' + row) ? 'slot-symbol-win' : ''));
+    const finalClasses = [0, 1, 2].map(row => (winningCellColors[col + '-' + row] ? 'slot-symbol-win' : ''));
+    const finalColors = [0, 1, 2].map(row => winningCellColors[col + '-' + row] || '');
     return `
       <span class="big-slot-col">
         <span class="big-slot-viewport" style="height:${REEL_CELL_PX * 3}px; width:${REEL_CELL_PX}px;">
-          <span class="big-slot-strip" id="big-slot-strip-${col}">${buildReelStripHtml(finalSymbols, 0, finalClasses)}</span>
+          <span class="big-slot-strip" id="big-slot-strip-${col}">${buildReelStripHtml(finalSymbols, 0, finalClasses, finalColors)}</span>
         </span>
       </span>
     `;
@@ -6813,7 +6885,7 @@ function renderBigSlotMachine() {
   const resultHtml = !result ? '' : (result.lineResults.length
     ? `<div style="text-align:center; margin-bottom:8px;">
          <p class="slot-result-label slot-result-win" style="font-size:0.95em; margin:4px 0;">🎉 ${result.totalWin} Coins gewonnen!</p>
-         <div style="font-size:0.78em; opacity:0.8;">${result.lineResults.map(r => `Linie ${r.lineNumber}: ${r.matchCount}x ${r.symbol.emoji} (+${r.win})`).join(' · ')}</div>
+         <div style="font-size:0.78em; opacity:0.8;">${result.lineResults.map(r => `<span style="color:${BIG_SLOT_LINE_COLORS[(r.lineNumber - 1) % BIG_SLOT_LINE_COLORS.length]}; font-weight:bold;">●</span> Linie ${r.lineNumber}: ${r.matchCount}x ${r.symbol.emoji} (+${r.win})`).join(' · ')}</div>
        </div>`
     : `<p class="slot-result-label slot-result-lose" style="text-align:center; font-size:0.95em; margin-bottom:8px;">💸 Keine Gewinnlinie – ${result.totalBet} Coins verloren</p>`);
 
@@ -6832,7 +6904,8 @@ function renderBigSlotMachine() {
       <input type="number" id="big-slot-bet-per-line" placeholder="Einsatz/Linie" min="1" style="width:110px;" value="${escapeHtml(prevValue)}">
       <button class="btn-primary" onclick="spinBigSlotMachine()">🎰 Drehen</button>
     </div>
-    <p style="font-size:0.75em; opacity:0.6; text-align:center; margin:0;">Gesamteinsatz = Einsatz/Linie × gewählte Linien. 3, 4 oder 5 gleiche Symbole von LINKS auf einer aktiven Linie gewinnen (5 gleiche = 10-facher Grundgewinn, 4 gleiche = 3-facher). Kontostand: ${currentBalance} 🪙</p>
+    <p style="font-size:0.75em; opacity:0.6; text-align:center; margin:0 0 6px 0;">Gesamteinsatz = Einsatz/Linie × gewählte Linien. 3, 4 oder 5 gleiche Symbole von LINKS auf einer aktiven Linie gewinnen (5 gleiche = 10-facher Grundgewinn, 4 gleiche = 3-facher).</p>
+    <p style="text-align:center; font-size:0.9em; margin:0;">Kontostand: <strong id="big-slot-balance-text">${currentBalance}</strong> ${coinIcon(16)}</p>
   `;
   const newInput = document.getElementById('big-slot-bet-per-line');
   if (newInput && hadFocus) newInput.focus();
