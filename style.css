@@ -697,6 +697,11 @@ th { color: var(--fal-yellow); font-size: 0.8rem; text-transform: uppercase; }
 .achievement-popup-icon { font-size: 2em; line-height: 1; }
 .achievement-popup-label { font-size: 0.75em; color: var(--fal-yellow); font-weight: bold; }
 
+/* Erfolge-Raster (siehe renderAchievementsGrid() in script.js): zeigt zunächst nur das Symbol,
+   der Titel/Hinweis-Text bleibt versteckt, bis die Kachel angetippt wird. */
+.achievement-tile-text { display: none; margin-top: 2px; }
+.achievement-tile.achievement-tile-open .achievement-tile-text { display: block; }
+
 /* 🎰🎰 Großer 5x3-Slot (siehe #big-slot-container / renderBigSlotMachine() in script.js):
    gleicher Casino-Rahmen wie der kleine Automat, aber als Reihe aus 5 Walzen-Spalten, jede mit
    einem 3 Zeilen hohen Sichtfenster (siehe Kommentar oben). Teilt sich .slot-jackpot (Glow)

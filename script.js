@@ -3220,9 +3220,9 @@ function openAchievementsModal() {
 function closeAchievementsModal() {
   document.getElementById('achievements-modal').style.display = 'none';
 }
-// Baut das Raster auf: erreichte Achievements normal + farbig mit ihrem konkreten Titel,
-// gesperrte ausgegraut mit dem bewusst VAGEN Hinweistext statt des genauen Titels (sonst wäre
-// ja gar nichts mehr zu entdecken).
+// Baut das Raster auf: zunächst nur die Symbole (erreicht bunt, gesperrt ausgegraut) - erst
+// ein Antippen deckt den Text auf (erreichte mit ihrem konkreten Titel, gesperrte mit dem
+// bewusst VAGEN Hinweistext statt des genauen Titels, sonst wäre ja gar nichts mehr zu entdecken).
 function renderAchievementsGrid(all) {
   const container = document.getElementById('achievements-grid-container');
   if (!container) return;
@@ -3230,11 +3230,12 @@ function renderAchievementsGrid(all) {
   const progressEl = document.getElementById('achievements-progress-text');
   if (progressEl) progressEl.textContent = `${unlockedCount} von ${all.length} Erfolgen freigeschaltet`;
   container.innerHTML = `
+    <p style="text-align:center; font-size:0.75em; opacity:0.6; margin:-4px 0 10px;">Zum Aufdecken antippen</p>
     <div style="display:grid; grid-template-columns:repeat(auto-fill, minmax(100px, 1fr)); gap:10px;">
       ${all.map(a => `
-        <div title="${escapeHtml(a.unlocked ? a.title : 'Noch gesperrt: ' + a.hint)}" style="display:flex; flex-direction:column; align-items:center; text-align:center; gap:4px; background:${a.unlocked ? 'var(--fal-blue-primary)' : 'rgba(255,255,255,0.05)'}; border-radius:10px; padding:10px 6px; ${a.unlocked ? '' : 'opacity:0.45;'}">
+        <div class="achievement-tile" onclick="this.classList.toggle('achievement-tile-open')" style="display:flex; flex-direction:column; align-items:center; text-align:center; gap:4px; background:${a.unlocked ? 'var(--fal-blue-primary)' : 'rgba(255,255,255,0.05)'}; border-radius:10px; padding:10px 6px; cursor:pointer; ${a.unlocked ? '' : 'opacity:0.45;'}">
           <span style="font-size:1.8em; ${a.unlocked ? '' : 'filter:grayscale(1);'}">${a.icon}</span>
-          <span style="font-size:0.72em; line-height:1.25; ${a.unlocked ? 'color:var(--fal-yellow); font-weight:bold;' : 'opacity:0.85;'}">${escapeHtml(a.unlocked ? a.title : a.hint)}</span>
+          <span class="achievement-tile-text" style="font-size:0.72em; line-height:1.25; ${a.unlocked ? 'color:var(--fal-yellow); font-weight:bold;' : 'opacity:0.85;'}">${escapeHtml(a.unlocked ? a.title : a.hint)}</span>
         </div>
       `).join('')}
     </div>
