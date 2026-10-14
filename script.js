@@ -110,6 +110,7 @@ window.saveRules = saveRules;
 window.submitTip = submitTip;
 window.placeBet = placeBet;
 window.spinSlotMachine = spinSlotMachine;
+window.adjustPlayerCoins = adjustPlayerCoins;
 window.openWrapped = openWrapped;
 window.closeWrapped = closeWrapped;
 window.setCoinAnimation = setCoinAnimation;
@@ -6025,6 +6026,7 @@ function renderAdminPanel() {
       : '';
   }
   renderInvitePanel();
+  renderAdminCoinsPanel();
   renderSportToggle();
   renderDartsSettingsPanel();
   renderTeamStepPanel();
@@ -6128,6 +6130,37 @@ function getUserBalance(playerName) {
     userBalances[playerName] = 100;
   }
   return userBalances[playerName];
+}
+// Baut die Admin/God-only Liste zum manuellen Anpassen der FAL-Coins auf (nur für DIESES
+// Turnier, siehe getUserBalance - jedes Turnier führt seinen eigenen Kontostand).
+function renderAdminCoinsPanel() {
+  const container = document.getElementById('admin-coins-container');
+  if (!container) return;
+  if (!isAdmin()) { container.innerHTML = '<p class="empty-state">Nur für Admin/God.</p>'; return; }
+  if (players.length === 0) { container.innerHTML = '<p class="empty-state">Noch keine Spieler im Turnier.</p>'; return; }
+  container.innerHTML = players.map((p, i) => `
+    <div style="display:flex; justify-content:space-between; align-items:center; gap:8px; background: var(--fal-blue-primary); padding:6px 12px; border-radius:8px; margin-bottom:6px; flex-wrap:wrap;">
+      <span>${playerNameLink(p.name, 20)}</span>
+      <div style="display:flex; align-items:center; gap:6px;">
+        <strong style="color:var(--fal-yellow); white-space:nowrap;">${getUserBalance(p.name)} 🪙</strong>
+        <input type="number" id="admin-coin-amount-${i}" min="1" placeholder="Betrag" style="width:70px;">
+        <button class="btn-secondary btn-sm" title="Gutschreiben" onclick="adjustPlayerCoins('${p.name.replace(/'/g, "\\'")}', 1, ${i})">➕</button>
+        <button class="btn-danger btn-sm" title="Abziehen" onclick="adjustPlayerCoins('${p.name.replace(/'/g, "\\'")}', -1, ${i})">➖</button>
+      </div>
+    </div>
+  `).join('');
+}
+// Admin/God passt den FAL-Coins-Kontostand eines Spielers manuell an (Bonus vergeben oder
+// einen Fehler korrigieren) - der Betrag kommt aus dem zugehörigen Eingabefeld, "sign" ist
+// +1 (gutschreiben) oder -1 (abziehen). Nach unten hin bei 0 gedeckelt, kein negatives Guthaben.
+function adjustPlayerCoins(playerName, sign, i) {
+  if (!isAdmin()) return;
+  const input = document.getElementById('admin-coin-amount-' + i);
+  const amount = input ? parseInt(input.value) : NaN;
+  if (isNaN(amount) || amount <= 0) return alert('Bitte einen gültigen Betrag eingeben!');
+  const current = getUserBalance(playerName);
+  userBalances[playerName] = Math.max(0, current + sign * amount);
+  saveData();
 }
 // Zeigt Kontostand, offene Wett-Möglichkeiten (ohne gestartete Spiele) und die Highroller-Bestenliste
 function renderBettingSystem() {
