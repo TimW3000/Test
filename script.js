@@ -163,6 +163,8 @@ window.dismissInvite = dismissInvite;
 window.inviteToTournament = inviteToTournament;
 window.openLeaderboard = openLeaderboard;
 window.closeLeaderboard = closeLeaderboard;
+window.openAchievementsModal = openAchievementsModal;
+window.closeAchievementsModal = closeAchievementsModal;
 window.openHelp = openHelp;
 window.closeHelp = closeHelp;
 window.enableNotifications = enableNotifications;
@@ -2940,64 +2942,74 @@ function collectSlotStatsAcrossTournaments(allTournamentsData, playerKey) {
   });
   return agg;
 }
-// Leitet aus Statistik + Elo-Wertung + Glücksspiel-Statistik eine kleine Auswahl an Erfolgs-
-// Badges für EINEN Spieler ab - rein anzeigend, ohne Einfluss auf irgendwelche Rechte.
-// "gamblingStats" ist optional (siehe collectSlotStatsAcrossTournaments) - ohne sie werden
-// einfach keine Glücksspiel-Achievements vergeben.
-function computeAchievements(playerKey, stats, ratingEntry, allRatings, gamblingStats) {
-  const badges = [];
+// Baut aus Statistik + Elo-Wertung + Glücksspiel-Statistik die gemeinsam genutzten Zwischen-
+// werte auf, die mehrere Achievement-Definitionen gleichzeitig brauchen (z.B. "aktuell Nr. 1"
+// wird von 2 verschiedenen Achievements gebraucht) - einmal berechnet statt pro Definition neu.
+function buildAchievementContext(playerKey, stats, ratingEntry, allRatings, gamblingStats) {
   const tournamentWins = stats.tournaments.filter(t => t.placement === '🏆 Turniersieger').length;
-  if (tournamentWins >= 1) badges.push({ icon: '🏆', label: tournamentWins === 1 ? 'Turniersieger' : `${tournamentWins}x Turniersieger` });
-  if (tournamentWins >= 3) badges.push({ icon: '👑', label: 'Serien-Champion' });
-  if (stats.totalMatches >= 50) badges.push({ icon: '⚔️', label: 'Gladiator (50+ Spiele)' });
-  if (ratingEntry && ratingEntry.bestStreak >= 5) badges.push({ icon: '🔥', label: `${ratingEntry.bestStreak}er-Siegesserie` });
-  if (stats.totalMatches >= 10 && stats.winRate >= 70) badges.push({ icon: '🎯', label: 'Scharfschütze (70%+ Siegquote)' });
-  if (stats.nemesis && stats.nemesis.losses >= 3) badges.push({ icon: '😈', label: `Angst vor ${stats.nemesis.name}` });
-  if (stats.scorelessDraws >= 2) badges.push({ icon: '🥅', label: `Fluch der Null (${stats.scorelessDraws}x 0:0)` });
-  if (stats.closestKOWinCount >= 1) badges.push({ icon: '😰', label: stats.closestKOWinCount === 1 ? 'Nervenkiller' : `Nervenkiller (${stats.closestKOWinCount}x)` });
-  // Underdog-Pokal: ein Turnier gewonnen, obwohl es dabei mindestens einen Rückschlag (Niederlage
-  // oder Remis) gab - kein Durchmarsch, sondern ein Sieg trotz Startschwierigkeiten.
   const underdogWins = stats.tournaments.filter(t => t.placement === '🏆 Turniersieger' && (t.losses > 0 || t.draws > 0)).length;
-  if (underdogWins >= 1) badges.push({ icon: '🐺', label: underdogWins === 1 ? 'Underdog-Pokal' : `${underdogWins}x Underdog-Pokal` });
   const sortedByRating = Object.keys(allRatings).sort((a, b) => allRatings[b].rating - allRatings[a].rating);
   const isRank1 = sortedByRating.length > 0 && sortedByRating[0] === playerKey && allRatings[playerKey].games > 0;
-  if (isRank1) {
-    badges.push({ icon: '🐐', label: 'Aktuell Nr. 1 der Rangliste' });
-  }
-
-  // --- Die folgenden Achievements sind alle erst nach MEHREREN Turnieren erreichbar, nicht
-  // schon innerhalb eines einzigen (langen) Turnierabends - sie belohnen echte Stammspieler. ---
   const tournamentCount = stats.tournaments.length;
-  if (tournamentCount >= 5) badges.push({ icon: '🎟️', label: 'Stammgast (5+ Turniere)' });
-  if (tournamentCount >= 10) badges.push({ icon: '🏅', label: 'Turnier-Veteran (10+ Turniere)' });
   const finalsCount = stats.tournaments.filter(t => t.placement === '🏆 Turniersieger' || t.placement === '🥈 Finalist').length;
-  if (finalsCount >= 3) badges.push({ icon: '🥈', label: `Finalstammgast (${finalsCount}x im Finale)` });
-  if (finalsCount >= 3 && tournamentWins === 0) badges.push({ icon: '😩', label: 'Pechvogel (oft im Finale, nie gewonnen)' });
-  if (tournamentCount >= 5 && stats.tournaments.every(t => t.placement !== 'Gruppenphase')) {
-    badges.push({ icon: '🧱', label: 'Nie out in der Vorrunde' });
-  }
-  if (tournamentCount >= 3 && stats.tournaments.every(t => t.placement === '🏆 Turniersieger' || t.placement === '🥈 Finalist')) {
-    badges.push({ icon: '💎', label: 'Fast perfekt' });
-  }
-  // Alle drei folgenden sind mit genug Spielen theoretisch auch an EINEM langen Turnierabend
-  // erreichbar (viele Spiele, viele Tore, viele Partner) - deshalb zusätzlich an eine
-  // Mindest-Turnierzahl gekoppelt, damit sie wirklich echte Langzeit-Stammspieler auszeichnen.
-  if (tournamentCount >= 5 && isRank1 && ratingEntry && ratingEntry.games >= 30) badges.push({ icon: '⭐', label: 'Turnier-Legende' });
-  if (tournamentCount >= 5 && stats.goalsFor >= 100) badges.push({ icon: '💯', label: 'Torjäger-Legende (100+ Tore)' });
-  if (stats.rival) badges.push({ icon: '🤝', label: `Dauerrivale: ${stats.rival.name}` });
-  if (tournamentCount >= 3 && stats.allPartnersEver.size >= 5) badges.push({ icon: '🧭', label: 'Vielgereist (5+ verschiedene Partner)' });
-
-  // --- Glücksspiel-Achievements (Glücksspielautomat + 5-Walzen-Jackpot, siehe recordSlotSpinResult
-  // /collectSlotStatsAcrossTournaments) - unabhängig von Turnierspielen erreichbar. ---
-  if (gamblingStats) {
-    if (gamblingStats.spins >= 10) badges.push({ icon: '🎰', label: `Spielernatur (${gamblingStats.spins}x gedreht)` });
-    if (gamblingStats.jackpots >= 1) badges.push({ icon: '🍀', label: gamblingStats.jackpots === 1 ? 'Glückspilz' : `Glückspilz (${gamblingStats.jackpots}x Hauptgewinn)` });
-    if (gamblingStats.jackpots >= 5) badges.push({ icon: '🍀👑', label: 'Dauerglück' });
-    if (gamblingStats.biggestWin >= 100) badges.push({ icon: '💰', label: `Großer Wurf (${gamblingStats.biggestWin} Coins in einem Spin)` });
-    if (gamblingStats.wentBroke) badges.push({ icon: '📉', label: 'Alles verzockt' });
-  }
-
-  return badges;
+  return { playerKey, stats, ratingEntry, allRatings, gamblingStats, tournamentWins, underdogWins, isRank1, tournamentCount, finalsCount };
+}
+// Der vollständige Achievement-Katalog: JEDE mögliche Auszeichnung, unabhängig davon, ob sie
+// schon erreicht wurde. "evaluate(ctx)" gibt entweder null (noch nicht erreicht) oder einen
+// fertigen Anzeige-Text zurück (erreicht, ggf. mit genauer Zahl) - "hint" ist der bewusst VAGE
+// gehaltene Hinweistext fürs Erfolge-Raster, solange etwas noch NICHT erreicht ist (siehe
+// renderAchievementsGrid). Diese EINE Quelle speist sowohl computeAchievements() (nur die
+// bereits erreichten, fürs Profil) als auch getAllAchievementsStatus() (ALLE, fürs Raster).
+const ACHIEVEMENT_DEFINITIONS = [
+  { id: 'tournament-winner', icon: '🏆', hint: 'Ein Turnier gewinnen', evaluate: (ctx) => ctx.tournamentWins >= 1 ? (ctx.tournamentWins === 1 ? 'Turniersieger' : `${ctx.tournamentWins}x Turniersieger`) : null },
+  { id: 'series-champion', icon: '👑', hint: 'Mehrere Turniere gewinnen', evaluate: (ctx) => ctx.tournamentWins >= 3 ? 'Serien-Champion' : null },
+  { id: 'gladiator', icon: '⚔️', hint: 'Viele Partien bestreiten', evaluate: (ctx) => ctx.stats.totalMatches >= 50 ? 'Gladiator (50+ Spiele)' : null },
+  { id: 'win-streak', icon: '🔥', hint: 'Mehrere Spiele am Stück gewinnen', evaluate: (ctx) => (ctx.ratingEntry && ctx.ratingEntry.bestStreak >= 5) ? `${ctx.ratingEntry.bestStreak}er-Siegesserie` : null },
+  { id: 'sharpshooter', icon: '🎯', hint: 'Bei genug Spielen eine sehr hohe Siegquote halten', evaluate: (ctx) => (ctx.stats.totalMatches >= 10 && ctx.stats.winRate >= 70) ? 'Scharfschütze (70%+ Siegquote)' : null },
+  { id: 'nemesis', icon: '😈', hint: 'Gegen dieselbe Person öfter verlieren', evaluate: (ctx) => (ctx.stats.nemesis && ctx.stats.nemesis.losses >= 3) ? `Angst vor ${ctx.stats.nemesis.name}` : null },
+  { id: 'curse-of-zero', icon: '🥅', hint: 'Mehrmals 0:0 spielen', evaluate: (ctx) => ctx.stats.scorelessDraws >= 2 ? `Fluch der Null (${ctx.stats.scorelessDraws}x 0:0)` : null },
+  { id: 'nerve-killer', icon: '😰', hint: 'Ein K.-o.-Spiel ganz knapp für dich entscheiden', evaluate: (ctx) => ctx.stats.closestKOWinCount >= 1 ? (ctx.stats.closestKOWinCount === 1 ? 'Nervenkiller' : `Nervenkiller (${ctx.stats.closestKOWinCount}x)`) : null },
+  { id: 'underdog', icon: '🐺', hint: 'Ein Turnier gewinnen, obwohl es unterwegs einen Rückschlag gab', evaluate: (ctx) => ctx.underdogWins >= 1 ? (ctx.underdogWins === 1 ? 'Underdog-Pokal' : `${ctx.underdogWins}x Underdog-Pokal`) : null },
+  { id: 'rank1', icon: '🐐', hint: 'Die website-weite Rangliste anführen', evaluate: (ctx) => ctx.isRank1 ? 'Aktuell Nr. 1 der Rangliste' : null },
+  { id: 'regular', icon: '🎟️', hint: 'Bei mehreren Turnieren dabei sein', evaluate: (ctx) => ctx.tournamentCount >= 5 ? 'Stammgast (5+ Turniere)' : null },
+  { id: 'veteran', icon: '🏅', hint: 'Bei noch mehr Turnieren dabei sein', evaluate: (ctx) => ctx.tournamentCount >= 10 ? 'Turnier-Veteran (10+ Turniere)' : null },
+  { id: 'finalist-regular', icon: '🥈', hint: 'Öfter ins Finale einziehen', evaluate: (ctx) => ctx.finalsCount >= 3 ? `Finalstammgast (${ctx.finalsCount}x im Finale)` : null },
+  { id: 'unlucky', icon: '😩', hint: 'Oft knapp am Titel vorbeischrammen', evaluate: (ctx) => (ctx.finalsCount >= 3 && ctx.tournamentWins === 0) ? 'Pechvogel (oft im Finale, nie gewonnen)' : null },
+  { id: 'never-out-early', icon: '🧱', hint: 'Nie schon in der Gruppenphase ausscheiden', evaluate: (ctx) => (ctx.tournamentCount >= 5 && ctx.stats.tournaments.every(t => t.placement !== 'Gruppenphase')) ? 'Nie out in der Vorrunde' : null },
+  { id: 'almost-perfect', icon: '💎', hint: 'Bei mehreren Turnieren immer mindestens Finalist werden', evaluate: (ctx) => (ctx.tournamentCount >= 3 && ctx.stats.tournaments.every(t => t.placement === '🏆 Turniersieger' || t.placement === '🥈 Finalist')) ? 'Fast perfekt' : null },
+  { id: 'legend', icon: '⭐', hint: 'Über viele Turniere hinweg an der Spitze der Rangliste bleiben', evaluate: (ctx) => (ctx.tournamentCount >= 5 && ctx.isRank1 && ctx.ratingEntry && ctx.ratingEntry.games >= 30) ? 'Turnier-Legende' : null },
+  { id: 'goal-legend', icon: '💯', hint: 'Über viele Turniere hinweg sehr viele Tore schießen', evaluate: (ctx) => (ctx.tournamentCount >= 5 && ctx.stats.goalsFor >= 100) ? 'Torjäger-Legende (100+ Tore)' : null },
+  { id: 'rival', icon: '🤝', hint: 'Immer wieder auf dieselbe Person treffen', evaluate: (ctx) => ctx.stats.rival ? `Dauerrivale: ${ctx.stats.rival.name}` : null },
+  { id: 'well-traveled', icon: '🧭', hint: 'Mit vielen verschiedenen Partnern zusammenspielen', evaluate: (ctx) => (ctx.tournamentCount >= 3 && ctx.stats.allPartnersEver.size >= 5) ? 'Vielgereist (5+ verschiedene Partner)' : null },
+  { id: 'slot-player', icon: '🎰', hint: 'Oft an einem der Glücksspielautomaten drehen', evaluate: (ctx) => (ctx.gamblingStats && ctx.gamblingStats.spins >= 10) ? `Spielernatur (${ctx.gamblingStats.spins}x gedreht)` : null },
+  { id: 'lucky', icon: '🍀', hint: 'Den Hauptgewinn knacken', evaluate: (ctx) => (ctx.gamblingStats && ctx.gamblingStats.jackpots >= 1) ? (ctx.gamblingStats.jackpots === 1 ? 'Glückspilz' : `Glückspilz (${ctx.gamblingStats.jackpots}x Hauptgewinn)`) : null },
+  { id: 'lucky-streak', icon: '🍀👑', hint: 'Den Hauptgewinn mehrmals knacken', evaluate: (ctx) => (ctx.gamblingStats && ctx.gamblingStats.jackpots >= 5) ? 'Dauerglück' : null },
+  { id: 'big-win', icon: '💰', hint: 'Richtig viele Coins in einem einzigen Spin gewinnen', evaluate: (ctx) => (ctx.gamblingStats && ctx.gamblingStats.biggestWin >= 100) ? `Großer Wurf (${ctx.gamblingStats.biggestWin} Coins in einem Spin)` : null },
+  { id: 'broke', icon: '📉', hint: 'Den Kontostand mal komplett verzocken', evaluate: (ctx) => (ctx.gamblingStats && ctx.gamblingStats.wentBroke) ? 'Alles verzockt' : null }
+];
+// Leitet aus Statistik + Elo-Wertung + Glücksspiel-Statistik eine kleine Auswahl an Erfolgs-
+// Badges für EINEN Spieler ab - rein anzeigend, ohne Einfluss auf irgendwelche Rechte. Liefert
+// NUR die bereits erreichten (siehe getAllAchievementsStatus für den kompletten Katalog samt
+// gesperrter Erfolge). "gamblingStats" ist optional (siehe collectSlotStatsAcrossTournaments) -
+// ohne sie werden einfach keine Glücksspiel-Achievements vergeben.
+function computeAchievements(playerKey, stats, ratingEntry, allRatings, gamblingStats) {
+  const ctx = buildAchievementContext(playerKey, stats, ratingEntry, allRatings, gamblingStats);
+  return ACHIEVEMENT_DEFINITIONS
+    .map(def => {
+      const label = def.evaluate(ctx);
+      return label ? { icon: def.icon, label } : null;
+    })
+    .filter(Boolean);
+}
+// Liefert den KOMPLETTEN Achievement-Katalog mit Erreicht/Gesperrt-Status - Grundlage fürs
+// Erfolge-Raster (siehe renderAchievementsGrid) und für die "neu erreicht"-Erkennung (siehe
+// checkForNewAchievements).
+function getAllAchievementsStatus(playerKey, stats, ratingEntry, allRatings, gamblingStats) {
+  const ctx = buildAchievementContext(playerKey, stats, ratingEntry, allRatings, gamblingStats);
+  return ACHIEVEMENT_DEFINITIONS.map((def) => {
+    const label = def.evaluate(ctx);
+    return { id: def.id, icon: def.icon, unlocked: !!label, title: label || def.hint, hint: def.hint };
+  });
 }
 // Ermittelt die direkte Bilanz zweier Spieler gegeneinander (nur Spiele, in denen sie auf
 // GEGNERISCHEN Teams standen) aus der bereits gesammelten Match-Liste (siehe
@@ -3187,6 +3199,99 @@ function openLeaderboard() {
 }
 function closeLeaderboard() {
   document.getElementById('leaderboard-modal').style.display = 'none';
+}
+// Öffnet das Erfolge-Raster: ALLE möglichen Achievements, erreichte normal, gesperrte
+// ausgegraut mit vagem Hinweis statt Titel (siehe getAllAchievementsStatus/renderAchievementsGrid).
+function openAchievementsModal() {
+  if (!myPlayerName) return;
+  document.getElementById('achievements-modal').style.display = 'flex';
+  document.getElementById('achievements-grid-container').innerHTML = '<p class="empty-state">🏅 Erfolge werden geladen...</p>';
+  const key = myPlayerName.trim().toLowerCase();
+  loadAllTournamentsData((allData) => {
+    if (document.getElementById('achievements-modal').style.display === 'none') return;
+    const matches = collectAllConfirmedMatches(allData, tournamentsList);
+    const stats = computePlayerStats(key, matches);
+    const ratings = computeGlobalRatings(collectIndividualLegsForElo(allData, tournamentsList));
+    const gamblingStats = collectSlotStatsAcrossTournaments(allData, key);
+    const all = getAllAchievementsStatus(key, stats, ratings[key], ratings, gamblingStats);
+    renderAchievementsGrid(all);
+  });
+}
+function closeAchievementsModal() {
+  document.getElementById('achievements-modal').style.display = 'none';
+}
+// Baut das Raster auf: erreichte Achievements normal + farbig mit ihrem konkreten Titel,
+// gesperrte ausgegraut mit dem bewusst VAGEN Hinweistext statt des genauen Titels (sonst wäre
+// ja gar nichts mehr zu entdecken).
+function renderAchievementsGrid(all) {
+  const container = document.getElementById('achievements-grid-container');
+  if (!container) return;
+  const unlockedCount = all.filter(a => a.unlocked).length;
+  const progressEl = document.getElementById('achievements-progress-text');
+  if (progressEl) progressEl.textContent = `${unlockedCount} von ${all.length} Erfolgen freigeschaltet`;
+  container.innerHTML = `
+    <div style="display:grid; grid-template-columns:repeat(auto-fill, minmax(100px, 1fr)); gap:10px;">
+      ${all.map(a => `
+        <div title="${escapeHtml(a.unlocked ? a.title : 'Noch gesperrt: ' + a.hint)}" style="display:flex; flex-direction:column; align-items:center; text-align:center; gap:4px; background:${a.unlocked ? 'var(--fal-blue-primary)' : 'rgba(255,255,255,0.05)'}; border-radius:10px; padding:10px 6px; ${a.unlocked ? '' : 'opacity:0.45;'}">
+          <span style="font-size:1.8em; ${a.unlocked ? '' : 'filter:grayscale(1);'}">${a.icon}</span>
+          <span style="font-size:0.72em; line-height:1.25; ${a.unlocked ? 'color:var(--fal-yellow); font-weight:bold;' : 'opacity:0.85;'}">${escapeHtml(a.unlocked ? a.title : a.hint)}</span>
+        </div>
+      `).join('')}
+    </div>
+  `;
+}
+// ---- Pop-up bei neu freigeschaltetem Achievement ----
+// Merkt sich pro Identität (localStorage, geräteweit) den zuletzt BEKANNTEN Satz erreichter
+// Achievement-IDs. Läuft dieser Check erneut (siehe Aufrufe in confirmMatchResult/
+// finishSlotSpin/finishBigSlotSpin), werden neu dazugekommene IDs mit einem Pop-up gefeiert.
+// Bewusst NICHT mit der echten Datenbank synchronisiert (rein lokal/pro Gerät) - das ist nur
+// ein freundlicher Hinweis, kein Rechte- oder Fairness-relevantes Feature.
+function checkForNewAchievements() {
+  if (!myPlayerName) return;
+  const key = myPlayerName.trim().toLowerCase();
+  loadAllTournamentsData((allData) => {
+    // Zwischenzeitlich könnte sich die Identität geändert haben (z.B. "Wechseln")
+    if (!myPlayerName || myPlayerName.trim().toLowerCase() !== key) return;
+    const matches = collectAllConfirmedMatches(allData, tournamentsList);
+    const stats = computePlayerStats(key, matches);
+    const ratings = computeGlobalRatings(collectIndividualLegsForElo(allData, tournamentsList));
+    const gamblingStats = collectSlotStatsAcrossTournaments(allData, key);
+    const all = getAllAchievementsStatus(key, stats, ratings[key], ratings, gamblingStats);
+    const unlockedIds = all.filter(a => a.unlocked).map(a => a.id);
+    const storageKey = 'fifa_known_achievements_' + key;
+    const storedRaw = localStorage.getItem(storageKey);
+    localStorage.setItem(storageKey, JSON.stringify(unlockedIds));
+    // Allererster Lauf für diese Identität (noch nie gespeichert) - nur Basis merken, NICHT
+    // feiern, sonst würde direkt beim ersten Mal ein ganzer Schwall "neuer" Achievements
+    // aufpoppen, die eigentlich schon länger bestehen.
+    if (storedRaw === null) return;
+    const knownIds = new Set(JSON.parse(storedRaw));
+    const newOnes = all.filter(a => a.unlocked && !knownIds.has(a.id));
+    if (newOnes.length > 0) announceNewAchievements(newOnes);
+  });
+}
+// Zeigt mehrere neue Achievements zeitlich versetzt an (statt überlappend übereinander)
+function announceNewAchievements(newOnes) {
+  newOnes.forEach((a, i) => setTimeout(() => showAchievementPopup(a), i * 3200));
+}
+// Baut das eigentliche Pop-up-Element auf (siehe @keyframes achievement-popup-in/-out in
+// style.css) - fest positioniert oben, unabhängig vom gerade neu gerenderten Seiteninhalt
+// (genau wie spawnSlotConfetti bewusst ein eigenes, von renderAll() unberührtes Element ist).
+function showAchievementPopup(achievement) {
+  playSound('jackpot');
+  if (navigator.vibrate) navigator.vibrate([60, 30, 60]);
+  const el = document.createElement('div');
+  el.className = 'achievement-popup';
+  el.innerHTML = `
+    <span class="achievement-popup-icon">${achievement.icon}</span>
+    <span>
+      <span class="achievement-popup-label">🏅 Neuer Erfolg!</span><br>
+      <strong>${escapeHtml(achievement.title)}</strong>
+    </span>
+  `;
+  el.onclick = () => { el.remove(); openAchievementsModal(); };
+  document.body.appendChild(el);
+  setTimeout(() => { el.classList.add('achievement-popup-hide'); setTimeout(() => el.remove(), 500); }, 4000);
 }
 // Anleitung/Hilfe: rein statischer Inhalt aus dem HTML, für JEDE Rolle ohne Berechtigungsprüfung
 function openHelp() {
@@ -5372,6 +5477,11 @@ function confirmMatchResult(matchId, isKO) {
     saveData();
   }
   renderAll();
+  // Prüft, ob die EIGENE Identität (also die des Admins/Refs, der hier gerade bestätigt hat)
+  // dadurch ein neues Achievement erreicht hat - deckt nicht automatisch ALLE Mitspieler ab,
+  // die sehen etwaige neue Erfolge spätestens beim nächsten eigenen Spin/Confirm oder im
+  // Erfolge-Raster.
+  checkForNewAchievements();
 }
 // Admin/Ref markiert ein Spiel als "gestartet". Ab diesem Zeitpunkt kann
 // niemand mehr auf dieses Spiel wetten (siehe placeBet & renderBettingSystem).
@@ -6457,31 +6567,32 @@ const SLOT_WIN_COLOR = '#2ecc71';
 // normale "color" + CSS-Klasse (siehe oben), die rings-Variante ist nur fürs Mehrfach-Treffer.
 function buildReelStripHtml(finalSymbolsTopToBottom, blurCount, finalItemClasses, finalItemColors, finalItemRings) {
   const items = [];
-  for (let i = 0; i < blurCount; i++) items.push({ symbol: pickWeightedSlotSymbol(), cls: '', color: '', ring: '' });
   finalSymbolsTopToBottom.forEach((s, i) => items.push({
     symbol: s,
     cls: (finalItemClasses && finalItemClasses[i]) || '',
     color: (finalItemColors && finalItemColors[i]) || '',
     ring: (finalItemRings && finalItemRings[i]) || ''
   }));
+  for (let i = 0; i < blurCount; i++) items.push({ symbol: pickWeightedSlotSymbol(), cls: '', color: '', ring: '' });
   return items.map(it => `
     <div style="height:${REEL_CELL_PX}px; box-sizing:border-box; padding:2px; display:flex; align-items:center; justify-content:center;">
       <div class="slot-strip-cell ${it.cls}" style="width:100%; height:100%; border-radius:8px; display:flex; align-items:center; justify-content:center;${it.color ? ` color:${it.color};` : ''}${it.ring ? ` box-shadow:${it.ring};` : ''}">${slotSymbolVisualHtml(it.symbol, Math.round(REEL_CELL_PX * 0.56))}</div>
     </div>
   `).join('');
 }
-// Animiert EINEN Walzen-Streifen von ganz oben bis exakt auf die letzten "visibleCount"
-// Symbole (= die echten Endsymbole, siehe buildReelStripHtml) herunter. "totalItems" ist die
-// GESAMTZAHL der Symbole im Streifen (Blur + Endsymbole).
+// Animiert EINEN Walzen-Streifen von unten (verschwommene Zufallssymbole) nach oben in die
+// Ausgangsposition, in der die echten Endsymbole (siehe buildReelStripHtml, jetzt ZUERST im
+// Streifen) oben sichtbar sind - die Symbole "fallen" also von oben herein. "totalItems" ist
+// die GESAMTZAHL der Symbole im Streifen (Endsymbole + Blur).
 function animateReelStrip(stripEl, totalItems, visibleCount, delayMs, durationMs) {
   if (!stripEl) return;
+  const startOffset = (totalItems - visibleCount) * REEL_CELL_PX;
   stripEl.style.transition = 'none';
-  stripEl.style.transform = 'translateY(0px)';
-  void stripEl.offsetHeight; // Reflow erzwingen, damit der Reset oben wirklich zuerst greift
+  stripEl.style.transform = `translateY(-${startOffset}px)`;
+  void stripEl.offsetHeight; // Reflow erzwingen, damit der Reset unten wirklich zuerst greift
   setTimeout(() => {
-    const finalOffset = (totalItems - visibleCount) * REEL_CELL_PX;
     stripEl.style.transition = `transform ${durationMs}ms cubic-bezier(0.14, 0.72, 0.18, 1)`;
-    stripEl.style.transform = `translateY(-${finalOffset}px)`;
+    stripEl.style.transform = 'translateY(0px)';
   }, delayMs);
 }
 // "Happy Hour" (siehe toggleHappyHour, admin-schaltbar pro Turnier): solange aktiv, wird JEDER
@@ -6738,6 +6849,7 @@ function finishSlotSpin(amount, symbols) {
   // Ergebnis, siehe dortiger confettiPlayedFor-Vergleich) - das übersteht jeden Re-Render.
   saveData();
   renderAll();
+  checkForNewAchievements();
 }
 // Baut die Glücksspielautomat-Karte auf - überspringt sich SELBST während eine Drehung läuft
 // (die Animation steuert ihre eigenen DOM-Updates direkt, siehe spinSlotMachine), damit ein
@@ -6948,6 +7060,7 @@ function finishBigSlotSpin(betPerLine, numLines, grid) {
   if (isJackpot && navigator.vibrate) navigator.vibrate([80, 40, 80, 40, 220]);
   saveData();
   renderAll();
+  checkForNewAchievements();
 }
 // Baut die Karte des großen Slots auf - überspringt sich SELBST während einer Drehung
 // (analog zu renderSlotMachine). Jede der 5 Walzen ist ein eigener senkrechter Streifen,

@@ -80,12 +80,13 @@
       <img src="https://spvgg-fal.de/templates/yootheme/cache/dc/Logo-2017-web-dc30d58a.webp" alt="SpVgg FAL Wappen" class="modal-logo modal-logo-big">
       <h3>Turnier auswählen</h3>
       <p style="margin: -6px 0 10px 0;"><a href="#" style="color:var(--fal-yellow); font-size:0.85em; text-decoration:none;" onclick="switchUser(); return false;">‹ Anderer Spieler</a></p>
-      <div style="display:flex; gap:8px; margin-bottom:12px;">
-        <button class="btn-secondary" style="flex:1;" onclick="openProfile()">👤 Mein Profil</button>
-        <button class="btn-secondary" style="flex:1;" onclick="openLeaderboard()">🏆 Rangliste</button>
+      <div style="display:flex; gap:8px; margin-bottom:12px; flex-wrap:wrap;">
+        <button class="btn-secondary" style="flex:1; min-width:120px;" onclick="openProfile()">👤 Mein Profil</button>
+        <button class="btn-secondary" style="flex:1; min-width:120px;" onclick="openLeaderboard()">🏆 Rangliste</button>
+        <button class="btn-secondary" style="flex:1; min-width:120px;" onclick="openAchievementsModal()">🏅 Erfolge</button>
         <!-- Anleitung: schon HIER auf der Turnierauswahl erreichbar, nicht erst innerhalb
              eines Turniers - für JEDE Rolle ohne Berechtigungs-Check (siehe openHelp) -->
-        <button class="btn-secondary" style="flex:1;" onclick="openHelp()">❓ Anleitung</button>
+        <button class="btn-secondary" style="flex:1; min-width:120px;" onclick="openHelp()">❓ Anleitung</button>
       </div>
       <!-- Einladungen zu Turnieren, die man selbst noch nicht betreten hat (siehe renderInvites) -->
       <div id="invites-container"></div>
@@ -191,6 +192,17 @@
     <div class="modal-content" id="leaderboard-modal-content" style="max-width: 520px; text-align: left;">
       <p style="margin: -6px 0 10px 0; text-align:center;"><a href="#" style="color:var(--fal-yellow); font-size:0.85em; text-decoration:none;" onclick="closeLeaderboard(); return false;">‹ Zurück zur Turnierauswahl</a></p>
       <div id="leaderboard-container"></div>
+    </div>
+  </div>
+
+  <!-- Erfolge: Raster ALLER Achievements (erreicht + gesperrt mit vagem Hinweis), siehe
+       openAchievementsModal()/renderAchievementsGrid() -->
+  <div id="achievements-modal" class="modal-overlay" style="display: none;">
+    <div class="modal-content" id="achievements-modal-content" style="max-width: 560px; text-align: left;">
+      <p style="margin: -6px 0 10px 0; text-align:center;"><a href="#" style="color:var(--fal-yellow); font-size:0.85em; text-decoration:none;" onclick="closeAchievementsModal(); return false;">‹ Zurück zur Turnierauswahl</a></p>
+      <h3 style="text-align:center; margin-top:0;">🏅 Erfolge</h3>
+      <p id="achievements-progress-text" style="text-align:center; font-size:0.85em; opacity:0.75; margin-top:-6px;"></p>
+      <div id="achievements-grid-container"></div>
     </div>
   </div>
 
@@ -350,7 +362,8 @@
           <summary><h3>🏆 11. Rangliste, Erfolge &amp; Kopf-an-Kopf</h3></summary>
           <ul style="margin:0; padding-left:20px;">
             <li><strong>Rangliste</strong> (Elo-Wertung): website-weit über ALLE Turniere hinweg - jeder Sieg und jede Niederlage zählt, egal mit wem gerade gespielt wurde. Ein höherer Sieg bringt mehr als ein knapper, und ein Sieg gegen einen stärkeren Gegner mehr als gegen einen schwächeren. Im Duo-Modus wird jede*r nach dem eigenen Hin-/Rückspiel-Ergebnis bewertet, nicht nach dem Team-Schnitt - ein starker Partner "carried" die Wertung des schwächeren also nicht mehr mit.</li>
-            <li>Automatische <strong>Erfolge/Abzeichen</strong>:</li>
+            <li><code>🏅 Erfolge</code> (eigener Button auf der Turnierauswahl): zeigt ALLE möglichen Achievements als Raster - erreichte bunt mit genauem Titel, gesperrte ausgegraut mit einem bewusst vagen Hinweis statt des genauen Titels. Sobald ein neues Achievement erreicht wird, poppt oben ein kurzes Pop-up auf (antippen öffnet direkt das Raster).</li>
+            <li>Automatische <strong>Erfolge/Abzeichen</strong> im Detail:</li>
           </ul>
           <table style="margin:8px 0 0 0;">
             <tbody>
