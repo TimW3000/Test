@@ -640,6 +640,35 @@ th { color: var(--fal-yellow); font-size: 0.8rem; text-transform: uppercase; }
   animation: slot-confetti-fall 1.3s ease-in forwards;
 }
 
+/* 🎰🎰 Großer 5x3-Slot (siehe #big-slot-container / renderBigSlotMachine() in script.js):
+   gleicher Casino-Rahmen wie der kleine Automat, aber als Gitter aus 5 Spalten x 3 Reihen.
+   Teilt sich .slot-jackpot (Glow) und .slot-reel-tick (Punch-Effekt pro Tick) mit ihm. */
+.big-slot-frame {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px 14px;
+  border-radius: 14px;
+  background: linear-gradient(160deg, #1a2d47, #0b192c 70%);
+  border: 3px solid var(--fal-yellow);
+  box-shadow: inset 0 0 14px rgba(0,0,0,0.6), 0 0 18px rgba(255,200,0,0.25);
+}
+.big-slot-frame.slot-jackpot { animation: slot-jackpot-glow 0.55s ease-in-out 4; }
+.big-slot-row { display: flex; gap: 6px; }
+.big-slot-cell {
+  background: radial-gradient(circle at 50% 30%, #fff 0%, #f4f4f4 35%, #d8d8d8 100%);
+  border-radius: 8px;
+  width: 42px;
+  height: 42px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: inset 0 2px 4px rgba(0,0,0,0.25), 0 2px 3px rgba(0,0,0,0.4);
+  transition: transform 0.08s ease-out;
+}
+.big-slot-cell.slot-reel-tick { transform: scale(1.1); }
+
 /* Darts-Live-Overlay (siehe #darts-modal / renderDartsMatch() in script.js) - Wurf-für-Wurf-
    Erfassung: zwei Punktzahl-Karten (aktiver Spieler hervorgehoben), Multiplikator-Umschalter,
    Zahlenpad 1-20 + Bull. */

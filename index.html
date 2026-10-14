@@ -336,8 +336,11 @@
             <li><strong>Wettsystem</strong>: vor jeder einzelnen Partie kannst du Coins auf ein Ergebnis setzen, solange das Spiel noch nicht gestartet wurde.</li>
             <li><strong>Tippspiel</strong>: einmalig, bevor das allererste Spiel des gesamten Turniers beginnt, auf den Gesamtsieger setzen (Quote = Anzahl Teams : 1). Danach ist der Tipp für immer fix, egal was passiert.</li>
             <li><code>🏆 Wettkönige Top 5</code> zeigt die aktuell reichsten Wetter dieses Turniers.</li>
-            <li><strong>🎰 Glücksspielautomat</strong>: reiner Spaß-Zeitvertreib mit den FAL-Coins, ohne jeden Bezug zu echten Turnierspielen - Einsatz eingeben und drehen. 3 gleiche Symbole bringen einen Gewinn (abhängig vom Symbol, bis zu 20x bei 7️⃣), 2 gleiche geben den Einsatz zurück, sonst ist er weg.</li>
+            <li><strong>🎰 Glücksspielautomat</strong>: reiner Spaß-Zeitvertreib mit den FAL-Coins, ohne jeden Bezug zu echten Turnierspielen - Einsatz eingeben und drehen. 3 gleiche Symbole bringen einen Gewinn (abhängig vom Symbol), 2 gleiche geben den Einsatz zurück, sonst ist er weg. Das FAL-Wappen ist der Hauptgewinn.</li>
+            <li><strong>🎰🎰 5-Walzen-Jackpot</strong>: klassischer Casino-Slot mit 5 Walzen x 3 Reihen. Anzahl Gewinnlinien wählen (1/3/5/10), Einsatz PRO Linie eingeben (Gesamteinsatz = Einsatz × Linien) und drehen. 3, 4 oder 5 gleiche Symbole von links auf einer aktiven Linie gewinnen (mehr Treffer = mehr Gewinn), mehrere Linien können gleichzeitig treffen.</li>
             <li><strong>💰 FAL-Coins verwalten</strong> (Admin-Tab, nur Admin/God): Kontostand eines Spielers manuell anpassen - Betrag eingeben, dann ➕ gutschreiben oder ➖ abziehen. Gilt nur für dieses eine Turnier.</li>
+            <li><strong>🎰 Slot-Symbole verwalten</strong> (Admin-Tab, nur Admin/God, website-weit): Auszahlung pro Symbol einstellen und/oder ein eigenes Bild hochladen (ersetzt das Emoji in beiden Automaten) - die Gewinnchance selbst bleibt fest.</li>
+            <li><strong>🎉 Happy Hour</strong> (Admin-Tab, nur Admin/God): manueller Schalter pro Turnier - solange aktiv, ist jeder 2. Spin an beiden Automaten garantiert der Hauptgewinn. Bleibt an, bis wieder ausgeschaltet.</li>
           </ul>
         </details>
       </div>
@@ -395,7 +398,7 @@
           <summary><h3>⚙️ 13. Admin-Bereich (Turnier-Ersteller &amp; Ref)</h3></summary>
           <ul style="margin:0; padding-left:20px;">
             <li>Eigener <code>⚙️ Admin</code>-Tab, nur für Ersteller und Ref sichtbar.</li>
-            <li><strong>Spieler verwalten</strong>: neue Spieler hinzufügen, Registrierung sperren/entsperren, Beitritts-Passwort festlegen.</li>
+            <li><strong>Spieler verwalten</strong>: neue Spieler hinzufügen, Registrierung sperren/entsperren, Beitritts-Passwort festlegen. Hat sich jemand seitdem umbenannt, steht hier zusätzlich klein "(damals: alterName)" dabei.</li>
             <li><strong>Nur der Ersteller</strong> (nicht der Ref selbst): die Ref-Rolle an andere vergeben oder entziehen, Spieler komplett entfernen, Test-Spieler automatisch hinzufügen, bekannte Spieler direkt zu diesem Turnier einladen.</li>
             <li><strong>Vereinsliste</strong>: eigene Vereine hinzufügen, Wappen hochladen, auf die Standard-Topteams zurücksetzen.</li>
             <li><strong>Turnier-Steuerung</strong>: Sportart/Modus umschalten (nur vor der Auslosung), Team-/Gruppen-/KO-Auslosung starten, Zeitabstand zwischen den Spiel-Slots einstellen, FAL-Coin-Animation wählen.</li>
@@ -649,6 +652,12 @@
         <h3 style="color:var(--fal-yellow, #f1c40f); margin-top:0;">🎰 Glücksspielautomat</h3>
         <div id="slot-machine-container"></div>
       </div>
+
+      <!-- GROSSER SLOT: 5 Walzen x 3 Reihen, wählbare Gewinnlinien, siehe spinBigSlotMachine() -->
+      <div class="admin-card" style="margin-top: 20px;">
+        <h3 style="color:var(--fal-yellow, #f1c40f); margin-top:0;">🎰🎰 5-Walzen-Jackpot</h3>
+        <div id="big-slot-container"></div>
+      </div>
     </section>
 
     <!-- TEAMS TAB -->
@@ -712,6 +721,14 @@
       </div>
 
       <div class="admin-card">
+        <details>
+          <summary><h3>🎰 Slot-Symbole verwalten</h3></summary>
+          <p style="font-size:0.85em; opacity:0.7; margin-top:-6px;">Website-weit, gilt für BEIDE Glücksspielautomaten (kleiner 3-Walzen-Automat + großer 5-Walzen-Slot). Gewinnchance ist nur zur Info (nicht einstellbar) - Auszahlung und Bild je Symbol sind frei anpassbar. Das bestzahlende Symbol ist automatisch der Hauptgewinn.</p>
+          <div id="admin-slot-symbols-container"></div>
+        </details>
+      </div>
+
+      <div class="admin-card">
         <details open>
           <summary><h3>📨 Spieler einladen</h3></summary>
           <div id="invite-player-container"></div>
@@ -730,6 +747,7 @@
           <!-- Verstecktes Datei-Input fürs Wappen-Foto-Upload; wird per JS für den jeweils
                gewünschten Club angeklickt (siehe triggerClubLogoUpload in script.js) -->
           <input type="file" id="club-logo-file-input" accept="image/*" style="display:none;" onchange="handleClubLogoFileSelected(event)">
+          <input type="file" id="slot-symbol-image-file-input" accept="image/*" style="display:none;" onchange="handleSlotSymbolImageSelected(event)">
           <button class="btn-secondary btn-sm" onclick="resetClubsToDefault()">Standard-Topteams laden</button>
         </details>
       </div>

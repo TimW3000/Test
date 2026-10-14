@@ -111,6 +111,13 @@ window.submitTip = submitTip;
 window.placeBet = placeBet;
 window.spinSlotMachine = spinSlotMachine;
 window.adjustPlayerCoins = adjustPlayerCoins;
+window.toggleHappyHour = toggleHappyHour;
+window.adjustSlotSymbolPayout = adjustSlotSymbolPayout;
+window.triggerSlotSymbolImageUpload = triggerSlotSymbolImageUpload;
+window.handleSlotSymbolImageSelected = handleSlotSymbolImageSelected;
+window.removeSlotSymbolImage = removeSlotSymbolImage;
+window.setBigSlotLines = setBigSlotLines;
+window.spinBigSlotMachine = spinBigSlotMachine;
 window.openWrapped = openWrapped;
 window.closeWrapped = closeWrapped;
 window.setCoinAnimation = setCoinAnimation;
@@ -334,6 +341,10 @@ let finishedAt = null;
 // 'bounce' (wippt), 'pulse' (pulsiert), 'party' (dreht+hüpft+leuchtet) oder 'fireworks'
 // (Glitzer-Explosion) - admin-einstellbar, siehe setCoinAnimation().
 let coinAnimation = 'none';
+// "Happy Hour" fürs Glücksspiel (beide Automaten): admin-schaltbar, siehe toggleHappyHour().
+// Solange aktiv, wird JEDER 2. Spin erzwungen zum Hauptgewinn (siehe happyHourSpinCounter
+// weiter unten bei den Automaten selbst - rein lokaler Zähler, bewusst nicht synchronisiert).
+let happyHour = false;
 // Welches Turnier ist gerade aktiv? Jedes Turnier wird komplett getrennt in Firebase
 // unter tournaments/{currentTournamentId} gespeichert (siehe Abschnitt "Turnier-Auswahl").
 let currentTournamentId = localStorage.getItem('fifa_current_tournament') || null;
@@ -396,6 +407,16 @@ function getPlayerObj(name) {
 function getGlobalPlayer(name) {
   if (!name) return null;
   return globalPlayers[name.trim().toLowerCase()] || null;
+}
+// Ermittelt, welcher Name bei EINEM bestimmten, älteren Turnier aktiv war, falls sich die
+// Identität seitdem umbenannt hat (siehe renamePlayerIdentity -> gp.nameHistory). null, wenn
+// der aktuelle Name schon vor/bei Turnier-Erstellung galt (keine Anzeige nötig).
+function getNameAtTournamentTime(gp, tournamentCreatedAt) {
+  if (!gp || !Array.isArray(gp.nameHistory) || !gp.nameHistory.length || !tournamentCreatedAt) return null;
+  const applicable = gp.nameHistory
+    .filter(h => h.changedAt > tournamentCreatedAt)
+    .sort((a, b) => a.changedAt - b.changedAt)[0];
+  return applicable ? applicable.name : null;
 }
 // Merkt sich lokal, mit welcher "Passwort-Version" die aktuelle Identität zuletzt erfolgreich
 // angemeldet wurde. Setzt der God später ein neues/anderes Passwort (siehe setPlayerPassword/
@@ -1150,6 +1171,7 @@ function resetLocalStateToDefaults() {
   finished = false;
   finishedAt = null;
   coinAnimation = 'none';
+  happyHour = false;
   draftState = { active: false, currentStep: 0, tempP1: null, tempP2: null, remainingPlayers: [], remainingClubs: [], spinning: false, startTime: null, targetAngle: 0, duration: 4000, lastDrawnItem: null, pairs: [], pendingTarget: null };
   groupDraftState = { active: false, spinning: false, remainingTeams: [], groupLetters: [], targetGroupIndex: 0, assignments: {}, lastDrawnItem: null, lastAssignedGroup: null, startTime: null, targetAngle: 0, duration: 4000, pendingTarget: null };
   userBalances = {};
@@ -1211,6 +1233,7 @@ function attachTournamentListener() {
     finished = data.finished || false;
     finishedAt = data.finishedAt || null;
     coinAnimation = data.coinAnimation || 'none';
+    happyHour = data.happyHour || false;
     draftState = data.draftState || { active: false, currentStep: 0, tempP1: null, tempP2: null, remainingPlayers: [], remainingClubs: [], spinning: false, startTime: null, targetAngle: 0, duration: 4000, lastDrawnItem: null, pairs: [] };
     groupDraftState = data.groupDraftState || { active: false, spinning: false, remainingTeams: [], groupLetters: [], targetGroupIndex: 0, assignments: {}, lastDrawnItem: null, lastAssignedGroup: null, startTime: null, targetAngle: 0, duration: 4000 };
     normalizeGroupDraftState(groupDraftState);
@@ -1277,6 +1300,7 @@ function saveData() {
     finished,
     finishedAt,
     coinAnimation,
+    happyHour,
     draftState,
     groupDraftState,
     userBalances,
@@ -2442,11 +2466,15 @@ function renamePlayerIdentity(newNameRaw) {
   loadAllTournamentsData((allTournamentsData) => {
     const updates = {};
     const gp = globalPlayers[oldKey] || {};
+    // Merkt sich den ALTEN Namen + Zeitpunkt des Wechsels (siehe getNameAtTournamentTime) -
+    // damit in der Spielerliste eines Turniers, das VOR diesem Wechsel angelegt wurde, noch
+    // "(damals: Max)" auftauchen kann, obwohl überall sonst längst der neue Name steht.
+    const nameHistory = [...(gp.nameHistory || []), { name: oldName, changedAt: Date.now() }];
     if (newKey !== oldKey) {
       // Kompletten Registry-Eintrag auf den neuen Key verschieben (Foto, Bio, Passwort,
       // Freunde/Anfragen - alles bleibt erhalten, nur der Key + das "name"-Feld ändern sich).
       updates['globalPlayers/' + oldKey] = null;
-      updates['globalPlayers/' + newKey] = { ...gp, name: newName };
+      updates['globalPlayers/' + newKey] = { ...gp, name: newName, nameHistory };
       // Jeden ANDEREN Spieler, der uns unter dem ALTEN Key als Freund/Anfrage gespeichert hat,
       // umhängen - sonst bliebe dort ein toter "Geister-Freund"-Verweis zurück.
       Object.keys(globalPlayers).forEach((otherKey) => {
@@ -2465,6 +2493,7 @@ function renamePlayerIdentity(newNameRaw) {
     } else {
       // Nur Schreibweise geändert (z.B. "tim" -> "Tim") - derselbe Key, nur die Anzeige ändert sich.
       updates['globalPlayers/' + oldKey + '/name'] = newName;
+      updates['globalPlayers/' + oldKey + '/nameHistory'] = nameHistory;
     }
 
     // Jedes Turnier durchsuchen und den alten Namen überall ersetzen, wo er als Klartext-String
@@ -5311,6 +5340,7 @@ function renderAll() {
   renderAdminPanel();
   renderBettingSystem();
   renderSlotMachine();
+  renderBigSlotMachine();
   // Hat man gerade ein Darts-Live-Overlay offen (egal ob selbst werfend oder nur zuschauend),
   // hier live mit aktualisieren - genau wie handleLiveDraftUI() es fürs Glücksrad tut.
   if (openDartsMatchId != null) renderDartsMatch();
@@ -6027,6 +6057,7 @@ function renderAdminPanel() {
   }
   renderInvitePanel();
   renderAdminCoinsPanel();
+  renderAdminSlotSymbolsPanel();
   renderSportToggle();
   renderDartsSettingsPanel();
   renderTeamStepPanel();
@@ -6072,20 +6103,30 @@ function renderAdminPanel() {
         </span>
         <button class="btn-secondary btn-sm" onclick="toggleTournamentFinished()">${finished ? 'Wieder öffnen' : 'Als beendet markieren'}</button>
       </div>
+      <div style="display:flex; align-items:center; justify-content:space-between; background:rgba(0,0,0,0.2); padding:8px 12px; border-radius:8px; margin-bottom:12px; flex-wrap:wrap; gap:8px;">
+        <span style="font-size:0.9em;">
+          ${happyHour ? '🎉 Happy Hour AKTIV' : '🎰 Happy Hour aus'}<br>
+          <span style="font-size:0.85em; opacity:0.7;">(solange aktiv: jeder 2. Spin an beiden Automaten ist Hauptgewinn)</span>
+        </span>
+        <button class="${happyHour ? 'btn-danger' : 'btn-secondary'} btn-sm" onclick="toggleHappyHour()">${happyHour ? 'Ausschalten' : 'Einschalten'}</button>
+      </div>
       ` : ''}
     `;
   }
   if (playerListEl) {
     // Das Passwort ist jetzt identitätsweit (siehe globalPlayers) statt pro Turnier - hier
     // wird es deshalb nur noch angezeigt, verwaltet wird es zentral im God-Panel ("Alle Spieler").
+    const tCreatedAt = tournamentsList[currentTournamentId] && tournamentsList[currentTournamentId].createdAt;
     playerListEl.innerHTML = players.map((p, index) => {
       const gp = getGlobalPlayer(p.name);
       const hasPW = !!(gp && gp.password);
       const isRefBtnClass = p.isRef ? 'btn-primary' : 'btn-secondary';
+      const pastName = getNameAtTournamentTime(gp, tCreatedAt);
       return `
         <div style="display:flex; flex-wrap:wrap; justify-content:space-between; align-items:center; background: var(--fal-blue-primary); padding: 10px 12px; border-radius: 8px; margin-bottom: 8px; gap: 8px;">
           <div>
             <strong>${index + 1}. </strong>${playerNameLink(p.name, 18)}
+            ${pastName ? `<span style="font-size:0.8em; opacity:0.65;"> (damals: ${escapeHtml(pastName)})</span>` : ''}
             ${p.isTournamentOwner ? '<span style="color:var(--fal-yellow); font-size:0.85em;">[⭐ Ersteller]</span>' : ''}
             ${p.isRef ? '<span style="color:var(--fal-yellow); font-size:0.85em;">[🟨 Ref]</span>' : ''}
             ${hasPW ? '<span style="font-size:0.85em; opacity:0.8;">[🔒 PW]</span>' : ''}
@@ -6120,6 +6161,14 @@ function renderAdminPanel() {
 function setCoinAnimation(mode) {
   if (!hasElevated()) return;
   coinAnimation = mode;
+  saveData();
+  renderAll();
+}
+// Admin/God schaltet "Happy Hour" für BEIDE Glücksspielautomaten dieses Turniers an/aus -
+// siehe maybeForceHappyHourJackpot() weiter unten, wo das tatsächlich wirkt.
+function toggleHappyHour() {
+  if (!isAdmin()) return;
+  happyHour = !happyHour;
   saveData();
   renderAll();
 }
@@ -6271,29 +6320,128 @@ function evaluateBetsForMatch(matchId, isKO, winningTeamId) {
   saveData();
 }
 // ============================================================================
-// 11a. GLÜCKSSPIELAUTOMAT — rein zum Spaß mit den FAL-Coins, kein Bezug zu echten
-//      Turnierspielen. 3 gewichtete Walzen, 3 gleiche Symbole = Gewinn (abhängig vom
-//      Symbol), 2 gleiche = Einsatz zurück, sonst verloren.
+// 11a. GLÜCKSSPIELAUTOMATEN — rein zum Spaß mit den FAL-Coins, kein Bezug zu echten
+//      Turnierspielen. Zwei Automaten teilen sich dieselbe, admin-editierbare Symbol-Tabelle:
+//      der klassische 3-Walzen-Automat, und der neue große 5-Walzen/3-Reihen-Slot mit
+//      wählbaren Gewinnlinien (siehe Abschnitt 11b weiter unten).
 // ============================================================================
-const SLOT_SYMBOLS = [
-  { emoji: '🍒', weight: 35, payout: 2 },
-  { emoji: '⚽', weight: 30, payout: 3 },
-  { emoji: '🍀', weight: 20, payout: 5 },
-  { emoji: '💰', weight: 10, payout: 10 },
-  { emoji: '7️⃣', weight: 5, payout: 20 }
+// Emoji = Fallback/Anzeige, falls kein eigenes Bild hochgeladen wurde. Gewicht = Wahrschein-
+// lichkeit, bewusst NICHT admin-editierbar (nur sichtbar) - einzige Ausnahme: "Happy Hour"
+// (siehe maybeForceHappyHourJackpot). Auszahlung = Multiplikator für 3-of-a-kind, admin-
+// editierbar (siehe adjustSlotSymbolPayout). Das FAL-Wappen ist bewusst das Symbol mit der
+// höchsten Auszahlung = der Hauptgewinn in BEIDEN Automaten (siehe getSlotJackpotSymbolId,
+// das IMMER das aktuell bestzahlende Symbol ermittelt statt eine feste ID zu verlangen -
+// bleibt also auch korrekt, falls ein Admin die Auszahlungen später umsortiert).
+const DEFAULT_SLOT_SYMBOLS = [
+  { id: 'cherry', emoji: '🍒', image: null, weight: 35, payout: 2 },
+  { id: 'ball', emoji: '⚽', image: null, weight: 30, payout: 3 },
+  { id: 'clover', emoji: '🍀', image: null, weight: 20, payout: 5 },
+  { id: 'money', emoji: '💰', image: null, weight: 10, payout: 10 },
+  { id: 'fallogo', emoji: '🏆', image: 'https://spvgg-fal.de/templates/yootheme/cache/dc/Logo-2017-web-dc30d58a.webp', weight: 5, payout: 20 }
 ];
-// Rein lokaler Zustand (nicht synchronisiert) - jeder spielt für sich, nur die daraus
-// resultierende Kontostand-Änderung landet über saveData() in der gemeinsamen Datenbank.
-let slotMachineState = { spinning: false, lastResult: null, confettiPlayedFor: null };
+// Liefert die aktuell gültige, website-weite Symbol-Tabelle (siehe globalSettings.slotSymbols)
+// oder die Standard-Tabelle, solange noch nichts Eigenes gespeichert wurde.
+function getSlotSymbols() {
+  return (globalSettings.slotSymbols && globalSettings.slotSymbols.length) ? globalSettings.slotSymbols : DEFAULT_SLOT_SYMBOLS;
+}
+function getSlotSymbolById(id) {
+  return getSlotSymbols().find(s => s.id === id) || DEFAULT_SLOT_SYMBOLS[0];
+}
+// Das Symbol mit der höchsten Auszahlung gilt als "Hauptgewinn" - dynamisch ermittelt, damit
+// das auch nach admin-seitigen Quoten-Änderungen noch stimmt (siehe Kommentar oben).
+function getSlotJackpotSymbolId() {
+  return getSlotSymbols().reduce((best, s) => (s.payout > best.payout ? s : best)).id;
+}
+// Baut das HTML für EIN Symbol auf - eigenes Bild, falls hochgeladen, sonst das Emoji.
+function slotSymbolVisualHtml(symbol, sizePx) {
+  if (symbol && symbol.image) {
+    return `<img src="${symbol.image}" style="width:${sizePx}px; height:${sizePx}px; object-fit:contain; vertical-align:middle;">`;
+  }
+  return `<span style="font-size:${Math.round(sizePx * 0.85)}px; line-height:1;">${(symbol && symbol.emoji) || '❔'}</span>`;
+}
 function pickWeightedSlotSymbol() {
-  const total = SLOT_SYMBOLS.reduce((sum, s) => sum + s.weight, 0);
+  const symbols = getSlotSymbols();
+  const total = symbols.reduce((sum, s) => sum + s.weight, 0);
   let r = Math.random() * total;
-  for (const sym of SLOT_SYMBOLS) {
+  for (const sym of symbols) {
     if (r < sym.weight) return sym;
     r -= sym.weight;
   }
-  return SLOT_SYMBOLS[SLOT_SYMBOLS.length - 1];
+  return symbols[symbols.length - 1];
 }
+// "Happy Hour" (siehe toggleHappyHour, admin-schaltbar pro Turnier): solange aktiv, wird JEDER
+// 2. Spin (über BEIDE Automaten zusammengezählt) erzwungen zum Hauptgewinn. Rein lokaler
+// Zähler pro Gerät (bewusst nicht synchronisiert) - das ist ein Spaß-Gag für einen gemeinsamen
+// Spieleabend, kein fairness-kritisches Feature.
+let happyHourSpinCounter = 0;
+function maybeForceHappyHourJackpot() {
+  if (!happyHour) return false;
+  happyHourSpinCounter++;
+  return happyHourSpinCounter % 2 === 0;
+}
+// Admin/God: Auszahlungsquote EINES Symbols anpassen (website-weit, wirkt auf BEIDE Automaten)
+function adjustSlotSymbolPayout(symbolId, newPayoutRaw) {
+  if (!isAdmin()) return;
+  const payout = parseFloat(newPayoutRaw);
+  if (isNaN(payout) || payout <= 0) return alert('Bitte eine gültige Auszahlung eingeben!');
+  const symbols = getSlotSymbols().map(s => s.id === symbolId ? { ...s, payout } : s);
+  db.ref('globalSettings/slotSymbols').set(symbols).catch((error) => alert('⚠️ Konnte nicht gespeichert werden:\n' + error.message));
+}
+// Merkt sich, für welches Symbol gerade ein Bild hochgeladen wird (zwischen Öffnen der
+// Dateiauswahl und der tatsächlichen Auswahl liegt ja ein Moment Wartezeit) - analog zu
+// pendingLogoUploadClub bei den Vereinswappen.
+let pendingSlotSymbolImageId = null;
+function triggerSlotSymbolImageUpload(symbolId) {
+  if (!isAdmin()) return;
+  pendingSlotSymbolImageId = symbolId;
+  const input = document.getElementById('slot-symbol-image-file-input');
+  if (input) input.click();
+}
+function handleSlotSymbolImageSelected(event) {
+  const file = event.target.files && event.target.files[0];
+  event.target.value = '';
+  const symbolId = pendingSlotSymbolImageId;
+  pendingSlotSymbolImageId = null;
+  if (!file || !symbolId) return;
+  if (!file.type.startsWith('image/')) return alert('Bitte eine Bilddatei auswählen!');
+  resizeImageFile(file, 150, (dataUrl) => {
+    const symbols = getSlotSymbols().map(s => s.id === symbolId ? { ...s, image: dataUrl } : s);
+    db.ref('globalSettings/slotSymbols').set(symbols).catch((error) => alert('⚠️ Bild konnte nicht gespeichert werden:\n' + error.message));
+  });
+}
+function removeSlotSymbolImage(symbolId) {
+  if (!isAdmin()) return;
+  const symbols = getSlotSymbols().map(s => s.id === symbolId ? { ...s, image: null } : s);
+  db.ref('globalSettings/slotSymbols').set(symbols).catch((error) => alert('⚠️ Konnte nicht entfernt werden:\n' + error.message));
+}
+// Baut die Admin/God-only Übersicht zum Verwalten der Symbol-Tabelle auf (website-weit, gilt
+// für BEIDE Automaten) - Vorschau, Gewinnchance (nur Anzeige), Auszahlung (editierbar) und
+// Bild-Upload/-Entfernen.
+function renderAdminSlotSymbolsPanel() {
+  const container = document.getElementById('admin-slot-symbols-container');
+  if (!container) return;
+  if (!isAdmin()) { container.innerHTML = '<p class="empty-state">Nur für Admin/God.</p>'; return; }
+  const symbols = getSlotSymbols();
+  const totalWeight = symbols.reduce((sum, s) => sum + s.weight, 0);
+  const jackpotId = getSlotJackpotSymbolId();
+  container.innerHTML = symbols.map((s) => `
+    <div style="display:flex; align-items:center; justify-content:space-between; gap:10px; background: var(--fal-blue-primary); padding:8px 12px; border-radius:8px; margin-bottom:6px; flex-wrap:wrap;">
+      <div style="display:flex; align-items:center; gap:10px;">
+        ${slotSymbolVisualHtml(s, 32)}
+        <span style="font-size:0.8em; opacity:0.75;">${Math.round(s.weight / totalWeight * 100)}% Chance${s.id === jackpotId ? ' · 🏆 Hauptgewinn' : ''}</span>
+      </div>
+      <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
+        <input type="number" id="slot-payout-input-${s.id}" min="0.1" step="0.1" value="${s.payout}" style="width:70px;">
+        <button class="btn-secondary btn-sm" onclick="adjustSlotSymbolPayout('${s.id}', document.getElementById('slot-payout-input-${s.id}').value)">Speichern</button>
+        <button class="btn-secondary btn-sm" title="Bild hochladen" onclick="triggerSlotSymbolImageUpload('${s.id}')">📷</button>
+        ${s.image ? `<button class="btn-danger btn-sm" title="Bild entfernen" onclick="removeSlotSymbolImage('${s.id}')">🗑️</button>` : ''}
+      </div>
+    </div>
+  `).join('');
+}
+// Rein lokaler Zustand (nicht synchronisiert) - jeder spielt für sich, nur die daraus
+// resultierende Kontostand-Änderung landet über saveData() in der gemeinsamen Datenbank.
+let slotMachineState = { spinning: false, lastResult: null, confettiPlayedFor: null };
 function spinSlotMachine() {
   if (!myPlayerName) return alert('Bitte melde dich erst mit einem Namen an!');
   if (slotMachineState.spinning) return;
@@ -6308,7 +6456,11 @@ function spinSlotMachine() {
   slotMachineState.lastResult = null;
   renderSlotMachine();
 
-  const finalSymbols = [pickWeightedSlotSymbol(), pickWeightedSlotSymbol(), pickWeightedSlotSymbol()];
+  const forceJackpot = maybeForceHappyHourJackpot();
+  const jackpotSymbol = getSlotSymbolById(getSlotJackpotSymbolId());
+  const finalSymbols = forceJackpot
+    ? [jackpotSymbol, jackpotSymbol, jackpotSymbol]
+    : [pickWeightedSlotSymbol(), pickWeightedSlotSymbol(), pickWeightedSlotSymbol()];
   const reelEls = [0, 1, 2].map(i => document.getElementById('slot-reel-' + i));
   const maxTicks = 14;
   let ticks = 0;
@@ -6332,11 +6484,11 @@ function spinSlotMachine() {
 }
 // Lässt ein paar Dutzend kleine, bunte Konfetti-Teile über dem übergebenen Element fallen -
 // rein dekorativ fürs Jackpot-Gefühl. Bewusst in einem EIGENEN, fest positionierten Overlay
-// direkt an document.body (NICHT als Kind von #slot-machine-container!): der Container wird
-// kurz nach dem Speichern durch den eigenen echoenden Live-Listener nochmal neu gerendert
-// (siehe renderSlotMachine) - als Kind wäre das Konfetti dabei sofort wieder weg, bevor man
-// es überhaupt sieht. Das Overlay räumt sich nach der Animation von selbst wieder ab (siehe
-// @keyframes slot-confetti-fall in style.css).
+// direkt an document.body (NICHT als Kind des Automaten-Containers!): der Container wird kurz
+// nach dem Speichern durch den eigenen echoenden Live-Listener nochmal neu gerendert (siehe
+// renderSlotMachine/renderBigSlotMachine) - als Kind wäre das Konfetti dabei sofort wieder weg,
+// bevor man es überhaupt sieht. Das Overlay räumt sich nach der Animation von selbst wieder ab
+// (siehe @keyframes slot-confetti-fall in style.css).
 function spawnSlotConfetti(anchorEl) {
   const rect = anchorEl.getBoundingClientRect();
   const overlay = document.createElement('div');
@@ -6358,14 +6510,14 @@ function spawnSlotConfetti(anchorEl) {
 function finishSlotSpin(amount, symbols) {
   const [a, b, c] = symbols;
   let winAmount = 0, resultLabel = '', resultType = '', isJackpot = false;
-  if (a.emoji === b.emoji && b.emoji === c.emoji) {
+  if (a.id === b.id && b.id === c.id) {
     winAmount = amount * a.payout;
     resultLabel = `🎉 JACKPOT! 3x ${a.emoji} – ${winAmount} Coins gewonnen!`;
     resultType = 'win';
     isJackpot = true;
     playSound('jackpot');
     if (navigator.vibrate) navigator.vibrate([80, 40, 80, 40, 220]);
-  } else if (a.emoji === b.emoji || b.emoji === c.emoji || a.emoji === c.emoji) {
+  } else if (a.id === b.id || b.id === c.id || a.id === c.id) {
     winAmount = amount;
     resultLabel = `😏 2 gleiche – Einsatz zurück (${winAmount} Coins)`;
     resultType = 'push';
@@ -6378,7 +6530,7 @@ function finishSlotSpin(amount, symbols) {
   }
   userBalances[myPlayerName] = (userBalances[myPlayerName] || 0) + winAmount;
   slotMachineState.spinning = false;
-  slotMachineState.lastResult = { symbols: symbols.map(s => s.emoji), resultLabel, resultType, isJackpot };
+  slotMachineState.lastResult = { symbolIds: symbols.map(s => s.id), symbols: symbols.map(s => s.emoji), resultLabel, resultType, isJackpot };
   // saveData() löst (über den echoenden Live-Listener, siehe attachTournamentListener) KURZ
   // danach selbst nochmal renderAll() aus - ein hier direkt im Anschluss per DOM-Manipulation
   // gesetzter Konfetti-/Glow-Effekt wäre durch den dabei neu aufgebauten Container sofort
@@ -6403,15 +6555,17 @@ function renderSlotMachine() {
   const prevValue = amountInput ? amountInput.value : '';
   const currentBalance = getUserBalance(myPlayerName);
   const result = slotMachineState.lastResult;
-  const symbols = result ? result.symbols : ['❔', '❔', '❔'];
+  const reelContents = result
+    ? result.symbolIds.map(id => slotSymbolVisualHtml(getSlotSymbolById(id), 34))
+    : [0, 1, 2].map(() => slotSymbolVisualHtml(null, 34));
   const resultClass = result ? `slot-result-${result.resultType}` : '';
   const frameClass = 'slot-reels-frame' + (result && result.isJackpot ? ' slot-jackpot' : '');
   container.innerHTML = `
     <div style="position:relative; display:flex; justify-content:center; margin-bottom:12px;">
       <div class="${frameClass}">
-        <span id="slot-reel-0" class="slot-reel" style="font-size:1.8em;">${symbols[0]}</span>
-        <span id="slot-reel-1" class="slot-reel" style="font-size:1.8em;">${symbols[1]}</span>
-        <span id="slot-reel-2" class="slot-reel" style="font-size:1.8em;">${symbols[2]}</span>
+        <span id="slot-reel-0" class="slot-reel">${reelContents[0]}</span>
+        <span id="slot-reel-1" class="slot-reel">${reelContents[1]}</span>
+        <span id="slot-reel-2" class="slot-reel">${reelContents[2]}</span>
       </div>
     </div>
     ${result ? `<p class="slot-result-label ${resultClass}" style="text-align:center; font-size:0.95em; margin-bottom:10px;">${result.resultLabel}</p>` : ''}
@@ -6429,6 +6583,175 @@ function renderSlotMachine() {
   if (result && result.isJackpot && slotMachineState.confettiPlayedFor !== result) {
     slotMachineState.confettiPlayedFor = result;
     const frame = container.querySelector('.slot-reels-frame');
+    if (frame) spawnSlotConfetti(frame);
+  }
+}
+// ============================================================================
+// 11b. GROSSER SLOT (5 Walzen x 3 Reihen) — klassischer Casino-Slot mit wählbaren
+//      Gewinnlinien-Paketen. Teilt sich die Symbol-Tabelle (siehe oben) 1:1 mit dem
+//      kleinen 3-Walzen-Automaten, inkl. FAL-Logo als Hauptgewinn und Happy Hour.
+// ============================================================================
+// 10 klassische Gewinnlinien über 5 Walzen x 3 Reihen (0=oben, 1=mitte, 2=unten) - jede Linie
+// ist ein Array aus 5 Reihen-Indizes, einer pro Walze. Wählbar in festen Paketen (siehe
+// BIG_SLOT_LINE_PACKAGES): 1 Linie = nur die mittlere Reihe, mehr Linien = mehr Chancen, aber
+// auch höherer Gesamteinsatz (Einsatz pro Linie × Anzahl Linien).
+const BIG_SLOT_PAYLINES = [
+  [1, 1, 1, 1, 1], // 1: Mittlere Reihe
+  [0, 0, 0, 0, 0], // 2: Obere Reihe
+  [2, 2, 2, 2, 2], // 3: Untere Reihe
+  [0, 1, 2, 1, 0], // 4: V
+  [2, 1, 0, 1, 2], // 5: umgekehrtes V
+  [0, 0, 1, 2, 2], // 6: Diagonale fallend
+  [2, 2, 1, 0, 0], // 7: Diagonale steigend
+  [1, 0, 0, 0, 1], // 8: flaches W (oben)
+  [1, 2, 2, 2, 1], // 9: flaches W (unten)
+  [0, 1, 1, 1, 0]  // 10: flaches V
+];
+const BIG_SLOT_LINE_PACKAGES = [1, 3, 5, 10];
+let bigSlotState = { spinning: false, lastResult: null, confettiPlayedFor: null, selectedLines: 1 };
+function pickBigSlotGrid() {
+  return [0, 1, 2, 3, 4].map(() => [pickWeightedSlotSymbol(), pickWeightedSlotSymbol(), pickWeightedSlotSymbol()]);
+}
+// Wertet EINE Gewinnlinie aus: zählt, wie viele Symbole von LINKS nach RECHTS ununterbrochen
+// gleich sind (klassische Slot-Regel) - ab 3 gibt's eine Auszahlung. 4 Treffer zahlen das
+// 3-fache, 5 Treffer das 10-fache der Basis-Quote (feste Eskalation, damit der Admin nur EINE
+// Quote pro Symbol pflegen muss statt einer eigenen pro Trefferzahl).
+function evaluateBigSlotLine(grid, lineRows, betPerLine) {
+  const symbolsOnLine = lineRows.map((row, reelIndex) => grid[reelIndex][row]);
+  const first = symbolsOnLine[0];
+  let matchCount = 1;
+  while (matchCount < symbolsOnLine.length && symbolsOnLine[matchCount].id === first.id) matchCount++;
+  if (matchCount < 3) return null;
+  const scaleFactor = matchCount === 5 ? 10 : (matchCount === 4 ? 3 : 1);
+  return { symbol: first, matchCount, win: betPerLine * first.payout * scaleFactor };
+}
+function setBigSlotLines(numLines) {
+  if (bigSlotState.spinning || !BIG_SLOT_LINE_PACKAGES.includes(numLines)) return;
+  bigSlotState.selectedLines = numLines;
+  renderBigSlotMachine();
+}
+function spinBigSlotMachine() {
+  if (!myPlayerName) return alert('Bitte melde dich erst mit einem Namen an!');
+  if (bigSlotState.spinning) return;
+  const input = document.getElementById('big-slot-bet-per-line');
+  const betPerLine = input ? parseInt(input.value, 10) : NaN;
+  const numLines = bigSlotState.selectedLines;
+  const totalBet = betPerLine * numLines;
+  const currentBalance = getUserBalance(myPlayerName);
+  if (isNaN(betPerLine) || betPerLine <= 0) return alert('Bitte einen gültigen Einsatz pro Linie eingeben!');
+  if (totalBet > currentBalance) return alert(`Du hast nicht genügend FAL-Coins!\n\nGesamteinsatz: ${totalBet} Coins (${betPerLine} × ${numLines} Linien)`);
+
+  userBalances[myPlayerName] = currentBalance - totalBet;
+  bigSlotState.spinning = true;
+  bigSlotState.lastResult = null;
+  renderBigSlotMachine();
+
+  const forceJackpot = maybeForceHappyHourJackpot();
+  const jackpotSymbol = getSlotSymbolById(getSlotJackpotSymbolId());
+  const grid = forceJackpot
+    ? [0, 1, 2, 3, 4].map(() => [jackpotSymbol, jackpotSymbol, jackpotSymbol])
+    : pickBigSlotGrid();
+  const cellEls = [0, 1, 2, 3, 4].map(col => [0, 1, 2].map(row => document.getElementById(`big-slot-cell-${col}-${row}`)));
+  const maxTicks = 16;
+  let ticks = 0;
+  // Die 5 Walzen rasten nacheinander ein (links zuerst), genau wie beim kleinen Automaten.
+  const flickerInterval = setInterval(() => {
+    ticks++;
+    for (let col = 0; col < 5; col++) {
+      const settled = ticks >= maxTicks - (4 - col) * 2;
+      for (let row = 0; row < 3; row++) {
+        const el = cellEls[col][row];
+        if (!el) continue;
+        el.textContent = settled ? grid[col][row].emoji : pickWeightedSlotSymbol().emoji;
+        el.classList.add('slot-reel-tick');
+        setTimeout(() => el.classList.remove('slot-reel-tick'), 70);
+      }
+    }
+    playSound('drumroll-tick');
+    if (ticks >= maxTicks) {
+      clearInterval(flickerInterval);
+      finishBigSlotSpin(betPerLine, numLines, grid);
+    }
+  }, 90);
+}
+function finishBigSlotSpin(betPerLine, numLines, grid) {
+  const activeLines = BIG_SLOT_PAYLINES.slice(0, numLines);
+  const lineResults = activeLines
+    .map((lineRows, i) => {
+      const r = evaluateBigSlotLine(grid, lineRows, betPerLine);
+      return r ? { ...r, lineNumber: i + 1 } : null;
+    })
+    .filter(Boolean);
+  const totalWin = lineResults.reduce((sum, r) => sum + r.win, 0);
+  const jackpotId = getSlotJackpotSymbolId();
+  const isJackpot = lineResults.some(r => r.symbol.id === jackpotId && r.matchCount === 5);
+  userBalances[myPlayerName] = (userBalances[myPlayerName] || 0) + totalWin;
+  bigSlotState.spinning = false;
+  bigSlotState.lastResult = {
+    grid: grid.map(col => col.map(s => s.id)),
+    lineResults,
+    totalWin,
+    isJackpot,
+    totalBet: betPerLine * numLines
+  };
+  if (totalWin > 0) playSound(isJackpot ? 'jackpot' : 'ding'); else playSound('slot-lose');
+  if (isJackpot && navigator.vibrate) navigator.vibrate([80, 40, 80, 40, 220]);
+  saveData();
+  renderAll();
+}
+// Baut die Karte des großen Slots auf - überspringt sich SELBST während einer Drehung
+// (analog zu renderSlotMachine).
+function renderBigSlotMachine() {
+  const container = document.getElementById('big-slot-container');
+  if (!container || bigSlotState.spinning) return;
+  if (!myPlayerName) {
+    container.innerHTML = '<p style="opacity:0.7;">👀 Melde dich mit einem Namen an, um mitzuspielen.</p>';
+    return;
+  }
+  const betInput = document.getElementById('big-slot-bet-per-line');
+  const hadFocus = document.activeElement === betInput;
+  const prevValue = betInput ? betInput.value : '';
+  const currentBalance = getUserBalance(myPlayerName);
+  const result = bigSlotState.lastResult;
+  const numLines = bigSlotState.selectedLines;
+  const grid = result ? result.grid.map(col => col.map(id => getSlotSymbolById(id))) : [0, 1, 2, 3, 4].map(() => [null, null, null]);
+  const frameClass = 'big-slot-frame' + (result && result.isJackpot ? ' slot-jackpot' : '');
+
+  const gridHtml = [0, 1, 2].map(row => `
+    <div class="big-slot-row">
+      ${[0, 1, 2, 3, 4].map(col => `<span id="big-slot-cell-${col}-${row}" class="big-slot-cell">${grid[col][row] ? slotSymbolVisualHtml(grid[col][row], 26) : '❔'}</span>`).join('')}
+    </div>
+  `).join('');
+
+  const resultHtml = !result ? '' : (result.lineResults.length
+    ? `<div style="text-align:center; margin-bottom:8px;">
+         <p class="slot-result-label slot-result-win" style="font-size:0.95em; margin:4px 0;">🎉 ${result.totalWin} Coins gewonnen!</p>
+         <div style="font-size:0.78em; opacity:0.8;">${result.lineResults.map(r => `Linie ${r.lineNumber}: ${r.matchCount}x ${r.symbol.emoji} (+${r.win})`).join(' · ')}</div>
+       </div>`
+    : `<p class="slot-result-label slot-result-lose" style="text-align:center; font-size:0.95em; margin-bottom:8px;">💸 Keine Gewinnlinie – ${result.totalBet} Coins verloren</p>`);
+
+  container.innerHTML = `
+    <div style="display:flex; justify-content:center; margin-bottom:10px;">
+      <div class="${frameClass}">${gridHtml}</div>
+    </div>
+    ${resultHtml}
+    <div style="display:flex; gap:10px; align-items:center; justify-content:center; flex-wrap:wrap; margin-bottom:8px;">
+      <label style="font-size:0.85em; display:flex; align-items:center; gap:6px;">
+        Linien:
+        <select id="big-slot-lines-select" onchange="setBigSlotLines(parseInt(this.value))">
+          ${BIG_SLOT_LINE_PACKAGES.map(n => `<option value="${n}" ${n === numLines ? 'selected' : ''}>${n}</option>`).join('')}
+        </select>
+      </label>
+      <input type="number" id="big-slot-bet-per-line" placeholder="Einsatz/Linie" min="1" style="width:110px;" value="${escapeHtml(prevValue)}">
+      <button class="btn-primary" onclick="spinBigSlotMachine()">🎰 Drehen</button>
+    </div>
+    <p style="font-size:0.75em; opacity:0.6; text-align:center; margin:0;">Gesamteinsatz = Einsatz/Linie × gewählte Linien. 3, 4 oder 5 gleiche Symbole von LINKS auf einer aktiven Linie gewinnen (5 gleiche = 10-facher Grundgewinn, 4 gleiche = 3-facher). Kontostand: ${currentBalance} 🪙</p>
+  `;
+  const newInput = document.getElementById('big-slot-bet-per-line');
+  if (newInput && hadFocus) newInput.focus();
+  if (result && result.isJackpot && bigSlotState.confettiPlayedFor !== result) {
+    bigSlotState.confettiPlayedFor = result;
+    const frame = container.querySelector('.big-slot-frame');
     if (frame) spawnSlotConfetti(frame);
   }
 }
