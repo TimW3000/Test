@@ -143,6 +143,8 @@ window.removeProfilePic = removeProfilePic;
 window.handleProfilePicFileSelected = handleProfilePicFileSelected;
 window.saveProfileBio = saveProfileBio;
 window.saveProfileColorSettings = saveProfileColorSettings;
+window.promptRenameMyIdentity = promptRenameMyIdentity;
+window.renamePlayerIdentity = renamePlayerIdentity;
 window.sendFriendRequest = sendFriendRequest;
 window.acceptFriendRequest = acceptFriendRequest;
 window.declineFriendRequest = declineFriendRequest;
@@ -2219,7 +2221,7 @@ function renderProfile() {
     `}
     <div style="text-align:center; margin-bottom: 14px;">
       ${avatarHtml}
-      <h2 style="margin: 8px 0 2px 0;">${escapeHtml(gp.name || key)}${key === 'tim' ? ' 👑' : ''}</h2>
+      <h2 style="margin: 8px 0 2px 0;">${escapeHtml(gp.name || key)}${key === 'tim' ? ' 👑' : ''}${viewingOwn && key !== 'tim' ? ` <button class="btn-secondary btn-sm" title="Namen ändern" onclick="promptRenameMyIdentity()" style="font-size:0.5em; vertical-align:middle;">✏️</button>` : ''}</h2>
       ${(gp.favoriteColor || gp.favoriteClub) ? `
         <div style="font-size:0.8em; opacity:0.8; display:flex; align-items:center; justify-content:center; gap:6px; margin-bottom:4px;">
           ${gp.favoriteColor ? `<span style="display:inline-block; width:12px; height:12px; border-radius:50%; background:${gp.favoriteColor}; border:1px solid rgba(255,255,255,0.4);"></span>` : ''}
@@ -2403,6 +2405,115 @@ function saveProfileColorSettings() {
     colorSource: (sourceInput && sourceInput.value === 'club') ? 'club' : 'favorite'
   }).catch((error) => alert('⚠️ Konnte nicht gespeichert werden:\n' + error.message));
   alert('✅ Gespeichert.');
+}
+// Fragt per prompt() den neuen Namen ab und stößt die eigentliche Umbenennung an
+function promptRenameMyIdentity() {
+  if (!myPlayerName) return;
+  const newName = prompt('Neuer Name (alle Statistiken, Erfolge und Turniere bleiben erhalten):', myPlayerName);
+  if (newName === null) return;
+  renamePlayerIdentity(newName);
+}
+// Benennt die EIGENE Identität um, OHNE Statistiken/Erfolge/Historie zu verlieren: der Name
+// ist in diesem Datenmodell überall (globalPlayers-Key, players[].name, teams[].p1/p2,
+// userBalances, bets, tips) der faktische Schlüssel - eine echte Umbenennung muss ihn deshalb
+// an JEDER Stelle in JEDEM Turnier mit ersetzen, statt (wie eine neue Identität) bei 0 Statistik
+// anzufangen. Lädt dafür einmalig ALLE Turniere komplett (wie schon für die Rangliste/Wrapped),
+// baut daraus EIN einziges Multi-Pfad-update() über die komplette Datenbank und schreibt das
+// atomar in einem Rutsch weg - kein Zwischenzustand, in dem der alte und neue Name gemischt
+// irgendwo auftauchen könnten.
+function renamePlayerIdentity(newNameRaw) {
+  if (!myPlayerName) return;
+  const newName = (newNameRaw || '').trim();
+  if (!newName) return alert('Bitte einen neuen Namen eingeben!');
+  const forbidden = findForbiddenNameChars(newName);
+  if (forbidden.length) {
+    return alert(`⚠️ Der Name darf diese(s) Zeichen nicht enthalten: ${forbidden.join(' ')}\n\n(Technische Einschränkung der Datenbank - bitte den Namen leicht anpassen.)`);
+  }
+  const oldName = myPlayerName;
+  const oldKey = oldName.trim().toLowerCase();
+  const newKey = newName.toLowerCase();
+  if (newKey === oldKey && newName === oldName) return alert('Das ist schon dein aktueller Name.');
+  if (newKey === 'tim' && oldKey !== 'tim') return alert('Dieser Name ist reserviert.');
+  if (oldKey === 'tim' && newKey !== 'tim') return alert('Der God-Account kann nicht umbenannt werden.');
+  if (newKey !== oldKey && globalPlayers[newKey]) return alert('Dieser Name ist schon vergeben.');
+  if (!confirm(`Wirklich zu "${newName}" umbenennen?\n\nAlle deine bisherigen Spiele, Statistiken, Erfolge und Turniere bleiben unter dem neuen Namen erhalten.`)) return;
+
+  loadAllTournamentsData((allTournamentsData) => {
+    const updates = {};
+    const gp = globalPlayers[oldKey] || {};
+    if (newKey !== oldKey) {
+      // Kompletten Registry-Eintrag auf den neuen Key verschieben (Foto, Bio, Passwort,
+      // Freunde/Anfragen - alles bleibt erhalten, nur der Key + das "name"-Feld ändern sich).
+      updates['globalPlayers/' + oldKey] = null;
+      updates['globalPlayers/' + newKey] = { ...gp, name: newName };
+      // Jeden ANDEREN Spieler, der uns unter dem ALTEN Key als Freund/Anfrage gespeichert hat,
+      // umhängen - sonst bliebe dort ein toter "Geister-Freund"-Verweis zurück.
+      Object.keys(globalPlayers).forEach((otherKey) => {
+        if (otherKey === oldKey) return;
+        const otherGp = globalPlayers[otherKey];
+        if (!otherGp) return;
+        if (otherGp.friends && otherGp.friends[oldKey] !== undefined) {
+          updates['globalPlayers/' + otherKey + '/friends/' + oldKey] = null;
+          updates['globalPlayers/' + otherKey + '/friends/' + newKey] = true;
+        }
+        if (otherGp.friendRequests && otherGp.friendRequests[oldKey] !== undefined) {
+          updates['globalPlayers/' + otherKey + '/friendRequests/' + oldKey] = null;
+          updates['globalPlayers/' + otherKey + '/friendRequests/' + newKey] = true;
+        }
+      });
+    } else {
+      // Nur Schreibweise geändert (z.B. "tim" -> "Tim") - derselbe Key, nur die Anzeige ändert sich.
+      updates['globalPlayers/' + oldKey + '/name'] = newName;
+    }
+
+    // Jedes Turnier durchsuchen und den alten Namen überall ersetzen, wo er als Klartext-String
+    // auftaucht (nicht nur bei geändertem Key - auch eine reine Schreibweisen-Korrektur muss
+    // überall ankommen, sonst griffen z.B. userBalances[alterName]-Lookups anschließend ins Leere).
+    Object.keys(allTournamentsData || {}).forEach((tid) => {
+      const t = allTournamentsData[tid];
+      if (!t) return;
+      const base = 'tournaments/' + tid + '/';
+      (t.players || []).forEach((p, i) => {
+        const pName = typeof p === 'string' ? p : (p && p.name);
+        if (pName && pName.trim().toLowerCase() === oldKey) updates[base + 'players/' + i + '/name'] = newName;
+      });
+      (t.teams || []).forEach((team, i) => {
+        if (team.p1 && team.p1.trim().toLowerCase() === oldKey) updates[base + 'teams/' + i + '/p1'] = newName;
+        if (team.p2 && team.p2.trim().toLowerCase() === oldKey) updates[base + 'teams/' + i + '/p2'] = newName;
+      });
+      const balances = t.userBalances || {};
+      Object.keys(balances).forEach((bName) => {
+        if (bName.trim().toLowerCase() === oldKey && bName !== newName) {
+          updates[base + 'userBalances/' + bName] = null;
+          updates[base + 'userBalances/' + newName] = balances[bName];
+        }
+      });
+      (t.bets || []).forEach((bet, i) => {
+        if (bet.playerName && bet.playerName.trim().toLowerCase() === oldKey) updates[base + 'bets/' + i + '/playerName'] = newName;
+      });
+      const tips = t.tips || {};
+      Object.keys(tips).forEach((tName) => {
+        if (tName.trim().toLowerCase() === oldKey && tName !== newName) {
+          updates[base + 'tips/' + tName] = null;
+          updates[base + 'tips/' + newName] = tips[tName];
+        }
+      });
+      if (t.createdBy && t.createdBy.trim().toLowerCase() === oldKey) updates[base + 'createdBy'] = newName;
+      if (tournamentsList[tid] && tournamentsList[tid].createdBy && tournamentsList[tid].createdBy.trim().toLowerCase() === oldKey) {
+        updates['tournaments_meta/' + tid + '/createdBy'] = newName;
+      }
+    });
+
+    db.ref().update(updates).then(() => {
+      myPlayerName = newName;
+      localStorage.setItem('fifa_global_name', newName);
+      markIdentityPasswordVersion(newName);
+      if (profileViewKey === oldKey) profileViewKey = null;
+      alert(`✅ Umbenannt zu "${newName}"! Alle Statistiken wurden übernommen.`);
+      renderProfile();
+      renderAll();
+    }).catch((error) => alert('⚠️ Umbenennen fehlgeschlagen:\n' + error.message));
+  });
 }
 // Schickt einer anderen Identität eine Freundschaftsanfrage
 function sendFriendRequest(targetKey) {
