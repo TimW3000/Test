@@ -297,6 +297,10 @@ let teams = [];
 // bekommt seinen EIGENEN Club, kein Partner) - wird beim Turniererstellen festgelegt (siehe
 // parseTournamentFormatText/openFormatWizard), vor der Auslosung im Admin-Panel noch änderbar.
 let tournamentMode = 'duo';
+// Nur relevant im Duo-Modus (FIFA): true = normale 2er-Teams MIT gemeinsamem Verein (Standard),
+// false = 2er-Teams ganz OHNE Vereinszuordnung (z.B. um einfach nur Leute in 2er-Grüppchen
+// auszulosen, etwa Zimmer-/Fahrgemeinschafts-Auslosung - siehe toggleClubsEnabled).
+let clubsEnabled = true;
 // 'fifa' (Standard, mit Vereinen/Clubs) oder 'darts' (kein Verein, jeder Spieler ist direkt
 // sein eigenes "Team" - siehe createDartsTeamsFromPlayers). Läuft technisch als tournamentMode
 // 'solo' weiter (1 Spieler pro Team, kein Partner), nur eben zusätzlich OHNE Verein.
@@ -1158,6 +1162,7 @@ function resetLocalStateToDefaults() {
   clubLogos = { ...DEFAULT_CLUB_LOGOS };
   teams = [];
   tournamentMode = 'duo';
+  clubsEnabled = true;
   tournamentSport = 'fifa';
   dartsStartScore = 501;
   dartsLegsToWin = 3;
@@ -1214,6 +1219,7 @@ function attachTournamentListener() {
     clubLogos = data.clubLogos || { ...DEFAULT_CLUB_LOGOS };
     teams = data.teams || [];
     tournamentMode = data.tournamentMode || 'duo';
+    clubsEnabled = data.clubsEnabled !== false;
     tournamentSport = data.tournamentSport || 'fifa';
     dartsStartScore = data.dartsStartScore || 501;
     dartsLegsToWin = data.dartsLegsToWin || 3;
@@ -1289,6 +1295,7 @@ function saveData() {
     clubLogos,
     teams,
     tournamentMode,
+    clubsEnabled,
     tournamentSport,
     dartsStartScore,
     dartsLegsToWin,
@@ -3369,7 +3376,11 @@ function addDraftCheat() {
   const club = clubSel ? clubSel.value : '';
   if (!p1) return alert('Bitte mindestens einen Spieler auswählen!');
   if (p2 && p2 === p1) return alert('Bitte zwei unterschiedliche Spieler auswählen (oder den 2. auf "egal" lassen)!');
-  if (!p2 && !club) return alert(solo ? 'Bitte einen Verein festlegen, sonst bewirkt die Vorgabe nichts!' : 'Ohne festgelegten Partner brauchst du mindestens einen festgelegten Verein, sonst bewirkt die Vorgabe nichts!');
+  if (!p2 && !club) {
+    if (solo) return alert('Bitte einen Verein festlegen, sonst bewirkt die Vorgabe nichts!');
+    if (!clubSel) return alert('Bitte einen Partner festlegen, sonst bewirkt die Vorgabe nichts!');
+    return alert('Ohne festgelegten Partner brauchst du mindestens einen festgelegten Verein, sonst bewirkt die Vorgabe nichts!');
+  }
   draftCheats.push({ p1, p2: p2 || null, club: club || null });
   saveData();
   renderAll();
@@ -3389,6 +3400,9 @@ function renderDraftCheatPanel() {
   if (!container) return;
   if (!isGod() || teams.length > 0 || tournamentSport === 'darts') { container.innerHTML = ''; return; }
   const solo = tournamentMode === 'solo';
+  // Solo braucht immer einen Verein (das IST der Sinn von Solo) - clubsEnabled ist nur im
+  // Duo-Modus wirklich abschaltbar (siehe toggleClubsEnabled).
+  const clubsEnabledForRun = solo ? true : clubsEnabled;
   const usedNames = new Set();
   draftCheats.forEach(c => { usedNames.add(c.p1); if (c.p2) usedNames.add(c.p2); });
   const availablePlayers = players.filter(p => !usedNames.has(p.name));
@@ -3397,7 +3411,7 @@ function renderDraftCheatPanel() {
   const clubOptions = '<option value="">(Verein zufällig)</option>' + availableClubs.map(c => `<option value="${escapeHtml(c)}">${escapeHtml(c)}</option>`).join('');
   const list = draftCheats.length ? draftCheats.map((c, i) => `
     <div style="display:flex; justify-content:space-between; align-items:center; background:rgba(0,0,0,0.25); padding:6px 10px; border-radius:6px; margin-bottom:4px; font-size:0.85em;">
-      <span><strong>${escapeHtml(c.p1)}</strong>${!solo ? (c.p2 ? ` &amp; <strong>${escapeHtml(c.p2)}</strong>` : ' (Partner egal)') : ''}${c.club ? ` → ${escapeHtml(c.club)}` : ' (Verein zufällig)'}</span>
+      <span><strong>${escapeHtml(c.p1)}</strong>${!solo ? (c.p2 ? ` &amp; <strong>${escapeHtml(c.p2)}</strong>` : ' (Partner egal)') : ''}${clubsEnabledForRun ? (c.club ? ` → ${escapeHtml(c.club)}` : ' (Verein zufällig)') : ''}</span>
       <span style="cursor:pointer; color:#ff4d4d; font-weight:bold;" onclick="removeDraftCheat(${i})">×</span>
     </div>
   `).join('') : '<p style="font-size:0.85em; opacity:0.7; margin:0 0 8px 0;">Noch keine Vorgaben - alles bleibt komplett zufällig.</p>';
@@ -3407,13 +3421,15 @@ function renderDraftCheatPanel() {
       <p style="font-size:0.9em; font-weight:bold; margin:0 0 4px 0;">⚙️ Auslosungs-Voreinstellungen (optional)</p>
       <p style="font-size:0.8em; opacity:0.75; margin:0 0 8px 0;">${solo
         ? 'Hier kannst du vor der Auslosung festlegen, welcher Spieler welchen Verein bekommt. Ohne Vorgabe bleibt alles zufällig.'
-        : 'Hier kannst du vor der Auslosung festlegen, welcher Spieler mit wem zusammen ins Team soll und/oder welchen Verein er bekommt. Den Partner kannst du auch offen lassen ("egal") und nur den Verein festlegen. Ohne Vorgabe bleibt alles zufällig.'}</p>
+        : (clubsEnabledForRun
+          ? 'Hier kannst du vor der Auslosung festlegen, welcher Spieler mit wem zusammen ins Team soll und/oder welchen Verein er bekommt. Den Partner kannst du auch offen lassen ("egal") und nur den Verein festlegen. Ohne Vorgabe bleibt alles zufällig.'
+          : 'Hier kannst du vor der Auslosung festlegen, welcher Spieler mit wem zusammen ins Team soll. Ohne Vorgabe bleibt alles zufällig.')}</p>
       ${list}
       ${availablePlayers.length >= 1 ? `
         <div style="display:flex; gap:6px; flex-wrap:wrap; margin-top:4px;">
           <select id="cheat-p1-select">${playerOptions}</select>
           ${solo ? '' : `<select id="cheat-p2-select">${partnerOptions}</select>`}
-          <select id="cheat-club-select">${clubOptions}</select>
+          ${clubsEnabledForRun ? `<select id="cheat-club-select">${clubOptions}</select>` : ''}
           <button class="btn-secondary btn-sm" onclick="addDraftCheat()">+ Hinzufügen</button>
         </div>
       ` : ''}
@@ -3443,9 +3459,10 @@ function pickRandomIndexAvoidingReserved(pool, reserved) {
 }
 // Simuliert die komplette Team-Auslosung "im Kopf" (ohne Glücksrad-Show/Animation) nach
 // exakt denselben Regeln wie die Live-Show inkl. Voreinstellungen - für quickDrawTeams().
-function simulateTeamDraw(playerNames, clubNames) {
+function simulateTeamDraw(playerNames, clubNames, clubsEnabledForRun) {
+  if (clubsEnabledForRun === undefined) clubsEnabledForRun = true;
   const remainingPlayers = [...playerNames];
-  const remainingClubs = [...clubNames];
+  const remainingClubs = clubsEnabledForRun ? [...clubNames] : [];
   const resultTeams = [];
   while (remainingPlayers.length >= 2) {
     // Spieler 1 bleibt ehrlich zufällig (identisch zur Live-Show)
@@ -3460,19 +3477,24 @@ function simulateTeamDraw(playerNames, clubNames) {
       p2Index = pickRandomIndexAvoidingReserved(remainingPlayers, reservedPlayers);
     }
     const p2 = remainingPlayers.splice(p2Index, 1)[0];
-    // Verein: erst schauen, ob eine Vorgabe für dieses Duo existiert, sonst zufällig (reserviert-bewusst)
-    const clubCheat = draftCheats.find(c => {
-      if (!c.club) return false;
-      if (c.p2) return (c.p1 === p1 && c.p2 === p2) || (c.p1 === p2 && c.p2 === p1);
-      return c.p1 === p1 || c.p1 === p2;
-    });
-    let clubIndex = clubCheat ? remainingClubs.indexOf(clubCheat.club) : -1;
-    if (clubIndex === -1) {
-      const reservedClubs = new Set();
-      getPendingDraftCheats(remainingPlayers).forEach(c => { if (c.club) reservedClubs.add(c.club); });
-      clubIndex = pickRandomIndexAvoidingReserved(remainingClubs, reservedClubs);
+    // Ohne Vereinszuordnung (siehe toggleClubsEnabled) gibt's hier nichts zu ziehen - das
+    // Team ist mit den beiden Spielern direkt fertig.
+    let club = null;
+    if (clubsEnabledForRun) {
+      // Verein: erst schauen, ob eine Vorgabe für dieses Duo existiert, sonst zufällig (reserviert-bewusst)
+      const clubCheat = draftCheats.find(c => {
+        if (!c.club) return false;
+        if (c.p2) return (c.p1 === p1 && c.p2 === p2) || (c.p1 === p2 && c.p2 === p1);
+        return c.p1 === p1 || c.p1 === p2;
+      });
+      let clubIndex = clubCheat ? remainingClubs.indexOf(clubCheat.club) : -1;
+      if (clubIndex === -1) {
+        const reservedClubs = new Set();
+        getPendingDraftCheats(remainingPlayers).forEach(c => { if (c.club) reservedClubs.add(c.club); });
+        clubIndex = pickRandomIndexAvoidingReserved(remainingClubs, reservedClubs);
+      }
+      club = remainingClubs.splice(clubIndex, 1)[0];
     }
-    const club = remainingClubs.splice(clubIndex, 1)[0];
     resultTeams.push({ id: resultTeams.length + 1, name: `Team ${resultTeams.length + 1}`, p1, p2, club });
   }
   return resultTeams;
@@ -3514,9 +3536,27 @@ function checkDrawPrerequisites() {
     if (availableClubs.length < players.length) return `Du hast zu wenige Profi-Clubs in der Liste! Mindestens ${players.length} benötigt (jeder Spieler bekommt seinen eigenen).`;
   } else {
     if (players.length < 4 || players.length % 2 !== 0) return `Du benötigst eine gerade und ausreichend hohe Anzahl an Spielern (aktuell: ${players.length}).`;
-    if (availableClubs.length < (players.length / 2)) return `Du hast zu wenige Profi-Clubs in der Liste! Mindestens ${players.length / 2} benötigt.`;
+    // Ohne Vereinszuordnung (siehe toggleClubsEnabled) braucht es gar keine Clubs - dann
+    // werden einfach nur 2er-Teams ohne Verein gebildet.
+    if (clubsEnabled && availableClubs.length < (players.length / 2)) return `Du hast zu wenige Profi-Clubs in der Liste! Mindestens ${players.length / 2} benötigt.`;
   }
   return null;
+}
+// Liefert den Schritt-Index, in dem beim aktuellen Modus ein VEREIN gezogen wird - oder null,
+// wenn in diesem Lauf gar kein Verein gezogen wird (Duo ohne Verein, siehe clubsEnabled/
+// toggleClubsEnabled). Solo hat IMMER einen Club-Schritt (sonst wäre Solo bedeutungslos).
+function getDraftClubStep(mode, clubsEnabledForRun) {
+  if (!clubsEnabledForRun) return null;
+  return mode === 'solo' ? 1 : 2;
+}
+// Liefert den Index des LETZTEN Schritts der Ziehung für ein einzelnes Team/einen einzelnen
+// Spieler - danach wird das Ergebnis finalisiert (siehe applyDrawnDraftItem/nextDraftStep).
+// Normalerweise identisch mit dem Club-Schritt, außer bei Duo OHNE Verein: da endet die
+// Ziehung schon direkt nach dem Partner (Schritt 1), weil kein Club-Schritt mehr folgt.
+function getDraftLastStep(mode, clubsEnabledForRun) {
+  const clubStep = getDraftClubStep(mode, clubsEnabledForRun);
+  if (clubStep !== null) return clubStep;
+  return mode === 'solo' ? 0 : 1;
 }
 function startInteractiveDraft() {
   if (!hasElevated()) return;
@@ -3529,14 +3569,18 @@ function startInteractiveDraft() {
     koMatches = [];
     tips = {};
     tipsEvaluated = false;
+    // Solo bedeutet immer "jeder bekommt seinen eigenen Verein" - clubsEnabled ist nur im
+    // Duo-Modus wirklich abschaltbar (siehe toggleClubsEnabled/getDraftClubStep).
+    const clubsEnabledForRun = tournamentMode === 'solo' ? true : clubsEnabled;
     draftState = {
       active: true,
       mode: tournamentMode === 'solo' ? 'solo' : 'duo', // im draftState mitgeführt, damit ALLE (auch Zuschauer) denselben Ablauf sehen
-      currentStep: 0, // Duo: 0=P1, 1=P2, 2=Club — Solo: 0=Spieler, 1=Club
+      clubsEnabled: clubsEnabledForRun,
+      currentStep: 0, // Duo mit Verein: 0=P1, 1=P2, 2=Club — Duo ohne Verein: 0=P1, 1=P2 (Ende) — Solo: 0=Spieler, 1=Club
       tempP1: null,
       tempP2: null,
       remainingPlayers: [...players.map(p => p.name)],
-      remainingClubs: [...availableClubs],
+      remainingClubs: clubsEnabledForRun ? [...availableClubs] : [],
       spinning: false,
       startTime: null,
       targetAngle: 0,
@@ -3557,10 +3601,11 @@ function quickDrawTeams() {
   if (!hasElevated()) return;
   const problem = checkDrawPrerequisites();
   if (problem) return alert(problem);
-  if (!confirm('Teams & Clubs SOFORT ohne Glücksrad-Show auslosen?')) return;
+  const willHaveClubs = tournamentMode === 'solo' || clubsEnabled;
+  if (!confirm(`Teams${willHaveClubs ? ' & Clubs' : ''} SOFORT ohne Glücksrad-Show auslosen?`)) return;
   teams = tournamentMode === 'solo'
     ? simulateSoloDraw(players.map(p => p.name), availableClubs)
-    : simulateTeamDraw(players.map(p => p.name), availableClubs);
+    : simulateTeamDraw(players.map(p => p.name), availableClubs, clubsEnabled);
   groups = [];
   groupMatches = [];
   koMatches = [];
@@ -3570,7 +3615,7 @@ function quickDrawTeams() {
   saveData();
   showTab('teams');
   renderAll();
-  alert('⚡ Teams & Clubs wurden sofort ausgelost!');
+  alert(`⚡ Teams${willHaveClubs ? ' & Clubs' : ''} wurden sofort ausgelost!`);
 }
 // Darts-Turniere brauchen kein Team-Glücksrad: es gibt keine Partner und keine Vereine,
 // jeder Spieler IST direkt sein eigenes "Team" (Datenmodell bleibt dasselbe wie im
@@ -3620,7 +3665,9 @@ function renderDraftStep() {
   const stage = document.getElementById('draft-stage');
   if (!stage) return;
   const solo = draftState.mode === 'solo';
-  const clubStep = solo ? 1 : 2;
+  const clubsEnabledForRun = draftState.clubsEnabled !== false;
+  const clubStep = getDraftClubStep(draftState.mode, clubsEnabledForRun);
+  const lastStep = getDraftLastStep(draftState.mode, clubsEnabledForRun);
   // Gag-Effekte: sobald eine SPIELER-Ziehung (nicht Verein) frisch aufgelöst ist, einmalig
   // auslösen - läuft hier bei JEDEM Client mit (nicht nur beim drehenden Admin/Ref), weil
   // renderDraftStep() bei jedem Live-Update aus draftState erneut aufgerufen wird. Der
@@ -3649,7 +3696,7 @@ function renderDraftStep() {
     const elapsed = Date.now() - draftState.startTime;
     if (elapsed >= (draftState.duration || 4000)) {
       if (draftSpinTimeoutId) { clearTimeout(draftSpinTimeoutId); draftSpinTimeoutId = null; }
-      applyDrawnDraftItem(draftState.pendingTarget, solo, clubStep);
+      applyDrawnDraftItem(draftState.pendingTarget, solo, clubStep, lastStep);
       return;
     }
   }
@@ -3657,8 +3704,8 @@ function renderDraftStep() {
   const noDuoPending = !draftState.tempP1 && !draftState.tempP2 && !draftState.lastDrawnItem;
   if (noPlayersLeft && noDuoPending) {
     stage.innerHTML = `
-      <h3 style="color:#4CAF50; margin-bottom: 10px;">🎉 Alle Teams & Clubs wurden gelost! 🎉</h3>
-      <p>${solo ? 'Jeder Spieler hat seinen Profi-Verein.' : 'Die Duos und ihre Profi-Vereine stehen fest.'}</p>
+      <h3 style="color:#4CAF50; margin-bottom: 10px;">🎉 Alle Teams${clubsEnabledForRun ? ' & Clubs' : ''} wurden gelost! 🎉</h3>
+      <p>${solo ? 'Jeder Spieler hat seinen Profi-Verein.' : (clubsEnabledForRun ? 'Die Duos und ihre Profi-Vereine stehen fest.' : 'Die 2er-Teams stehen fest.')}</p>
       ${hasElevated() ? `
         <button class="btn-primary role-btn" style="margin-top:15px;" onclick="finishDraft()">
           💾 Teams speichern & Auslosung beenden
@@ -3673,6 +3720,11 @@ function renderDraftStep() {
   if (solo) {
     if (draftState.currentStep === 0) stepText = '🎰 Lose <strong>Spieler</strong>';
     else if (draftState.currentStep === clubStep) stepText = `🎰 Lose <strong>Verein</strong> für ${draftState.tempP1}`;
+  } else if (!clubsEnabledForRun) {
+    // Ohne Vereinszuordnung gibt's nur 2 Schritte (Spieler 1 + 2) - keine "Step X von Y"-
+    // Nummerierung, die einen nicht existierenden 3. Schritt suggerieren würde.
+    if (draftState.currentStep === 0) stepText = '🎰 Lose <strong>Spieler 1</strong>';
+    else if (draftState.currentStep === 1) stepText = `🎰 Lose <strong>Spieler 2</strong> (Partner für ${draftState.tempP1})`;
   } else {
     if (draftState.currentStep === 0) stepText = '🎰 Step 1: Lose <strong>Spieler 1</strong>';
     else if (draftState.currentStep === 1) stepText = `🎰 Step 2: Lose <strong>Spieler 2</strong> (Partner für ${draftState.tempP1})`;
@@ -3763,7 +3815,7 @@ function drawWheelCanvas(angleOffset) {
   if (!canvas) return;
   const ctx = canvas.getContext('2d');
   
-  const isClubWheel = (draftState.currentStep === (draftState.mode === 'solo' ? 1 : 2));
+  const isClubWheel = (draftState.currentStep === getDraftClubStep(draftState.mode, draftState.clubsEnabled !== false));
   let items = isClubWheel ? draftState.remainingClubs : draftState.remainingPlayers;
   const numItems = items ? items.length : 0;
   
@@ -3847,23 +3899,27 @@ function drawWheelCanvas(angleOffset) {
 // Übernimmt ein gezogenes Element (Spieler oder Club) in den draftState - je nach Schritt
 // entweder als tempP1/tempP2 oder als neu abgeschlossenes Team/Duo. Gemeinsam genutzt von
 // spinWheel() (nach der Dreh-Animation) und dem Ein-Element-Sonderfall (siehe dort).
-function applyDrawnDraftItem(item, solo, clubStep) {
+function applyDrawnDraftItem(item, solo, clubStep, lastStep) {
   draftState.spinning = false;
   draftState.pendingTarget = null;
   draftState.lastDrawnItem = item;
   if (draftState.currentStep === 0) {
     draftState.tempP1 = item;
-  } else if (draftState.currentStep === clubStep) {
+  } else if (draftState.currentStep === lastStep) {
+    // Letzter Schritt dieses Teams: entweder die übliche Club-Ziehung (dann ist "item" der
+    // Club und der Partner steht schon in tempP2), oder - bei Duo OHNE Verein - direkt die
+    // Partner-Ziehung selbst (dann ist "item" der Partner und es gibt gar keinen Club).
+    const isClubDraw = draftState.currentStep === clubStep;
     if (!draftState.pairs) draftState.pairs = [];
     draftState.pairs.push({
       id: draftState.pairs.length + 1,
       name: `Team ${draftState.pairs.length + 1}`,
       p1: draftState.tempP1,
-      p2: solo ? null : draftState.tempP2,
-      club: item
+      p2: solo ? null : (isClubDraw ? draftState.tempP2 : item),
+      club: isClubDraw ? item : null
     });
   } else {
-    // Nur Duo: currentStep === 1 (Partner-Ziehung)
+    // Nur Duo mit Verein: currentStep === 1 (Partner-Ziehung, Club-Schritt folgt noch)
     draftState.tempP2 = item;
   }
   saveData();
@@ -3872,7 +3928,9 @@ function applyDrawnDraftItem(item, solo, clubStep) {
 function spinWheel() {
   if (!hasElevated() || draftState.spinning) return;
   const solo = draftState.mode === 'solo';
-  const clubStep = solo ? 1 : 2;
+  const clubsEnabledForRun = draftState.clubsEnabled !== false;
+  const clubStep = getDraftClubStep(draftState.mode, clubsEnabledForRun);
+  const lastStep = getDraftLastStep(draftState.mode, clubsEnabledForRun);
   let currentPool = (draftState.currentStep === clubStep) ? draftState.remainingClubs : draftState.remainingPlayers;
   if (!currentPool || currentPool.length === 0) {
     return alert("Keine Elemente mehr zum Auslosen im aktuellen Pool!");
@@ -3882,7 +3940,7 @@ function spinWheel() {
   // hängengeblieben. Deshalb direkt automatisch übernehmen, ganz ohne Dreh-Animation.
   if (currentPool.length === 1) {
     draftState.targetAngle = 0;
-    applyDrawnDraftItem(currentPool[0], solo, clubStep);
+    applyDrawnDraftItem(currentPool[0], solo, clubStep, lastStep);
     return;
   }
   // Voreinstellungen prüfen: der erste Spieler bleibt IMMER ehrlich zufällig (schließlich muss
@@ -3953,7 +4011,7 @@ function spinWheel() {
   draftSpinTimeoutId = setTimeout(() => {
     draftSpinTimeoutId = null;
     if (hasElevated() && draftState.spinning) {
-      applyDrawnDraftItem(targetItem, solo, clubStep);
+      applyDrawnDraftItem(targetItem, solo, clubStep, lastStep);
     }
   }, 4100);
 }
@@ -3964,19 +4022,30 @@ function skipWheelSpin() {
   if (!hasElevated() || !draftState.spinning || draftState.pendingTarget == null) return;
   if (draftSpinTimeoutId) { clearTimeout(draftSpinTimeoutId); draftSpinTimeoutId = null; }
   const solo = draftState.mode === 'solo';
-  const clubStep = solo ? 1 : 2;
-  applyDrawnDraftItem(draftState.pendingTarget, solo, clubStep);
+  const clubsEnabledForRun = draftState.clubsEnabled !== false;
+  const clubStep = getDraftClubStep(draftState.mode, clubsEnabledForRun);
+  const lastStep = getDraftLastStep(draftState.mode, clubsEnabledForRun);
+  applyDrawnDraftItem(draftState.pendingTarget, solo, clubStep, lastStep);
 }
 
 // Übernimmt das zuletzt gezogene Element (Spieler/Club) und schaltet zum nächsten Auslosungs-Schritt
 function nextDraftStep() {
   if (!hasElevated()) return;
-  const solo = draftState.mode === 'solo';
-  const clubStep = solo ? 1 : 2;
+  const clubsEnabledForRun = draftState.clubsEnabled !== false;
+  const clubStep = getDraftClubStep(draftState.mode, clubsEnabledForRun);
+  const lastStep = getDraftLastStep(draftState.mode, clubsEnabledForRun);
   if (draftState.lastDrawnItem) {
     if (draftState.currentStep === clubStep) {
       const idx = draftState.remainingClubs.indexOf(draftState.lastDrawnItem);
       if (idx !== -1) draftState.remainingClubs.splice(idx, 1);
+      draftState.tempP1 = null;
+      draftState.tempP2 = null;
+      draftState.currentStep = 0;
+    } else if (draftState.currentStep === lastStep) {
+      // Duo OHNE Verein: der letzte Schritt war die Partner-Ziehung selbst (kein Club-Schritt
+      // danach) - Team ist damit fertig, genau wie oben beim Club-Schritt.
+      const idx = draftState.remainingPlayers.indexOf(draftState.lastDrawnItem);
+      if (idx !== -1) draftState.remainingPlayers.splice(idx, 1);
       draftState.tempP1 = null;
       draftState.tempP2 = null;
       draftState.currentStep = 0;
@@ -4166,6 +4235,18 @@ function toggleTournamentMode() {
   if (!hasElevated()) return;
   if (teams.length > 0) return alert('Der Modus kann nach der Auslosung nicht mehr geändert werden!');
   tournamentMode = tournamentMode === 'solo' ? 'duo' : 'solo';
+  saveData();
+  renderAll();
+}
+// Wechselt im Duo-Modus zwischen normalen 2er-Teams MIT gemeinsamem Verein (Standard) und
+// 2er-Teams ganz OHNE Vereinszuordnung - z.B. um einfach nur Leute in 2er-Grüppchen auszulosen
+// (Zimmer, Fahrgemeinschaften usw.), ohne dass dabei ein Fußballverein mit draufklebt. Nur
+// im Duo-Modus relevant (Solo bedeutet ja gerade "jeder bekommt seinen eigenen Verein" - ganz
+// ohne Verein wäre das schon der bestehende Darts-Modus) und nur vor der Auslosung änderbar.
+function toggleClubsEnabled() {
+  if (!hasElevated()) return;
+  if (teams.length > 0) return alert('Das kann nach der Auslosung nicht mehr geändert werden!');
+  clubsEnabled = !clubsEnabled;
   saveData();
   renderAll();
 }
@@ -6186,10 +6267,11 @@ function setDartsCheckoutRule(v) {
 function renderTeamStepPanel() {
   const el = document.getElementById('team-step-container');
   if (!el) return;
+  const drawLabel = (tournamentMode !== 'solo' && !clubsEnabled) ? 'Teams' : 'Teams & Clubs';
   el.innerHTML = tournamentSport === 'darts'
     ? `<button class="btn-primary" style="background-color:#ffc800; color:#000;" onclick="createDartsTeamsFromPlayers()">🎯 1. Teilnehmer übernehmen (kein Verein nötig)</button>`
     : `
-      <button class="btn-primary" style="background-color:#ffc800; color:#000;" onclick="startInteractiveDraft()">🎰 1. Teams & Clubs per Glücksrad auslosen</button>
+      <button class="btn-primary" style="background-color:#ffc800; color:#000;" onclick="startInteractiveDraft()">🎰 1. ${drawLabel} per Glücksrad auslosen</button>
       <button class="btn-secondary" onclick="quickDrawTeams()">⚡ 1b. Sofort auslosen (ohne Show/Animation)</button>
     `;
 }
@@ -6254,7 +6336,12 @@ function renderAdminPanel() {
       <div style="display:flex; align-items:center; justify-content:space-between; background:rgba(0,0,0,0.2); padding:8px 12px; border-radius:8px; margin-bottom:8px; flex-wrap:wrap; gap:8px;">
         <span style="font-size:0.9em;">${tournamentMode === 'solo' ? '👤 Einzel-Modus (jeder Spieler bekommt seinen eigenen Verein)' : '👬 Duo-Modus (2er-Teams teilen sich einen Verein)'}</span>
         <button class="btn-secondary btn-sm" onclick="toggleTournamentMode()">Umschalten</button>
-      </div>` : ''}
+      </div>
+      ${tournamentMode !== 'solo' && tournamentSport === 'fifa' ? `
+      <div style="display:flex; align-items:center; justify-content:space-between; background:rgba(0,0,0,0.2); padding:8px 12px; border-radius:8px; margin-bottom:8px; flex-wrap:wrap; gap:8px;">
+        <span style="font-size:0.9em;">${clubsEnabled ? '⚽ 2er-Teams MIT Verein' : '👬 2er-Teams OHNE Verein (z.B. zum Zimmer/Gruppen auslosen)'}</span>
+        <button class="btn-secondary btn-sm" onclick="toggleClubsEnabled()">Umschalten</button>
+      </div>` : ''}` : ''}
       ${plannedPlayerCount ? `<p style="font-size:0.85em; opacity:0.75; margin:0 0 8px 0;">🎯 Geplant: ${plannedPlayerCount} Spieler (aktuell ${players.length})</p>` : ''}
       <div style="display:flex; align-items:center; justify-content:space-between; background:rgba(0,0,0,0.2); padding:8px 12px; border-radius:8px; margin-bottom:8px; flex-wrap:wrap; gap:8px;">
         <span style="font-size:0.9em;">${registrationLocked ? '🔒 Registrierung gesperrt' : '🔓 Registrierung offen'}</span>
