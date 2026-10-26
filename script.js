@@ -4205,7 +4205,13 @@ function requestPartner(targetName) {
   if (targetName === myPlayerName) return;
   const alreadyTeamed = new Set();
   teams.forEach(t => { alreadyTeamed.add(t.p1); if (t.p2) alreadyTeamed.add(t.p2); });
-  if (alreadyTeamed.has(myPlayerName) || alreadyTeamed.has(targetName)) return;
+  if (alreadyTeamed.has(myPlayerName) || alreadyTeamed.has(targetName)) {
+    // Nicht einfach stillschweigend abbrechen: wurde die Zielperson gerade (durch jemand
+    // anderen) vergeben, während man selbst noch auswählt, soll man das auch mitbekommen,
+    // statt zu denken, der Klick auf "Wählen" hätte gar nichts gemacht.
+    renderAll();
+    return alert('Diese Wahl ist nicht mehr möglich - bitte wähle erneut aus der aktuellen Liste.');
+  }
   if (!players.some(p => p.name === targetName)) return;
   selfPickState.requests[myPlayerName] = targetName;
   if (selfPickState.requests[targetName] === myPlayerName) {
@@ -6161,10 +6167,20 @@ function renderSelfPickSectionHtml() {
   let myOwnSectionHtml = '';
   if (iAmUnpaired) {
     const myRequest = selfPickState.requests[myPlayerName];
+    // renderTeams() baut dieses Dropdown bei JEDEM renderAll() komplett neu - auch wenn nur ein
+    // ANDERER Spieler zwischenzeitlich irgendeine Aktion macht (Firebase-Snapshot). Ohne das hier
+    // würde eine noch nicht bestätigte Auswahl (vor Klick auf "Wählen") durch einen fremden
+    // Re-Render auf die erste Option zurückgesetzt - man wählt z.B. "Frank", jemand anderes wählt
+    // zwischendurch irgendwen, und der eigene Klick auf "Wählen" trifft plötzlich den FALSCHEN
+    // Namen, ohne dass man es merkt. Deshalb wird eine noch offene (unbestätigte) DOM-Auswahl
+    // über den Rebuild hinweg beibehalten, solange noch kein eigener Wunsch gespeichert ist.
+    const existingSelect = document.getElementById('self-pick-partner-select');
+    const pendingUiValue = (!myRequest && existingSelect) ? existingSelect.value : null;
+    const selectedValue = myRequest || pendingUiValue;
     // Wer hat MICH gewählt? (eingehende Wünsche - "💌" in der Auswahlliste markiert)
     const incoming = Object.keys(selfPickState.requests).filter(k => k !== myPlayerName && selfPickState.requests[k] === myPlayerName);
     const candidateOptions = unpaired.filter(p => p.name !== myPlayerName)
-      .map(p => `<option value="${escapeHtml(p.name)}" ${myRequest === p.name ? 'selected' : ''}>${escapeHtml(p.name)}${incoming.includes(p.name) ? ' 💌' : ''}</option>`).join('');
+      .map(p => `<option value="${escapeHtml(p.name)}" ${selectedValue === p.name ? 'selected' : ''}>${escapeHtml(p.name)}${incoming.includes(p.name) ? ' 💌' : ''}</option>`).join('');
     myOwnSectionHtml = `
       <div style="background: var(--fal-blue-primary); padding:10px 12px; border-radius:8px; margin-bottom:10px;">
         <p style="font-size:0.9em; margin:0 0 6px 0;"><strong>Dein Partnerwunsch:</strong></p>
