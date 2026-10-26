@@ -103,6 +103,9 @@ window.startSelfPickTeams = startSelfPickTeams;
 window.cancelSelfPickTeams = cancelSelfPickTeams;
 window.requestPartner = requestPartner;
 window.cancelPartnerRequest = cancelPartnerRequest;
+window.addGroupDraftCheat = addGroupDraftCheat;
+window.removeGroupDraftCheat = removeGroupDraftCheat;
+window.setNumGroupsPreview = setNumGroupsPreview;
 window.startGroupDraft = startGroupDraft;
 window.quickDrawGroups = quickDrawGroups;
 window.spinGroupWheel = spinGroupWheel;
@@ -336,6 +339,11 @@ let matchIntervalMinutes = 20; // Zeitabstand zwischen zwei Spiel-Slots (Hauptpl
 // zwei Spieler garantiert ins selbe Team kommen (und optional welchen Club sie
 // bekommen) - der Rest bleibt komplett echt zufällig. Siehe spinWheel().
 let draftCheats = [];
+// Admin-"Cheat"-Vorauswahl fürs GRUPPEN-Glücksrad (nur God, wie draftCheats): [{ item, letter }]
+// legt fest, dass ein bestimmtes Team (oder im "Nur Namen"-Modus ein Spieler) garantiert in
+// eine bestimmte Gruppe kommt - der Rest bleibt zufällig. Siehe addGroupDraftCheat/spinGroupWheel/
+// quickDrawGroups.
+let groupDraftCheats = [];
 let groups = [];
 let groupMatches = [];
 let koMatches = [];
@@ -975,8 +983,6 @@ function enterAsSpectator() {
   // Nächstes am Rad dreht.
   renderAll();
   handleLiveDraftUI();
-  const adminBtn = document.getElementById('btn-admin');
-  if (adminBtn) adminBtn.style.display = hasElevated() ? 'inline-block' : 'none';
   showTab('home');
 }
 // Klappt den Detailbereich im Header (Angemeldet als / Passwort vorschlagen / Wechseln-Buttons)
@@ -997,6 +1003,13 @@ function renderUserBadge() {
   // ihr eigenes Aktionsraster im Header, da wirkt ein zusätzlicher TV-Knopf nur überladen.
   const tvBtn = document.getElementById('header-tv-mode-btn');
   if (tvBtn) tvBtn.style.display = !getPlayerObj(myPlayerName) ? 'flex' : 'none';
+  // Admin-Tab nur für Admin/Ref sichtbar - bewusst bei JEDEM renderAll() neu geprüft (nicht
+  // nur einmal beim Betreten in handleTournamentEntry): sonst könnte der Button fälschlich
+  // dauerhaft verschwunden bleiben, falls hasElevated() beim allerersten Rendern (z.B. durch
+  // eine kurze Race Condition, bevor players/myPlayerName vollständig geladen sind) einmal
+  // zu früh "false" auswertet - der gemeldete Bug "Admin-Button fehlt einfach".
+  const adminBtn = document.getElementById('btn-admin');
+  if (adminBtn) adminBtn.style.display = hasElevated() ? 'inline-block' : 'none';
   // Der Header zeigt jetzt (seit es mehrere Turniere gleichzeitig gibt) NUR NOCH den echten
   // Turniernamen groß oben - "FAL FIFA/Darts Turnier" stand vor der Mehrturnier-Funktion für
   // DAS eine Turnier und wirkte seitdem wie unnötige Redundanz. Ein kleines Sport-Emoji davor
@@ -1191,6 +1204,7 @@ function resetLocalStateToDefaults() {
   koByeTeamIds = [];
   matchIntervalMinutes = 20;
   draftCheats = [];
+  groupDraftCheats = [];
   groups = [];
   groupMatches = [];
   koMatches = [];
@@ -1250,6 +1264,7 @@ function attachTournamentListener() {
     koByeTeamIds = data.koByeTeamIds || [];
     matchIntervalMinutes = data.matchIntervalMinutes || 20;
     draftCheats = data.draftCheats || [];
+    groupDraftCheats = data.groupDraftCheats || [];
     groups = data.groups || [];
     groupMatches = data.groupMatches || [];
     koMatches = data.koMatches || [];
@@ -1328,6 +1343,7 @@ function saveData() {
     koByeTeamIds,
     matchIntervalMinutes,
     draftCheats,
+    groupDraftCheats,
     groups,
     groupMatches,
     koMatches,
@@ -4541,6 +4557,82 @@ function validateGroupCount(n, poolSize, itemLabel, minPerGroup) {
   if (poolSize < n * minPerGroup) return `Für ${n} Gruppen benötigst du mindestens ${n * minPerGroup} ${itemLabel} (aktuell: ${poolSize}), damit jede Gruppe mindestens ${minPerGroup} bekommt.`;
   return null;
 }
+// ---- Gruppen-Auslosungs-Vorgaben (nur God, wie draftCheats bei der Team-Auslosung) ----
+// Legt fest, dass ein bestimmtes Team (oder im "Nur Namen"-Modus ein Spieler) garantiert in
+// eine bestimmte Gruppe kommt - der Rest bleibt komplett zufällig. Wirkt sowohl bei der
+// Live-Glücksrad-Show (siehe spinGroupWheel) als auch bei der Sofort-Auslosung (siehe
+// quickDrawGroups).
+function addGroupDraftCheat() {
+  if (!isGod()) return;
+  const itemSel = document.getElementById('group-cheat-item-select');
+  const letterSel = document.getElementById('group-cheat-letter-select');
+  const item = itemSel ? itemSel.value : '';
+  const letter = letterSel ? letterSel.value : '';
+  if (!item || !letter) return alert('Bitte Team/Spieler UND Gruppe auswählen!');
+  if (groupDraftCheats.some(c => c.item === item)) return alert(`Für "${item}" gibt es schon eine Vorgabe!`);
+  groupDraftCheats.push({ item, letter });
+  saveData();
+  renderAll();
+}
+function removeGroupDraftCheat(index) {
+  if (!isGod()) return;
+  groupDraftCheats.splice(index, 1);
+  saveData();
+  renderAll();
+}
+// Legt die Gruppenanzahl schon VOR dem eigentlichen Auslosungs-Start fest (normalerweise
+// fragt das erst der prompt() beim Draw selbst) - praktisch, um die Gruppen-Buchstaben für
+// die Vorgaben oben schon vorab in der richtigen Anzahl angezeigt zu bekommen.
+function setNumGroupsPreview(nRaw) {
+  if (!isGod()) return;
+  const n = parseInt(nRaw, 10);
+  if (isNaN(n) || n < 2 || n > 26) return alert('Bitte eine Zahl zwischen 2 und 26 eingeben!');
+  numGroups = n;
+  saveData();
+  renderAll();
+}
+// Baut die Gruppen-Auslosungs-Vorgaben-UI im Admin-Panel auf (Formular + Liste) - analog zu
+// renderDraftCheatPanel bei der Team-Auslosung. Nur sichtbar, solange noch keine Gruppen
+// existieren UND es überhaupt einen Pool gibt (Teams oder - für "Nur Namen" - Spieler).
+function renderGroupDraftCheatPanel() {
+  const container = document.getElementById('group-draft-cheat-container');
+  if (!container) return;
+  if (!isGod() || groups.length > 0 || (teams.length < 4 && players.length < 2)) { container.innerHTML = ''; return; }
+  const previewCount = Math.min(Math.max(numGroups || 3, 2), 26);
+  const groupLetters = generateGroupLetters(previewCount);
+  const usedItems = new Set(groupDraftCheats.map(c => c.item));
+  const teamOptions = teams.filter(t => !usedItems.has(t.name)).map(t => `<option value="${escapeHtml(t.name)}">${escapeHtml(t.name)}</option>`).join('');
+  const playerOptions = players.filter(p => !usedItems.has(p.name)).map(p => `<option value="${escapeHtml(p.name)}">${escapeHtml(p.name)}</option>`).join('');
+  const letterOptions = groupLetters.map(l => `<option value="${escapeHtml(l)}">${escapeHtml(l)}</option>`).join('');
+  const list = groupDraftCheats.length ? groupDraftCheats.map((c, i) => `
+    <div style="display:flex; justify-content:space-between; align-items:center; background:rgba(0,0,0,0.25); padding:6px 10px; border-radius:6px; margin-bottom:4px; font-size:0.85em;">
+      <span><strong>${escapeHtml(c.item)}</strong> → ${escapeHtml(c.letter)}</span>
+      <span style="cursor:pointer; color:#ff4d4d; font-weight:bold;" onclick="removeGroupDraftCheat(${i})">×</span>
+    </div>
+  `).join('') : '<p style="font-size:0.85em; opacity:0.7; margin:0 0 8px 0;">Noch keine Vorgaben - alles bleibt komplett zufällig.</p>';
+  container.innerHTML = `
+    <div style="margin-top:14px; padding-top:12px; border-top:1px solid rgba(255,255,255,0.1);">
+      <p style="font-size:0.9em; font-weight:bold; margin:0 0 4px 0;">⚙️ Gruppen-Voreinstellungen (optional)</p>
+      <p style="font-size:0.8em; opacity:0.75; margin:0 0 8px 0;">Hier kannst du vor der Auslosung festlegen, welches Team (oder - im "Nur Namen"-Modus - welcher Spieler) garantiert in welche Gruppe kommt. Ohne Vorgabe bleibt alles zufällig.</p>
+      <div style="display:flex; align-items:center; gap:6px; margin-bottom:10px; flex-wrap:wrap;">
+        <label style="font-size:0.8em; opacity:0.8;">Anzahl Gruppen (nur für die Buchstaben hier unten):</label>
+        <input type="number" id="group-cheat-num-groups-input" min="2" max="26" value="${previewCount}" style="width:55px;">
+        <button class="btn-secondary btn-sm" onclick="setNumGroupsPreview(document.getElementById('group-cheat-num-groups-input').value)">Übernehmen</button>
+      </div>
+      ${list}
+      ${(teamOptions || playerOptions) ? `
+        <div style="display:flex; gap:6px; flex-wrap:wrap; margin-top:4px;">
+          <select id="group-cheat-item-select">
+            ${teamOptions ? `<optgroup label="Teams">${teamOptions}</optgroup>` : ''}
+            ${playerOptions ? `<optgroup label="Spieler (ohne Verein)">${playerOptions}</optgroup>` : ''}
+          </select>
+          <select id="group-cheat-letter-select">${letterOptions}</select>
+          <button class="btn-secondary btn-sm" onclick="addGroupDraftCheat()">+ Hinzufügen</button>
+        </div>
+      ` : ''}
+    </div>
+  `;
+}
 // Teilt alle Paarungen einer Gruppe in "Runden" ein (Kreis-Methode/Round-Robin), statt sie
 // naiv team-für-team durchzugehen. Naiv würde Team 1 erst gegen alle anderen spielen, bevor
 // der Rest überhaupt anfängt (z.B. bei A,B,C,D: A-B, A-C, A-D, B-C, B-D, C-D - A hat dann
@@ -4619,11 +4711,27 @@ function quickDrawGroups() {
   if (!confirm(`Möchtest du die Teams jetzt zufällig auf ${n} Gruppen verteilen und den Spielplan erstellen?`)) return;
   numGroups = n;
   const groupLetters = generateGroupLetters(n);
-  const shuffledTeams = [...teams].sort(() => Math.random() - 0.5);
   groups = groupLetters.map(letter => ({ letter, teams: [] }));
-  shuffledTeams.forEach((team, index) => {
-    groups[index % groups.length].teams.push(team.id);
+  // Vorgaben zuerst einlösen (siehe groupDraftCheats/renderGroupDraftCheatPanel) - nur die,
+  // deren Gruppe bei DIESER Auslosung tatsächlich existiert.
+  const usedTeamIds = new Set();
+  groupDraftCheats.forEach(cheat => {
+    const team = teams.find(t => t.name === cheat.item);
+    const group = groups.find(g => g.letter === cheat.letter);
+    if (team && group && !usedTeamIds.has(team.id)) {
+      group.teams.push(team.id);
+      usedTeamIds.add(team.id);
+    }
   });
+  // Restliche Teams zufällig verteilen - immer in die GERADE KLEINSTE Gruppe, damit am Ende
+  // alle Gruppen ungefähr gleich groß sind, auch wenn Vorgaben manche Gruppen schon vorab
+  // größer gemacht haben.
+  const shuffledTeams = teams.filter(t => !usedTeamIds.has(t.id)).sort(() => Math.random() - 0.5);
+  shuffledTeams.forEach((team) => {
+    const smallestGroup = groups.reduce((min, g) => (g.teams.length < min.teams.length ? g : min), groups[0]);
+    smallestGroup.teams.push(team.id);
+  });
+  groupDraftCheats = []; // erledigt - für die nächste Auslosung muss neu vorausgewählt werden
   buildGroupScheduleAndSave();
   showTab('matches');
   alert(`🎉 ${n} Gruppen & der komplette Spielplan wurden erfolgreich erstellt!`);
@@ -4683,7 +4791,21 @@ function spinGroupWheel() {
     applyGroupDraw(pool[0]);
     return;
   }
-  const targetIndex = Math.floor(Math.random() * pool.length);
+  // Vorgabe prüfen: soll für die GERADE ANSTEHENDE Zielgruppe ein bestimmtes Team/ein
+  // bestimmter Spieler feststehen (siehe groupDraftCheats/addGroupDraftCheat)? Nur falls das
+  // noch im Pool ist - sonst ganz normal zufällig weiterziehen, wie beim Team-Rad.
+  let targetIndex = null;
+  const currentLetter = groupDraftState.groupLetters[groupDraftState.targetGroupIndex];
+  const cheat = groupDraftCheats.find(c => c.letter === currentLetter && pool.includes(c.item));
+  if (cheat) targetIndex = pool.indexOf(cheat.item);
+  if (targetIndex === null) {
+    // Zufällig, aber nicht blind: Items mit einer Vorgabe für eine ANDERE, noch offene
+    // Gruppe werden nach Möglichkeit übersprungen (gleiches Prinzip wie bei den normalen
+    // Auslosungs-Voreinstellungen, siehe pickRandomIndexAvoidingReserved).
+    const reserved = new Set();
+    groupDraftCheats.forEach(c => { if (pool.includes(c.item)) reserved.add(c.item); });
+    targetIndex = reserved.size > 0 ? pickRandomIndexAvoidingReserved(pool, reserved) : Math.floor(Math.random() * pool.length);
+  }
   const targetItem = pool[targetIndex];
   const numItems = pool.length;
   const sliceAngle = (2 * Math.PI) / numItems;
@@ -4960,6 +5082,7 @@ function finishGroupDraft() {
     // beteiligt - members ist eine einfache Liste von Namen statt Team-IDs, siehe renderGroups().
     groups = groupDraftState.groupLetters.map(letter => ({ letter, members: groupDraftState.assignments[letter] || [] }));
     groupDraftState.active = false;
+    groupDraftCheats = []; // erledigt - für die nächste Auslosung muss neu vorausgewählt werden
     saveData();
     renderAll();
     showTab('groups');
@@ -4968,6 +5091,7 @@ function finishGroupDraft() {
   }
   groups = groupDraftState.groupLetters.map(letter => ({ letter, teams: groupDraftState.assignments[letter] || [] }));
   groupDraftState.active = false;
+  groupDraftCheats = []; // erledigt - für die nächste Auslosung muss neu vorausgewählt werden
   buildGroupScheduleAndSave();
   showTab('matches');
   alert('🎉 Gruppen wurden gespeichert & Spielplan erstellt!');
@@ -6509,6 +6633,7 @@ function renderAdminPanel() {
   renderDartsSettingsPanel();
   renderTeamStepPanel();
   renderDraftCheatPanel();
+  renderGroupDraftCheatPanel();
   renderKOControlPanel();
   // Zeitabstand-Eingabefeld mit dem aktuellen Wert synchron halten - aber nicht, während
   // der Admin gerade selbst darin tippt (sonst würde ein Live-Update seine Eingabe überschreiben)
