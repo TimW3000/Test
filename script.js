@@ -302,13 +302,17 @@ let teams = [];
 // bekommt seinen EIGENEN Club, kein Partner) - wird beim Turniererstellen festgelegt (siehe
 // parseTournamentFormatText/openFormatWizard), vor der Auslosung im Admin-Panel noch änderbar.
 let tournamentMode = 'duo';
-// Nur relevant im Duo-Modus (FIFA): true = normale 2er-Teams MIT gemeinsamem Verein (Standard),
-// false = 2er-Teams ganz OHNE Vereinszuordnung (z.B. um einfach nur Leute in 2er-Grüppchen
-// auszulosen, etwa Zimmer-/Fahrgemeinschafts-Auslosung - siehe toggleClubsEnabled).
+// Nur im Duo-Modus bei FIFA überhaupt relevant (siehe effectiveClubsEnabled): true = normale
+// 2er-Teams MIT gemeinsamem Verein (Standard), false = 2er-Teams ganz OHNE Vereinszuordnung
+// (z.B. um einfach nur Leute in 2er-Grüppchen auszulosen, etwa Zimmer-/Fahrgemeinschafts-
+// Auslosung - siehe toggleClubsEnabled). Bei Darts/Bierpong oder FIFA-Solo wird diese
+// Einstellung ignoriert (siehe effectiveClubsEnabled) - da gilt ohnehin immer fest true/false.
 let clubsEnabled = true;
-// 'fifa' (Standard, mit Vereinen/Clubs) oder 'darts' (kein Verein, jeder Spieler ist direkt
-// sein eigenes "Team" - siehe createDartsTeamsFromPlayers). Läuft technisch als tournamentMode
-// 'solo' weiter (1 Spieler pro Team, kein Partner), nur eben zusätzlich OHNE Verein.
+// 'fifa' (Standard, mit Vereinen/Clubs), 'darts' (kein Verein, jeder Spieler ist direkt sein
+// eigenes "Team" - siehe createDartsTeamsFromPlayers, läuft technisch als tournamentMode
+// 'solo' weiter) oder 'bierpong' (wie FIFA strukturell - 1er/2er-Teams, Gruppen+KO-Baum,
+// einfache Ergebnis-Eintragung ohne Live-Scoring-Overlay - aber ebenfalls OHNE Verein, siehe
+// effectiveClubsEnabled). Reihenfolge beim Durchschalten siehe TOURNAMENT_SPORTS.
 let tournamentSport = 'fifa';
 // Turnier-weite Darts-Regeln (nur relevant bei tournamentSport === 'darts'), im Admin-Panel
 // änderbar (siehe renderDartsSettingsPanel) - gelten für alle NEU gestarteten Matches; ein
@@ -999,7 +1003,7 @@ function renderUserBadge() {
   // gibt weiterhin auf einen Blick Kontext, ohne Platz für generische Marken-Textwiederholung
   // zu verschwenden.
   const tournamentName = (currentTournamentId && tournamentsList[currentTournamentId]) ? tournamentsList[currentTournamentId].name : '';
-  const sportEmoji = tournamentSport === 'darts' ? '🎯' : '⚽';
+  const sportEmoji = tournamentSport === 'darts' ? '🎯' : (tournamentSport === 'bierpong' ? '🍺' : '⚽');
   const titleEl = document.getElementById('app-title');
   if (titleEl) titleEl.textContent = tournamentName ? `${sportEmoji} ${tournamentName}` : 'Tims FAL Turniere';
   document.title = tournamentName || 'Tims FAL Turniere';
@@ -3429,11 +3433,11 @@ function removeDraftCheat(index) {
 function renderDraftCheatPanel() {
   const container = document.getElementById('draft-cheat-container');
   if (!container) return;
-  if (!isGod() || teams.length > 0 || tournamentSport === 'darts') { container.innerHTML = ''; return; }
   const solo = tournamentMode === 'solo';
-  // Solo braucht immer einen Verein (das IST der Sinn von Solo) - clubsEnabled ist nur im
-  // Duo-Modus wirklich abschaltbar (siehe toggleClubsEnabled).
-  const clubsEnabledForRun = solo ? true : clubsEnabled;
+  const clubsEnabledForRun = effectiveClubsEnabled();
+  // Ohne Partner-Begriff (Solo) UND ohne Verein (Darts/Bierpong) gibt's schlicht nichts
+  // vorab festzulegen - die ganze Box ist dann sinnlos und bleibt versteckt.
+  if (!isGod() || teams.length > 0 || tournamentSport === 'darts' || (solo && !clubsEnabledForRun)) { container.innerHTML = ''; return; }
   const usedNames = new Set();
   draftCheats.forEach(c => { usedNames.add(c.p1); if (c.p2) usedNames.add(c.p2); });
   const availablePlayers = players.filter(p => !usedNames.has(p.name));
@@ -3533,22 +3537,27 @@ function simulateTeamDraw(playerNames, clubNames, clubsEnabledForRun) {
 // Simuliert die Auslosung im EINZEL-Modus: jeder Spieler bekommt seinen eigenen Verein,
 // kein Partner. Respektiert Club-Vorgaben (p2 spielt dabei keine Rolle) genauso
 // reserviert-bewusst wie simulateTeamDraw() - siehe getPendingDraftCheats.
-function simulateSoloDraw(playerNames, clubNames) {
+function simulateSoloDraw(playerNames, clubNames, clubsEnabledForRun) {
+  if (clubsEnabledForRun === undefined) clubsEnabledForRun = true;
   const remainingPlayers = [...playerNames].sort(() => Math.random() - 0.5);
-  const remainingClubs = [...clubNames];
+  const remainingClubs = clubsEnabledForRun ? [...clubNames] : [];
   const resultTeams = [];
   while (remainingPlayers.length > 0) {
     const p1 = remainingPlayers.shift();
-    // Verein: erst schauen, ob eine Vorgabe für diesen Spieler existiert, sonst zufällig
-    // (reserviert-bewusst - schützt Vereine, die für noch ausstehende Vorgaben gebraucht werden)
-    const clubCheat = draftCheats.find(c => c.p1 === p1 && c.club);
-    let clubIndex = clubCheat ? remainingClubs.indexOf(clubCheat.club) : -1;
-    if (clubIndex === -1) {
-      const reservedClubs = new Set();
-      getPendingDraftCheats(remainingPlayers).forEach(c => { if (c.club) reservedClubs.add(c.club); });
-      clubIndex = pickRandomIndexAvoidingReserved(remainingClubs, reservedClubs);
+    // Ohne Vereine (Darts/Bierpong) gibt's hier nichts zu ziehen - der Spieler ist direkt fertig.
+    let club = null;
+    if (clubsEnabledForRun) {
+      // Verein: erst schauen, ob eine Vorgabe für diesen Spieler existiert, sonst zufällig
+      // (reserviert-bewusst - schützt Vereine, die für noch ausstehende Vorgaben gebraucht werden)
+      const clubCheat = draftCheats.find(c => c.p1 === p1 && c.club);
+      let clubIndex = clubCheat ? remainingClubs.indexOf(clubCheat.club) : -1;
+      if (clubIndex === -1) {
+        const reservedClubs = new Set();
+        getPendingDraftCheats(remainingPlayers).forEach(c => { if (c.club) reservedClubs.add(c.club); });
+        clubIndex = pickRandomIndexAvoidingReserved(remainingClubs, reservedClubs);
+      }
+      club = remainingClubs.splice(clubIndex, 1)[0];
     }
-    const club = remainingClubs.splice(clubIndex, 1)[0];
     resultTeams.push({ id: resultTeams.length + 1, name: `Team ${resultTeams.length + 1}`, p1, p2: null, club });
   }
   return resultTeams;
@@ -3558,18 +3567,27 @@ function simulateSoloDraw(playerNames, clubNames) {
 //    Läuft bei allen Zuschauern synchron mit, weil jeder Zwischenschritt per
 //    saveData() in Firebase landet (siehe draftState in Abschnitt 2).
 // ============================================================================
+// Liefert, ob in der aktuellen Konfiguration überhaupt ein Verein zugewiesen wird. Nur FIFA
+// kennt das Konzept "Verein" - im Solo-Modus gibt's dort IMMER einen (das ist ja der Sinn von
+// Solo), im Duo-Modus ist es die abschaltbare Einstellung "clubsEnabled" (siehe
+// toggleClubsEnabled). Darts und Bierpong kennen GAR KEINE Vereine, egal welcher Modus.
+function effectiveClubsEnabled() {
+  if (tournamentSport !== 'fifa') return false;
+  return tournamentMode === 'solo' ? true : clubsEnabled;
+}
 // Prüft vor der Auslosung, ob genug Spieler/Vereine für den aktuellen Turniermodus vorhanden
 // sind. Gibt bei Problemen eine passende Fehlermeldung zurück, sonst null.
 function checkDrawPrerequisites() {
   const solo = tournamentMode === 'solo';
+  const clubsEnabledForRun = effectiveClubsEnabled();
   if (solo) {
     if (players.length < 2) return `Du benötigst mindestens 2 Spieler (aktuell: ${players.length}).`;
-    if (availableClubs.length < players.length) return `Du hast zu wenige Profi-Clubs in der Liste! Mindestens ${players.length} benötigt (jeder Spieler bekommt seinen eigenen).`;
+    if (clubsEnabledForRun && availableClubs.length < players.length) return `Du hast zu wenige Profi-Clubs in der Liste! Mindestens ${players.length} benötigt (jeder Spieler bekommt seinen eigenen).`;
   } else {
     if (players.length < 4 || players.length % 2 !== 0) return `Du benötigst eine gerade und ausreichend hohe Anzahl an Spielern (aktuell: ${players.length}).`;
-    // Ohne Vereinszuordnung (siehe toggleClubsEnabled) braucht es gar keine Clubs - dann
-    // werden einfach nur 2er-Teams ohne Verein gebildet.
-    if (clubsEnabled && availableClubs.length < (players.length / 2)) return `Du hast zu wenige Profi-Clubs in der Liste! Mindestens ${players.length / 2} benötigt.`;
+    // Ohne Vereinszuordnung (siehe toggleClubsEnabled, oder generell bei Darts/Bierpong) braucht
+    // es gar keine Clubs - dann werden einfach nur 2er-Teams ohne Verein gebildet.
+    if (clubsEnabledForRun && availableClubs.length < (players.length / 2)) return `Du hast zu wenige Profi-Clubs in der Liste! Mindestens ${players.length / 2} benötigt.`;
   }
   return null;
 }
@@ -3600,14 +3618,12 @@ function startInteractiveDraft() {
     koMatches = [];
     tips = {};
     tipsEvaluated = false;
-    // Solo bedeutet immer "jeder bekommt seinen eigenen Verein" - clubsEnabled ist nur im
-    // Duo-Modus wirklich abschaltbar (siehe toggleClubsEnabled/getDraftClubStep).
-    const clubsEnabledForRun = tournamentMode === 'solo' ? true : clubsEnabled;
+    const clubsEnabledForRun = effectiveClubsEnabled();
     draftState = {
       active: true,
       mode: tournamentMode === 'solo' ? 'solo' : 'duo', // im draftState mitgeführt, damit ALLE (auch Zuschauer) denselben Ablauf sehen
       clubsEnabled: clubsEnabledForRun,
-      currentStep: 0, // Duo mit Verein: 0=P1, 1=P2, 2=Club — Duo ohne Verein: 0=P1, 1=P2 (Ende) — Solo: 0=Spieler, 1=Club
+      currentStep: 0, // Duo mit Verein: 0=P1, 1=P2, 2=Club — Duo ohne Verein: 0=P1, 1=P2 (Ende) — Solo mit Verein: 0=Spieler, 1=Club — Solo ohne Verein (Darts/Bierpong): 0=Spieler (Ende)
       tempP1: null,
       tempP2: null,
       remainingPlayers: [...players.map(p => p.name)],
@@ -3632,11 +3648,11 @@ function quickDrawTeams() {
   if (!hasElevated()) return;
   const problem = checkDrawPrerequisites();
   if (problem) return alert(problem);
-  const willHaveClubs = tournamentMode === 'solo' || clubsEnabled;
-  if (!confirm(`Teams${willHaveClubs ? ' & Clubs' : ''} SOFORT ohne Glücksrad-Show auslosen?`)) return;
+  const clubsEnabledForRun = effectiveClubsEnabled();
+  if (!confirm(`Teams${clubsEnabledForRun ? ' & Clubs' : ''} SOFORT ohne Glücksrad-Show auslosen?`)) return;
   teams = tournamentMode === 'solo'
-    ? simulateSoloDraw(players.map(p => p.name), availableClubs)
-    : simulateTeamDraw(players.map(p => p.name), availableClubs, clubsEnabled);
+    ? simulateSoloDraw(players.map(p => p.name), availableClubs, clubsEnabledForRun)
+    : simulateTeamDraw(players.map(p => p.name), availableClubs, clubsEnabledForRun);
   groups = [];
   groupMatches = [];
   koMatches = [];
@@ -3646,7 +3662,7 @@ function quickDrawTeams() {
   saveData();
   showTab('teams');
   renderAll();
-  alert(`⚡ Teams${willHaveClubs ? ' & Clubs' : ''} wurden sofort ausgelost!`);
+  alert(`⚡ Teams${clubsEnabledForRun ? ' & Clubs' : ''} wurden sofort ausgelost!`);
 }
 // Darts-Turniere brauchen kein Team-Glücksrad: es gibt keine Partner und keine Vereine,
 // jeder Spieler IST direkt sein eigenes "Team" (Datenmodell bleibt dasselbe wie im
@@ -3736,7 +3752,9 @@ function renderDraftStep() {
   if (noPlayersLeft && noDuoPending) {
     stage.innerHTML = `
       <h3 style="color:#4CAF50; margin-bottom: 10px;">🎉 Alle Teams${clubsEnabledForRun ? ' & Clubs' : ''} wurden gelost! 🎉</h3>
-      <p>${solo ? 'Jeder Spieler hat seinen Profi-Verein.' : (clubsEnabledForRun ? 'Die Duos und ihre Profi-Vereine stehen fest.' : 'Die 2er-Teams stehen fest.')}</p>
+      <p>${solo
+        ? (clubsEnabledForRun ? 'Jeder Spieler hat seinen Profi-Verein.' : 'Alle Spieler sind verteilt.')
+        : (clubsEnabledForRun ? 'Die Duos und ihre Profi-Vereine stehen fest.' : 'Die 2er-Teams stehen fest.')}</p>
       ${hasElevated() ? `
         <button class="btn-primary role-btn" style="margin-top:15px;" onclick="finishDraft()">
           💾 Teams speichern & Auslosung beenden
@@ -3934,23 +3952,26 @@ function applyDrawnDraftItem(item, solo, clubStep, lastStep) {
   draftState.spinning = false;
   draftState.pendingTarget = null;
   draftState.lastDrawnItem = item;
-  if (draftState.currentStep === 0) {
-    draftState.tempP1 = item;
-  } else if (draftState.currentStep === lastStep) {
-    // Letzter Schritt dieses Teams: entweder die übliche Club-Ziehung (dann ist "item" der
-    // Club und der Partner steht schon in tempP2), oder - bei Duo OHNE Verein - direkt die
-    // Partner-Ziehung selbst (dann ist "item" der Partner und es gibt gar keinen Club).
+  const isFirstStep = draftState.currentStep === 0;
+  const isLastStep = draftState.currentStep === lastStep;
+  if (isLastStep) {
+    // Letzter Schritt für dieses Team/diesen Spieler - jetzt finalisieren. Das kann die übliche
+    // Club-Ziehung sein (Partner steht ggf. schon in tempP2), direkt die Partner-Ziehung OHNE
+    // Club danach (Duo ohne Verein), oder - bei Solo OHNE Verein (Darts/Bierpong) - sogar der
+    // ALLERERSTE Schritt zugleich: dann ist "item" direkt der einzige Spieler dieses "Teams".
     const isClubDraw = draftState.currentStep === clubStep;
     if (!draftState.pairs) draftState.pairs = [];
     draftState.pairs.push({
       id: draftState.pairs.length + 1,
       name: `Team ${draftState.pairs.length + 1}`,
-      p1: draftState.tempP1,
-      p2: solo ? null : (isClubDraw ? draftState.tempP2 : item),
+      p1: isFirstStep ? item : draftState.tempP1,
+      p2: solo ? null : (isClubDraw ? draftState.tempP2 : (isFirstStep ? null : item)),
       club: isClubDraw ? item : null
     });
+  } else if (isFirstStep) {
+    draftState.tempP1 = item;
   } else {
-    // Nur Duo mit Verein: currentStep === 1 (Partner-Ziehung, Club-Schritt folgt noch)
+    // Mittlerer Schritt (nur Duo MIT Verein): Partner-Ziehung, Club-Schritt folgt noch.
     draftState.tempP2 = item;
   }
   saveData();
@@ -4180,7 +4201,7 @@ function requestPartner(targetName) {
       if (selfPickState.requests[k] === myPlayerName || selfPickState.requests[k] === targetName) delete selfPickState.requests[k];
     });
     let club = null;
-    if (clubsEnabled) {
+    if (effectiveClubsEnabled()) {
       const usedClubs = new Set(teams.map(t => t.club).filter(Boolean));
       const freeClubs = availableClubs.filter(c => !usedClubs.has(c));
       club = freeClubs.length ? freeClubs[Math.floor(Math.random() * freeClubs.length)] : null;
@@ -4357,11 +4378,17 @@ function toggleClubsEnabled() {
 // Wechselt zwischen ⚽ FIFA (mit Vereinen) und 🎯 Darts (kein Verein, jeder Spieler ist sein
 // eigenes Team) - nur solange noch keine Teams existieren. Darts erzwingt automatisch den
 // Solo-Modus (kein Partner-Konzept bei Darts).
+// Reihenfolge der Sportarten beim Durchklicken, siehe toggleTournamentSport().
+const TOURNAMENT_SPORTS = ['fifa', 'darts', 'bierpong'];
 function toggleTournamentSport() {
   if (!hasElevated()) return;
   if (teams.length > 0) return alert('Die Sportart kann nach der Auslosung nicht mehr geändert werden!');
-  tournamentSport = tournamentSport === 'darts' ? 'fifa' : 'darts';
+  const nextIndex = (TOURNAMENT_SPORTS.indexOf(tournamentSport) + 1) % TOURNAMENT_SPORTS.length;
+  tournamentSport = TOURNAMENT_SPORTS[nextIndex];
   if (tournamentSport === 'darts') tournamentMode = 'solo';
+  // Nur FIFA kennt Vereine - Darts/Bierpong erzwingen immer "ohne Verein" (siehe
+  // effectiveClubsEnabled), FIFA bekommt beim Umschalten den sinnvollen Standard "mit Verein".
+  clubsEnabled = tournamentSport === 'fifa';
   saveData();
   renderAll();
 }
@@ -6030,7 +6057,7 @@ function renderSelfPickSectionHtml() {
   return `
     <div class="admin-card" style="margin-bottom:12px;">
       <h3 style="margin-top:0;">✋ Partner selbst wählen</h3>
-      <p style="font-size:0.85em; opacity:0.8;">Wählt euch gegenseitig aus, um ein Team zu bilden${clubsEnabled ? ' - der Verein wird automatisch zufällig zugewiesen' : ''}.</p>
+      <p style="font-size:0.85em; opacity:0.8;">Wählt euch gegenseitig aus, um ein Team zu bilden${effectiveClubsEnabled() ? ' - der Verein wird automatisch zufällig zugewiesen' : ''}.</p>
       ${myOwnSectionHtml}
       ${!myPlayerName ? '<p class="empty-state">Melde dich mit einem Namen an, um mitzuwählen.</p>' : ''}
       ${unpaired.length ? `<p style="font-size:0.85em; opacity:0.75;">Noch ohne Team: ${unpaired.map(p => escapeHtml(p.name)).join(', ')}</p>` : ''}
@@ -6153,7 +6180,7 @@ function renderGroups() {
     return;
   }
   const standings = calculateGroupStandings();
-  const scoreColLabel = tournamentSport === 'darts' ? 'Sätze' : 'Tore';
+  const scoreColLabel = tournamentSport === 'darts' ? 'Sätze' : (tournamentSport === 'bierpong' ? 'Becher' : 'Tore');
   let html = standings.map(g => `
     <div class="admin-card">
       <h3 style="color:var(--fal-yellow); margin-top:0;">${g.letter}</h3>
@@ -6359,14 +6386,15 @@ function renderSportToggle() {
   const el = document.getElementById('sport-toggle-container');
   if (!el) return;
   if (teams.length > 0) { el.innerHTML = ''; return; }
+  const sportLabels = {
+    fifa: '⚽ FIFA-Turnier (mit Vereinen)',
+    darts: '🎯 Darts-Turnier (kein Verein, jeder Spieler ist sein eigenes Team)',
+    bierpong: '🍺 Bierpong-Turnier (kein Verein, klassischer Spielplan + KO-Baum)'
+  };
   el.innerHTML = `
-    <div style="display:flex; align-items:center; justify-content:space-between; background:rgba(0,0,0,0.2); padding:8px 12px; border-radius:8px; flex-wrap:wrap; gap:8px; margin-bottom:6px;">
-      <span style="font-size:0.9em;">${tournamentSport === 'darts' ? '🎯 Darts-Turnier (kein Verein, jeder Spieler ist sein eigenes Team)' : '⚽ FIFA-Turnier (mit Vereinen)'}</span>
+    <div style="display:flex; align-items:center; justify-content:space-between; background:rgba(0,0,0,0.2); padding:8px 12px; border-radius:8px; flex-wrap:wrap; gap:8px;">
+      <span style="font-size:0.9em;">${sportLabels[tournamentSport]}</span>
       <button class="btn-secondary btn-sm" onclick="toggleTournamentSport()">Umschalten</button>
-    </div>
-    <div style="display:flex; align-items:center; justify-content:space-between; background:rgba(0,0,0,0.15); padding:8px 12px; border-radius:8px; flex-wrap:wrap; gap:8px; opacity:0.6;">
-      <span style="font-size:0.9em;">🍺 Bierpong</span>
-      <span style="font-size:0.8em;">Bald verfügbar</span>
     </div>
   `;
 }
@@ -6420,7 +6448,7 @@ function setDartsCheckoutRule(v) {
 function renderTeamStepPanel() {
   const el = document.getElementById('team-step-container');
   if (!el) return;
-  const drawLabel = (tournamentMode !== 'solo' && !clubsEnabled) ? 'Teams' : 'Teams & Clubs';
+  const drawLabel = effectiveClubsEnabled() ? 'Teams & Clubs' : 'Teams';
   if (tournamentSport === 'darts') {
     el.innerHTML = `<button class="btn-primary" style="background-color:#ffc800; color:#000;" onclick="createDartsTeamsFromPlayers()">🎯 1. Teilnehmer übernehmen (kein Verein nötig)</button>`;
     return;
@@ -6494,9 +6522,11 @@ function renderAdminPanel() {
   if (coinAnimPreview) coinAnimPreview.innerHTML = coinIcon(18);
   if (lockContainer) {
     lockContainer.innerHTML = `
-      ${teams.length === 0 ? `
+      ${(teams.length === 0 && tournamentSport !== 'darts') ? `
       <div style="display:flex; align-items:center; justify-content:space-between; background:rgba(0,0,0,0.2); padding:8px 12px; border-radius:8px; margin-bottom:8px; flex-wrap:wrap; gap:8px;">
-        <span style="font-size:0.9em;">${tournamentMode === 'solo' ? '👤 Einzel-Modus (jeder Spieler bekommt seinen eigenen Verein)' : '👬 Duo-Modus (2er-Teams teilen sich einen Verein)'}</span>
+        <span style="font-size:0.9em;">${tournamentMode === 'solo'
+          ? (tournamentSport === 'fifa' ? '👤 Einzel-Modus (jeder Spieler bekommt seinen eigenen Verein)' : '👤 Einzel-Modus (jeder Spieler spielt für sich)')
+          : (tournamentSport === 'fifa' ? '👬 Duo-Modus (2er-Teams teilen sich einen Verein)' : '👬 Duo-Modus (2er-Teams)')}</span>
         <button class="btn-secondary btn-sm" onclick="toggleTournamentMode()">Umschalten</button>
       </div>
       ${tournamentMode !== 'solo' && tournamentSport === 'fifa' ? `
