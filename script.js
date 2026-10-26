@@ -99,6 +99,10 @@ window.skipWheelSpin = skipWheelSpin;
 window.nextDraftStep = nextDraftStep;
 window.finishDraft = finishDraft;
 window.cancelDraft = cancelDraft;
+window.startSelfPickTeams = startSelfPickTeams;
+window.cancelSelfPickTeams = cancelSelfPickTeams;
+window.requestPartner = requestPartner;
+window.cancelPartnerRequest = cancelPartnerRequest;
 window.startGroupDraft = startGroupDraft;
 window.quickDrawGroups = quickDrawGroups;
 window.spinGroupWheel = spinGroupWheel;
@@ -112,6 +116,7 @@ window.placeBet = placeBet;
 window.spinSlotMachine = spinSlotMachine;
 window.adjustPlayerCoins = adjustPlayerCoins;
 window.toggleHappyHour = toggleHappyHour;
+window.toggleGamblingLocked = toggleGamblingLocked;
 window.adjustSlotSymbolPayout = adjustSlotSymbolPayout;
 window.adjustSlotSymbolWeight = adjustSlotSymbolWeight;
 window.triggerSlotSymbolImageUpload = triggerSlotSymbolImageUpload;
@@ -352,6 +357,10 @@ let coinAnimation = 'none';
 // Solange aktiv, wird JEDER 2. Spin erzwungen zum Hauptgewinn (siehe happyHourSpinCounter
 // weiter unten bei den Automaten selbst - rein lokaler Zähler, bewusst nicht synchronisiert).
 let happyHour = false;
+// Admin-Schalter: sperrt NUR das Spielen an beiden Glücksspielautomaten (Drehen-Knopf), die
+// Oberfläche (Automaten, Gewinntabelle) bleibt für alle sichtbar - siehe toggleGamblingLocked()
+// und die Sperr-Prüfung in spinSlotMachine()/spinBigSlotMachine().
+let gamblingLocked = false;
 // Welches Turnier ist gerade aktiv? Jedes Turnier wird komplett getrennt in Firebase
 // unter tournaments/{currentTournamentId} gespeichert (siehe Abschnitt "Turnier-Auswahl").
 let currentTournamentId = localStorage.getItem('fifa_current_tournament') || null;
@@ -396,6 +405,11 @@ let draftSpinTimeoutId = null; // laufender setTimeout-Handle der aktuellen Dreh
 // sich aber dasselbe #draft-modal/#draft-stage-Overlay, siehe handleLiveDraftUI().
 let groupDraftState = { active: false, spinning: false, remainingTeams: [], groupLetters: [], targetGroupIndex: 0, assignments: {}, lastDrawnItem: null, lastAssignedGroup: null, startTime: null, targetAngle: 0, duration: 4000, pendingTarget: null };
 let groupSpinTimeoutId = null;
+// Alternative zur Glücksrad-Auslosung: Spieler wählen ihren Partner selbst (siehe
+// startSelfPickTeams/requestPartner). "requests" ordnet jedem Spieler (Name, exakte
+// Schreibweise wie in "players") seinen GEWÜNSCHTEN Partner zu - sobald sich zwei Spieler
+// GEGENSEITIG gewählt haben, wird daraus sofort ein echtes Team (siehe requestPartner).
+let selfPickState = { active: false, requests: {} };
 // Welches Darts-Match hat GERADE (nur lokal, auf DIESEM Gerät) das Live-Scoring-Overlay
 // geöffnet - unabhängig davon, ob man selbst wirft oder nur zuschaut (siehe openDartsMatch/
 // renderDartsMatch). Der eigentliche Spielstand (m.dartsMatch) ist Teil des synchronisierten
@@ -1185,8 +1199,10 @@ function resetLocalStateToDefaults() {
   finishedAt = null;
   coinAnimation = 'none';
   happyHour = false;
+  gamblingLocked = false;
   draftState = { active: false, currentStep: 0, tempP1: null, tempP2: null, remainingPlayers: [], remainingClubs: [], spinning: false, startTime: null, targetAngle: 0, duration: 4000, lastDrawnItem: null, pairs: [], pendingTarget: null };
   groupDraftState = { active: false, spinning: false, remainingTeams: [], groupLetters: [], targetGroupIndex: 0, assignments: {}, lastDrawnItem: null, lastAssignedGroup: null, startTime: null, targetAngle: 0, duration: 4000, pendingTarget: null };
+  selfPickState = { active: false, requests: {} };
   userBalances = {};
   slotStats = {};
   bets = [];
@@ -1249,9 +1265,11 @@ function attachTournamentListener() {
     finishedAt = data.finishedAt || null;
     coinAnimation = data.coinAnimation || 'none';
     happyHour = data.happyHour || false;
+    gamblingLocked = data.gamblingLocked || false;
     draftState = data.draftState || { active: false, currentStep: 0, tempP1: null, tempP2: null, remainingPlayers: [], remainingClubs: [], spinning: false, startTime: null, targetAngle: 0, duration: 4000, lastDrawnItem: null, pairs: [] };
     groupDraftState = data.groupDraftState || { active: false, spinning: false, remainingTeams: [], groupLetters: [], targetGroupIndex: 0, assignments: {}, lastDrawnItem: null, lastAssignedGroup: null, startTime: null, targetAngle: 0, duration: 4000 };
     normalizeGroupDraftState(groupDraftState);
+    selfPickState = data.selfPickState || { active: false, requests: {} };
     userBalances = data.userBalances || {};
     slotStats = data.slotStats || {};
     bets = data.bets || [];
@@ -1318,8 +1336,10 @@ function saveData() {
     finishedAt,
     coinAnimation,
     happyHour,
+    gamblingLocked,
     draftState,
     groupDraftState,
+    selfPickState,
     userBalances,
     slotStats,
     bets
@@ -2641,18 +2661,29 @@ function renderInvitePanel() {
   const candidates = Object.keys(globalPlayers)
     .filter(k => !alreadyIn.has(k))
     .sort((a, b) => (globalPlayers[a].name || a).localeCompare(globalPlayers[b].name || b));
-  container.innerHTML = `
-    <p style="font-size:0.85em; opacity:0.8;">Lade bekannte Spieler direkt zu diesem Turnier ein - sie sehen die Einladung auf ihrer Turnierauswahl-Seite.</p>
-    ${candidates.length === 0 ? '<p class="empty-state">Keine weiteren bekannten Spieler.</p>' : candidates.map(k => {
-      const alreadyInvited = !!(globalPlayers[k].invites && globalPlayers[k].invites[currentTournamentId]);
-      return `
+  // Eigene Freunde zuerst anzeigen (siehe sendFriendRequest/acceptFriendRequest) - der Rest
+  // wie bisher direkt danach, nicht einfach weggelassen.
+  const myGp = myPlayerName ? getGlobalPlayer(myPlayerName) : null;
+  const myFriendKeys = new Set((myGp && myGp.friends) ? Object.keys(myGp.friends) : []);
+  const friendCandidates = candidates.filter(k => myFriendKeys.has(k));
+  const otherCandidates = candidates.filter(k => !myFriendKeys.has(k));
+  const renderCandidateRow = (k) => {
+    const alreadyInvited = !!(globalPlayers[k].invites && globalPlayers[k].invites[currentTournamentId]);
+    return `
       <div style="display:flex; justify-content:space-between; align-items:center; background: var(--fal-blue-primary); padding: 6px 12px; border-radius: 8px; margin-bottom: 6px;">
         <span>${playerNameLink(globalPlayers[k].name || k, 20)}</span>
         ${alreadyInvited
           ? '<span style="font-size:0.8em; opacity:0.75;">⏳ Bereits eingeladen</span>'
           : `<button class="btn-secondary btn-sm" onclick="inviteToTournament('${k}')">📨 Einladen</button>`}
       </div>
-    `; }).join('')}
+    `;
+  };
+  container.innerHTML = `
+    <p style="font-size:0.85em; opacity:0.8;">Lade bekannte Spieler direkt zu diesem Turnier ein - sie sehen die Einladung auf ihrer Turnierauswahl-Seite.</p>
+    ${candidates.length === 0 ? '<p class="empty-state">Keine weiteren bekannten Spieler.</p>' : `
+      ${friendCandidates.length ? `<p style="font-size:0.85em; font-weight:bold; margin:8px 0 4px 0;">👥 Deine Freunde</p>${friendCandidates.map(renderCandidateRow).join('')}` : ''}
+      ${otherCandidates.length ? `<p style="font-size:0.85em; font-weight:bold; margin:${friendCandidates.length ? '12px' : '8px'} 0 4px 0;">Alle anderen bekannten Spieler</p>${otherCandidates.map(renderCandidateRow).join('')}` : ''}
+    `}
   `;
 }
 // Lädt einen bekannten Spieler zum aktuellen Turnier ein (nur Admin/God)
@@ -4096,6 +4127,79 @@ function cancelDraft() {
     alert("Auslosung wurde zurückgesetzt!");
   }
 }
+// ---- "Teams selbst aussuchen" (Alternative zur Glücksrad-Auslosung, siehe selfPickState) ----
+// Jeder Spieler sucht sich LIVE selbst seinen Partner aus, statt dass ein Zufallsrad
+// entscheidet - sobald sich zwei Spieler GEGENSEITIG gewählt haben, wird automatisch (ohne
+// weiteren Admin-Schritt) ein echtes Team daraus, inkl. zufällig zugewiesenem Verein (falls
+// clubsEnabled). Nur im Duo-Modus sinnvoll (Solo hat ja gar keinen Partner-Begriff).
+function startSelfPickTeams() {
+  if (!hasElevated()) return;
+  if (tournamentMode === 'solo') return;
+  const problem = checkDrawPrerequisites();
+  if (problem) return alert(problem);
+  if (!confirm('Teams werden zurückgesetzt - jeder Spieler kann sich jetzt im Teams-Tab selbst einen Partner wünschen. Fortfahren?')) return;
+  teams = [];
+  groups = [];
+  groupMatches = [];
+  koMatches = [];
+  tips = {};
+  tipsEvaluated = false;
+  draftState = { active: false, currentStep: 0, tempP1: null, tempP2: null, remainingPlayers: [], remainingClubs: [], spinning: false, startTime: null, targetAngle: 0, duration: 4000, lastDrawnItem: null, pairs: [], pendingTarget: null };
+  selfPickState = { active: true, requests: {} };
+  saveData();
+  showTab('teams');
+  renderAll();
+}
+// Admin bricht die laufende Partnerwahl ab - noch offene Wünsche verfallen, bereits
+// gebildete Teams bleiben bestehen (genau wie ein Abbruch mitten in der Glücksrad-Show auch
+// schon fertig gezogene Paare nicht zurücknimmt).
+function cancelSelfPickTeams() {
+  if (!hasElevated()) return;
+  if (!confirm('Die Partnerwahl wirklich abbrechen? Offene Wünsche gehen verloren, bereits gebildete Teams bleiben bestehen.')) return;
+  selfPickState = { active: false, requests: {} };
+  saveData();
+  renderAll();
+}
+// Ein Spieler wählt (oder wechselt) seinen gewünschten Partner. Haben sich zwei Spieler
+// GEGENSEITIG gewählt, wird direkt daraus ein Team - ganz ohne weiteren Bestätigungsschritt,
+// damit sich das für beide Seiten sofort wie ein echtes "Match" anfühlt.
+function requestPartner(targetName) {
+  if (!myPlayerName || !selfPickState.active) return;
+  if (targetName === myPlayerName) return;
+  const alreadyTeamed = new Set();
+  teams.forEach(t => { alreadyTeamed.add(t.p1); if (t.p2) alreadyTeamed.add(t.p2); });
+  if (alreadyTeamed.has(myPlayerName) || alreadyTeamed.has(targetName)) return;
+  if (!players.some(p => p.name === targetName)) return;
+  selfPickState.requests[myPlayerName] = targetName;
+  if (selfPickState.requests[targetName] === myPlayerName) {
+    // Gegenseitig gewählt -> sofort ein Team daraus bilden.
+    delete selfPickState.requests[myPlayerName];
+    delete selfPickState.requests[targetName];
+    // Andere Wünsche, die auf einen der beiden jetzt vergebenen Spieler zielten, sind hinfällig.
+    Object.keys(selfPickState.requests).forEach(k => {
+      if (selfPickState.requests[k] === myPlayerName || selfPickState.requests[k] === targetName) delete selfPickState.requests[k];
+    });
+    let club = null;
+    if (clubsEnabled) {
+      const usedClubs = new Set(teams.map(t => t.club).filter(Boolean));
+      const freeClubs = availableClubs.filter(c => !usedClubs.has(c));
+      club = freeClubs.length ? freeClubs[Math.floor(Math.random() * freeClubs.length)] : null;
+    }
+    teams.push({ id: teams.length + 1, name: `Team ${teams.length + 1}`, p1: myPlayerName, p2: targetName, club });
+    // Alle Spieler verteilt? Dann ist die Partnerwahl automatisch fertig.
+    const pairedCount = teams.reduce((n, t) => n + (t.p2 ? 2 : 1), 0);
+    if (pairedCount >= players.length) selfPickState.active = false;
+  }
+  saveData();
+  renderAll();
+}
+// Zieht den eigenen offenen Partnerwunsch wieder zurück (z.B. um sich umzuentscheiden)
+function cancelPartnerRequest() {
+  if (!myPlayerName) return;
+  delete selfPickState.requests[myPlayerName];
+  saveData();
+  renderAll();
+}
 // ============================================================================
 // 7. STANDARD ADMIN HANDLUNGEN — Spieler hinzufügen/löschen, Test-Spieler,
 //    Ref-Rechte vergeben, Passwörter, Registrierungssperre
@@ -5067,6 +5171,7 @@ function resetTeamDraft() {
   tipsEvaluated = false;
   draftState = { active: false, currentStep: 0, tempP1: null, tempP2: null, remainingPlayers: [], remainingClubs: [], spinning: false, startTime: null, targetAngle: 0, duration: 4000, lastDrawnItem: null, pairs: [], pendingTarget: null };
   groupDraftState = { active: false, spinning: false, remainingTeams: [], groupLetters: [], targetGroupIndex: 0, assignments: {}, lastDrawnItem: null, lastAssignedGroup: null, startTime: null, targetAngle: 0, duration: 4000, pendingTarget: null };
+  selfPickState = { active: false, requests: {} };
   saveData();
   renderAll();
   alert('✅ Team-Auslosung wurde zurückgesetzt.');
@@ -5105,6 +5210,7 @@ function resetTournament() {
     tipsEvaluated = false;
     registrationLocked = false;
     draftState = { active: false, currentStep: 0, tempP1: null, tempP2: null, remainingPlayers: [], remainingClubs: [], spinning: false, startTime: null, targetAngle: 0, duration: 4000, lastDrawnItem: null, pairs: [], pendingTarget: null };
+    selfPickState = { active: false, requests: {} };
     userBalances = {};
     slotStats = {};
     bets = [];
@@ -5893,15 +5999,58 @@ function renderDashboard() {
   `;
 }
 // Zeigt alle gelosten Teams inkl. Vereinswappen und Mitgliedern im Teams-Tab
+// Baut den "Partner selbst wählen"-Bereich auf (siehe selfPickState/requestPartner) - zeigt
+// dem aktuellen Spieler (falls noch ohne Team) eine Partnerauswahl inkl. Hinweis, falls ihn
+// bereits jemand gewählt hat ("💌"), sowie allen eine Übersicht, wer noch ohne Team ist.
+function renderSelfPickSectionHtml() {
+  const alreadyTeamed = new Set();
+  teams.forEach(t => { alreadyTeamed.add(t.p1); if (t.p2) alreadyTeamed.add(t.p2); });
+  const unpaired = players.filter(p => !alreadyTeamed.has(p.name));
+  const iAmUnpaired = !!(myPlayerName && !alreadyTeamed.has(myPlayerName));
+  let myOwnSectionHtml = '';
+  if (iAmUnpaired) {
+    const myRequest = selfPickState.requests[myPlayerName];
+    // Wer hat MICH gewählt? (eingehende Wünsche - "💌" in der Auswahlliste markiert)
+    const incoming = Object.keys(selfPickState.requests).filter(k => k !== myPlayerName && selfPickState.requests[k] === myPlayerName);
+    const candidateOptions = unpaired.filter(p => p.name !== myPlayerName)
+      .map(p => `<option value="${escapeHtml(p.name)}" ${myRequest === p.name ? 'selected' : ''}>${escapeHtml(p.name)}${incoming.includes(p.name) ? ' 💌' : ''}</option>`).join('');
+    myOwnSectionHtml = `
+      <div style="background: var(--fal-blue-primary); padding:10px 12px; border-radius:8px; margin-bottom:10px;">
+        <p style="font-size:0.9em; margin:0 0 6px 0;"><strong>Dein Partnerwunsch:</strong></p>
+        ${incoming.length ? `<p style="font-size:0.85em; color:var(--fal-yellow); margin:0 0 6px 0;">💌 ${incoming.map(n => escapeHtml(n)).join(', ')} möchte${incoming.length === 1 ? '' : 'n'} mit dir ins Team - wähle ${incoming.length === 1 ? 'ihn/sie' : 'eine*n davon'} aus, um sofort ein Team zu bilden!</p>` : ''}
+        <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
+          <select id="self-pick-partner-select">${candidateOptions}</select>
+          <button class="btn-primary btn-sm" onclick="requestPartner(document.getElementById('self-pick-partner-select').value)">🤝 Wählen</button>
+          ${myRequest ? `<button class="btn-secondary btn-sm" onclick="cancelPartnerRequest()">Zurückziehen</button>` : ''}
+        </div>
+        ${myRequest ? `<p style="font-size:0.8em; opacity:0.75; margin:6px 0 0 0;">⏳ Du hast ${escapeHtml(myRequest)} gewählt - wartet auf Gegenwahl.</p>` : ''}
+      </div>
+    `;
+  }
+  return `
+    <div class="admin-card" style="margin-bottom:12px;">
+      <h3 style="margin-top:0;">✋ Partner selbst wählen</h3>
+      <p style="font-size:0.85em; opacity:0.8;">Wählt euch gegenseitig aus, um ein Team zu bilden${clubsEnabled ? ' - der Verein wird automatisch zufällig zugewiesen' : ''}.</p>
+      ${myOwnSectionHtml}
+      ${!myPlayerName ? '<p class="empty-state">Melde dich mit einem Namen an, um mitzuwählen.</p>' : ''}
+      ${unpaired.length ? `<p style="font-size:0.85em; opacity:0.75;">Noch ohne Team: ${unpaired.map(p => escapeHtml(p.name)).join(', ')}</p>` : ''}
+    </div>
+  `;
+}
 function renderTeams() {
   const container = document.getElementById('teams-container');
   if (!container) return;
 
-  if (teams.length === 0) {
+  if (teams.length === 0 && !selfPickState.active) {
     container.innerHTML = '<p class="empty-state">Noch keine Teams gelost. Gehe in den Admin-Bereich und starte die Auslosungs-Show.</p>';
     return;
   }
-  container.innerHTML = teams.map(t => {
+  const selfPickHtml = selfPickState.active ? renderSelfPickSectionHtml() : '';
+  if (teams.length === 0) {
+    container.innerHTML = selfPickHtml;
+    return;
+  }
+  container.innerHTML = selfPickHtml + teams.map(t => {
     const isMyTeam = (myPlayerName && (t.p1 === myPlayerName || t.p2 === myPlayerName));
     const canEditName = hasElevated() || isMyTeam;
     const canEditPhoto = canEditTeamPhoto(t);
@@ -6211,9 +6360,13 @@ function renderSportToggle() {
   if (!el) return;
   if (teams.length > 0) { el.innerHTML = ''; return; }
   el.innerHTML = `
-    <div style="display:flex; align-items:center; justify-content:space-between; background:rgba(0,0,0,0.2); padding:8px 12px; border-radius:8px; flex-wrap:wrap; gap:8px;">
+    <div style="display:flex; align-items:center; justify-content:space-between; background:rgba(0,0,0,0.2); padding:8px 12px; border-radius:8px; flex-wrap:wrap; gap:8px; margin-bottom:6px;">
       <span style="font-size:0.9em;">${tournamentSport === 'darts' ? '🎯 Darts-Turnier (kein Verein, jeder Spieler ist sein eigenes Team)' : '⚽ FIFA-Turnier (mit Vereinen)'}</span>
       <button class="btn-secondary btn-sm" onclick="toggleTournamentSport()">Umschalten</button>
+    </div>
+    <div style="display:flex; align-items:center; justify-content:space-between; background:rgba(0,0,0,0.15); padding:8px 12px; border-radius:8px; flex-wrap:wrap; gap:8px; opacity:0.6;">
+      <span style="font-size:0.9em;">🍺 Bierpong</span>
+      <span style="font-size:0.8em;">Bald verfügbar</span>
     </div>
   `;
 }
@@ -6268,12 +6421,20 @@ function renderTeamStepPanel() {
   const el = document.getElementById('team-step-container');
   if (!el) return;
   const drawLabel = (tournamentMode !== 'solo' && !clubsEnabled) ? 'Teams' : 'Teams & Clubs';
-  el.innerHTML = tournamentSport === 'darts'
-    ? `<button class="btn-primary" style="background-color:#ffc800; color:#000;" onclick="createDartsTeamsFromPlayers()">🎯 1. Teilnehmer übernehmen (kein Verein nötig)</button>`
-    : `
-      <button class="btn-primary" style="background-color:#ffc800; color:#000;" onclick="startInteractiveDraft()">🎰 1. ${drawLabel} per Glücksrad auslosen</button>
-      <button class="btn-secondary" onclick="quickDrawTeams()">⚡ 1b. Sofort auslosen (ohne Show/Animation)</button>
-    `;
+  if (tournamentSport === 'darts') {
+    el.innerHTML = `<button class="btn-primary" style="background-color:#ffc800; color:#000;" onclick="createDartsTeamsFromPlayers()">🎯 1. Teilnehmer übernehmen (kein Verein nötig)</button>`;
+    return;
+  }
+  // "Teams selbst aussuchen" nur im Duo-Modus sinnvoll (Solo hat ja keinen Partner-Begriff).
+  const selfPickButton = tournamentMode !== 'solo'
+    ? `<button class="btn-secondary" onclick="startSelfPickTeams()">✋ 1c. Teams selbst aussuchen lassen</button>`
+    : '';
+  el.innerHTML = `
+    <button class="btn-primary" style="background-color:#ffc800; color:#000;" onclick="startInteractiveDraft()">🎰 1. ${drawLabel} per Glücksrad auslosen</button>
+    <button class="btn-secondary" onclick="quickDrawTeams()">⚡ 1b. Sofort auslosen (ohne Show/Animation)</button>
+    ${selfPickButton}
+    ${selfPickState.active ? `<button class="btn-danger" onclick="cancelSelfPickTeams()">🛑 Partnerwahl abbrechen</button>` : ''}
+  `;
 }
 // Baut den kompletten Admin-Bereich auf: Spielerverwaltung, Test-Spieler-Button, Club-Liste, Registrierungssperre
 // Zeigt im Admin-Panel EINEN dynamischen Button für die KO-Phase, statt fixer
@@ -6305,6 +6466,7 @@ function renderAdminPanel() {
   const playerListEl = document.getElementById('admin-player-list');
   const clubListEl = document.getElementById('admin-club-list');
   const lockContainer = document.getElementById('registration-lock-container');
+  const gamblingToggleContainer = document.getElementById('gambling-toggles-container');
   const testPlayerContainer = document.getElementById('test-player-container');
   // Test-Spieler-Button nur für den echten Admin sichtbar (nicht für Refs)
   if (testPlayerContainer) {
@@ -6365,6 +6527,11 @@ function renderAdminPanel() {
         </span>
         <button class="btn-secondary btn-sm" onclick="toggleTournamentFinished()">${finished ? 'Wieder öffnen' : 'Als beendet markieren'}</button>
       </div>
+      ` : ''}
+    `;
+  }
+  if (gamblingToggleContainer) {
+    gamblingToggleContainer.innerHTML = isAdmin() ? `
       <div style="display:flex; align-items:center; justify-content:space-between; background:rgba(0,0,0,0.2); padding:8px 12px; border-radius:8px; margin-bottom:12px; flex-wrap:wrap; gap:8px;">
         <span style="font-size:0.9em;">
           ${happyHour ? '🎉 Happy Hour AKTIV' : '🎰 Happy Hour aus'}<br>
@@ -6372,8 +6539,14 @@ function renderAdminPanel() {
         </span>
         <button class="${happyHour ? 'btn-danger' : 'btn-secondary'} btn-sm" onclick="toggleHappyHour()">${happyHour ? 'Ausschalten' : 'Einschalten'}</button>
       </div>
-      ` : ''}
-    `;
+      <div style="display:flex; align-items:center; justify-content:space-between; background:rgba(0,0,0,0.2); padding:8px 12px; border-radius:8px; flex-wrap:wrap; gap:8px;">
+        <span style="font-size:0.9em;">
+          ${gamblingLocked ? '🔒 Glücksspiel gesperrt' : '🔓 Glücksspiel freigegeben'}<br>
+          <span style="font-size:0.85em; opacity:0.7;">(sperrt nur das Drehen - beide Automaten bleiben sichtbar)</span>
+        </span>
+        <button class="${gamblingLocked ? 'btn-secondary' : 'btn-danger'} btn-sm" onclick="toggleGamblingLocked()">${gamblingLocked ? 'Entsperren' : 'Sperren'}</button>
+      </div>
+    ` : '';
   }
   if (playerListEl) {
     // Das Passwort ist jetzt identitätsweit (siehe globalPlayers) statt pro Turnier - hier
@@ -6431,6 +6604,15 @@ function setCoinAnimation(mode) {
 function toggleHappyHour() {
   if (!isAdmin()) return;
   happyHour = !happyHour;
+  saveData();
+  renderAll();
+}
+// Admin/God sperrt/entsperrt NUR das Spielen an beiden Glücksspielautomaten (siehe
+// spinSlotMachine/spinBigSlotMachine) - die Automaten samt Gewinntabelle bleiben für alle
+// sichtbar, nur der "Drehen"-Knopf ist gesperrt (mit Hinweistext statt einfach zu verschwinden).
+function toggleGamblingLocked() {
+  if (!isAdmin()) return;
+  gamblingLocked = !gamblingLocked;
   saveData();
   renderAll();
 }
@@ -6829,6 +7011,7 @@ const SLOT_REEL_DURATIONS_MS = [900, 1050, 1250];
 const SLOT_SPIN_TOTAL_MS = Math.max(...SLOT_REEL_DELAYS_MS.map((d, i) => d + SLOT_REEL_DURATIONS_MS[i])) + 50;
 function spinSlotMachine() {
   if (!myPlayerName) return alert('Bitte melde dich erst mit einem Namen an!');
+  if (gamblingLocked) return alert('🔒 Glücksspiel ist aktuell gesperrt!');
   if (slotMachineState.spinning) return;
   const input = document.getElementById('slot-bet-amount');
   const amount = input ? parseInt(input.value, 10) : NaN;
@@ -6970,7 +7153,7 @@ function renderSlotMachine() {
   // Render-Aufruf aus). Dann NUR den Kontostand auffrischen statt die Walzen komplett neu
   // aufzubauen, sonst würde die CSS-Gewinn-Animation (Glow/Pulse) bei JEDER fremden Aktion
   // erneut abspielen, obwohl für diesen Automaten gar nichts Neues passiert ist.
-  if (result === slotMachineState.lastRenderedResult) {
+  if (result === slotMachineState.lastRenderedResult && gamblingLocked === slotMachineState.lastRenderedGamblingLocked) {
     const amountInput = document.getElementById('slot-bet-amount');
     if (amountInput) amountInput.max = currentBalance;
     const balanceEl = document.getElementById('slot-balance-text');
@@ -6978,6 +7161,7 @@ function renderSlotMachine() {
     return;
   }
   slotMachineState.lastRenderedResult = result;
+  slotMachineState.lastRenderedGamblingLocked = gamblingLocked;
   const amountInput = document.getElementById('slot-bet-amount');
   const hadFocus = document.activeElement === amountInput;
   const prevValue = amountInput ? amountInput.value : '';
@@ -6996,9 +7180,10 @@ function renderSlotMachine() {
     </div>
     ${result ? `<p class="slot-result-label ${resultClass}" style="text-align:center; font-size:0.95em; margin-bottom:10px;">${result.resultLabel}</p>` : ''}
     <p style="text-align:center; font-size:0.9em; margin-bottom:8px;">Kontostand: <strong id="slot-balance-text">${currentBalance}</strong> ${coinIcon(16)}</p>
+    ${gamblingLocked ? '<p style="text-align:center; font-size:0.85em; color:var(--fal-yellow); margin-bottom:8px;">🔒 Glücksspiel ist aktuell gesperrt.</p>' : ''}
     <div style="display:flex; gap:8px; align-items:center; justify-content:center; flex-wrap:wrap;">
-      <input type="number" id="slot-bet-amount" placeholder="Einsatz" min="1" max="${currentBalance}" style="width:100px;" value="${escapeHtml(prevValue)}">
-      <button class="btn-primary" onclick="spinSlotMachine()">🎰 Drehen</button>
+      <input type="number" id="slot-bet-amount" placeholder="Einsatz" min="1" max="${currentBalance}" style="width:100px;" value="${escapeHtml(prevValue)}" ${gamblingLocked ? 'disabled' : ''}>
+      <button class="btn-primary" onclick="spinSlotMachine()" ${gamblingLocked ? 'disabled' : ''}>🎰 Drehen</button>
     </div>
     <p style="font-size:0.75em; opacity:0.6; text-align:center; margin-top:8px;">3 gleiche Symbole = dicker Gewinn, 2 gleiche = Einsatz zurück, sonst weg. Rein zum Spaß mit den FAL-Coins!</p>
   `;
@@ -7089,6 +7274,7 @@ const BIG_SLOT_REEL_DURATIONS_MS = [850, 950, 1050, 1150, 1300];
 const BIG_SLOT_SPIN_TOTAL_MS = Math.max(...BIG_SLOT_REEL_DELAYS_MS.map((d, i) => d + BIG_SLOT_REEL_DURATIONS_MS[i])) + 50;
 function spinBigSlotMachine() {
   if (!myPlayerName) return alert('Bitte melde dich erst mit einem Namen an!');
+  if (gamblingLocked) return alert('🔒 Glücksspiel ist aktuell gesperrt!');
   if (bigSlotState.spinning) return;
   const input = document.getElementById('big-slot-bet-per-line');
   const betPerLine = input ? parseInt(input.value, 10) : NaN;
@@ -7180,13 +7366,14 @@ function renderBigSlotMachine() {
   const numLines = bigSlotState.selectedLines;
   // Für DIESEN Automaten hat sich nichts geändert (siehe ausführlicher Kommentar in
   // renderSlotMachine) - nur den Kontostand auffrischen, Walzen NICHT neu aufbauen.
-  if (result === bigSlotState.lastRenderedResult && numLines === bigSlotState.lastRenderedLines) {
+  if (result === bigSlotState.lastRenderedResult && numLines === bigSlotState.lastRenderedLines && gamblingLocked === bigSlotState.lastRenderedGamblingLocked) {
     const balanceEl = document.getElementById('big-slot-balance-text');
     if (balanceEl) balanceEl.textContent = currentBalance;
     return;
   }
   bigSlotState.lastRenderedResult = result;
   bigSlotState.lastRenderedLines = numLines;
+  bigSlotState.lastRenderedGamblingLocked = gamblingLocked;
   const betInput = document.getElementById('big-slot-bet-per-line');
   const hadFocus = document.activeElement === betInput;
   const prevValue = betInput ? betInput.value : '';
@@ -7246,9 +7433,10 @@ function renderBigSlotMachine() {
           ${BIG_SLOT_LINE_PACKAGES.map(n => `<option value="${n}" ${n === numLines ? 'selected' : ''}>${n}</option>`).join('')}
         </select>
       </label>
-      <input type="number" id="big-slot-bet-per-line" placeholder="Einsatz/Linie" min="1" style="width:110px;" value="${escapeHtml(prevValue)}">
-      <button class="btn-primary" onclick="spinBigSlotMachine()">🎰 Drehen</button>
+      <input type="number" id="big-slot-bet-per-line" placeholder="Einsatz/Linie" min="1" style="width:110px;" value="${escapeHtml(prevValue)}" ${gamblingLocked ? 'disabled' : ''}>
+      <button class="btn-primary" onclick="spinBigSlotMachine()" ${gamblingLocked ? 'disabled' : ''}>🎰 Drehen</button>
     </div>
+    ${gamblingLocked ? '<p style="text-align:center; font-size:0.85em; color:var(--fal-yellow); margin:0 0 6px 0;">🔒 Glücksspiel ist aktuell gesperrt.</p>' : ''}
     <p style="font-size:0.75em; opacity:0.6; text-align:center; margin:0 0 6px 0;">Gesamteinsatz = Einsatz/Linie × gewählte Linien. 3, 4 oder 5 gleiche Symbole von LINKS auf einer aktiven Linie gewinnen (5 gleiche = 10-facher Grundgewinn, 4 gleiche = 3-facher).</p>
     <p style="text-align:center; font-size:0.9em; margin:0;">Kontostand: <strong id="big-slot-balance-text">${currentBalance}</strong> ${coinIcon(16)}</p>
   `;
