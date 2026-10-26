@@ -6744,10 +6744,22 @@ function handleSlotSymbolImageSelected(event) {
     db.ref('globalSettings/slotSymbols').set(symbols).catch((error) => alert('⚠️ Bild konnte nicht gespeichert werden:\n' + error.message));
   });
 }
+// Liefert das STANDARD-Bild eines Symbols (siehe DEFAULT_SLOT_SYMBOLS) - für die meisten
+// Symbole ist das null (Standard = Emoji), aber beim FAL-Logo-Hauptgewinn ("fallogo") ist das
+// echte Vereinslogo selbst der Standard. Wichtig für removeSlotSymbolImage: "zurücksetzen"
+// soll dort NICHT auf ein leeres Emoji wiped werden, sondern auf das echte Standard-Logo.
+function getDefaultSlotSymbolImage(symbolId) {
+  const def = DEFAULT_SLOT_SYMBOLS.find(s => s.id === symbolId);
+  return def ? def.image : null;
+}
+// Setzt das Bild eines Symbols auf seinen STANDARD zurück (siehe getDefaultSlotSymbolImage) -
+// bewusst NICHT hart auf null, sonst würde z.B. das FAL-Logo beim Hauptgewinn-Symbol komplett
+// verschwinden statt auf das eigentliche Standard-Logo zurückzufallen.
 function removeSlotSymbolImage(symbolId) {
   if (!isAdmin()) return;
-  const symbols = getSlotSymbols().map(s => s.id === symbolId ? { ...s, image: null } : s);
-  db.ref('globalSettings/slotSymbols').set(symbols).catch((error) => alert('⚠️ Konnte nicht entfernt werden:\n' + error.message));
+  const defaultImage = getDefaultSlotSymbolImage(symbolId);
+  const symbols = getSlotSymbols().map(s => s.id === symbolId ? { ...s, image: defaultImage } : s);
+  db.ref('globalSettings/slotSymbols').set(symbols).catch((error) => alert('⚠️ Konnte nicht zurückgesetzt werden:\n' + error.message));
 }
 // Baut die Admin/God-only Übersicht zum Verwalten der Symbol-Tabelle auf (website-weit, gilt
 // Zeigt JEDEM Spieler (nicht nur Admin/God) die Gewinntabelle - die "Wertigkeit" jedes
@@ -6788,7 +6800,7 @@ function renderAdminSlotSymbolsPanel() {
         </div>
         <div style="display:flex; align-items:center; gap:6px;">
           <button class="btn-secondary btn-sm" title="Bild hochladen" onclick="triggerSlotSymbolImageUpload('${s.id}')">📷</button>
-          ${s.image ? `<button class="btn-danger btn-sm" title="Bild entfernen" onclick="removeSlotSymbolImage('${s.id}')">🗑️</button>` : ''}
+          ${s.image !== getDefaultSlotSymbolImage(s.id) ? `<button class="btn-danger btn-sm" title="Auf Standard-Bild zurücksetzen" onclick="removeSlotSymbolImage('${s.id}')">🔄</button>` : ''}
         </div>
       </div>
       <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap; margin-bottom:6px;">
