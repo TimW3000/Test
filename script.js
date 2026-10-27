@@ -3508,12 +3508,19 @@ function pickRandomIndexAvoidingReserved(pool, reserved) {
   const candidates = free.length > 0 ? free : pool.map((_, i) => i);
   return candidates[Math.floor(Math.random() * candidates.length)];
 }
+// Begrenzt den Vereins-Pool einer Auslosung auf GENAU soviele Vereine wie am Ende Teams/Spieler
+// gebraucht werden - availableClubs ist nach Stärke sortiert (siehe DEFAULT_CLUBS), die
+// hintersten (schwächsten) Vereine bleiben dadurch automatisch außen vor, statt dass am Ende
+// zufällig irgendein schwacher Verein übrig bleibt, den gar niemand bekommt.
+function clubPoolForDraft(clubNames, teamCount) {
+  return clubNames.slice(0, teamCount);
+}
 // Simuliert die komplette Team-Auslosung "im Kopf" (ohne Glücksrad-Show/Animation) nach
 // exakt denselben Regeln wie die Live-Show inkl. Voreinstellungen - für quickDrawTeams().
 function simulateTeamDraw(playerNames, clubNames, clubsEnabledForRun) {
   if (clubsEnabledForRun === undefined) clubsEnabledForRun = true;
   const remainingPlayers = [...playerNames];
-  const remainingClubs = clubsEnabledForRun ? [...clubNames] : [];
+  const remainingClubs = clubsEnabledForRun ? clubPoolForDraft(clubNames, Math.floor(playerNames.length / 2)) : [];
   const resultTeams = [];
   while (remainingPlayers.length >= 2) {
     // Spieler 1 bleibt ehrlich zufällig (identisch zur Live-Show)
@@ -3556,7 +3563,7 @@ function simulateTeamDraw(playerNames, clubNames, clubsEnabledForRun) {
 function simulateSoloDraw(playerNames, clubNames, clubsEnabledForRun) {
   if (clubsEnabledForRun === undefined) clubsEnabledForRun = true;
   const remainingPlayers = [...playerNames].sort(() => Math.random() - 0.5);
-  const remainingClubs = clubsEnabledForRun ? [...clubNames] : [];
+  const remainingClubs = clubsEnabledForRun ? clubPoolForDraft(clubNames, playerNames.length) : [];
   const resultTeams = [];
   while (remainingPlayers.length > 0) {
     const p1 = remainingPlayers.shift();
@@ -3643,7 +3650,7 @@ function startInteractiveDraft() {
       tempP1: null,
       tempP2: null,
       remainingPlayers: [...players.map(p => p.name)],
-      remainingClubs: clubsEnabledForRun ? [...availableClubs] : [],
+      remainingClubs: clubsEnabledForRun ? clubPoolForDraft(availableClubs, tournamentMode === 'solo' ? players.length : Math.floor(players.length / 2)) : [],
       spinning: false,
       startTime: null,
       targetAngle: 0,
@@ -3754,7 +3761,10 @@ function renderDraftStep() {
   // Recovery: Die Animation sollte laut startTime/duration längst fertig sein, aber
   // spinning ist noch true (z.B. weil der lokale setTimeout durch einen Tab-Reload oder
   // Hintergrund-Drosselung verloren ging) - dann JETZT aus dem (in Firebase gespeicherten)
-  // pendingTarget auflösen, statt für immer "spinning" hängen zu bleiben.
+  // pendingTarget auflösen, statt für immer "spinning" hängen zu bleiben. (Die robustere
+  // Haupt-Absicherung dagegen läuft inzwischen direkt in startWheelAnimationLoop(), siehe dort -
+  // die hier ist nur noch ein zusätzliches Netz für den Fall, dass die Animation selbst nie
+  // lief, z.B. weil das Rad-Modal gerade erst durch einen Reload neu aufgebaut wurde.)
   if (hasElevated() && draftState.spinning && draftState.startTime && draftState.pendingTarget != null) {
     const elapsed = Date.now() - draftState.startTime;
     if (elapsed >= (draftState.duration || 4000)) {
@@ -3860,6 +3870,27 @@ function startWheelAnimationLoop() {
         if (lastWheelDingStartTime.team !== draftState.startTime) {
           lastWheelDingStartTime.team = draftState.startTime;
           playSound('ding');
+        }
+        // Zusätzliche Absicherung GENAU in dem Moment, in dem die Animation fertig ist: sofort
+        // selbst finalisieren, statt nur auf den separaten setTimeout aus spinWheel() zu
+        // vertrauen - der geht z.B. verloren, wenn der Tab zwischenzeitlich im Hintergrund war
+        // oder der Bildschirm sich gesperrt hat (genau der gemeldete Bug "Glücksrad hängt nach
+        // dem letzten Verein, Verein wird nicht gespeichert"). Diese Schleife läuft nur, während
+        // der Tab aktiv zeichnet - trifft also IMMER zu, solange jemand wirklich zuschaut.
+        if (hasElevated() && draftState.spinning && draftState.pendingTarget != null) {
+          const solo = draftState.mode === 'solo';
+          const clubsEnabledForRun = draftState.clubsEnabled !== false;
+          const clubStep = getDraftClubStep(draftState.mode, clubsEnabledForRun);
+          const lastStep = getDraftLastStep(draftState.mode, clubsEnabledForRun);
+          if (draftSpinTimeoutId) { clearTimeout(draftSpinTimeoutId); draftSpinTimeoutId = null; }
+          applyDrawnDraftItem(draftState.pendingTarget, solo, clubStep, lastStep);
+          return;
+        }
+        // Noch nicht finalisiert (z.B. weil hasElevated() hier (noch) nicht zutrifft) - weiter
+        // beobachten, statt die Schleife endgültig zu beenden, sonst bliebe das Rad ohne jede
+        // weitere Chance zur Selbstheilung einfach stehen.
+        if (draftState.spinning) {
+          animFrameId = requestAnimationFrame(animate);
         }
         return;
       }
@@ -4225,7 +4256,8 @@ function requestPartner(targetName) {
     let club = null;
     if (effectiveClubsEnabled()) {
       const usedClubs = new Set(teams.map(t => t.club).filter(Boolean));
-      const freeClubs = availableClubs.filter(c => !usedClubs.has(c));
+      const clubPool = clubPoolForDraft(availableClubs, Math.floor(players.length / 2));
+      const freeClubs = clubPool.filter(c => !usedClubs.has(c));
       club = freeClubs.length ? freeClubs[Math.floor(Math.random() * freeClubs.length)] : null;
     }
     teams.push({ id: teams.length + 1, name: `Team ${teams.length + 1}`, p1: myPlayerName, p2: targetName, club });
@@ -6747,14 +6779,18 @@ function renderAdminPanel() {
     }).join('');
   }
   if (clubListEl) {
+    // Bei der Auslosung werden nur die OBERSTEN N Vereine gezogen (N = aktuell benötigte
+    // Teams/Spieler, siehe clubPoolForDraft) - die hintersten (schwächsten) Vereine der Liste
+    // werden dadurch automatisch ausgeschlossen. Hier zur Orientierung gedimmt markiert.
+    const teamCountNow = tournamentMode === 'solo' ? players.length : Math.floor(players.length / 2);
     clubListEl.innerHTML = availableClubs.map((club, index) => `
-      <span class="club-badge">
+      <span class="club-badge" style="${teamCountNow > 0 && index >= teamCountNow ? 'opacity:0.45;' : ''}" ${teamCountNow > 0 && index >= teamCountNow ? 'title="Wird bei der aktuellen Teamanzahl nicht gezogen (zu weit unten in der Liste)"' : ''}>
         ${clubLogoImg(club, 16)}${club}
         <span style="cursor:pointer;" title="Wappen-URL eingeben" onclick="setClubLogo('${club.replace(/'/g, "\\'")}')">🖼️</span>
         <span style="cursor:pointer;" title="Foto hochladen (Kamera/Galerie)" onclick="triggerClubLogoUpload('${club.replace(/'/g, "\\'")}')">📷</span>
         <span style="cursor:pointer; color:#ff4d4d; font-weight:bold; margin-left:4px;" onclick="removeClub(${index})">×</span>
       </span>
-    `).join('');
+    `).join('') + (teamCountNow > 0 && availableClubs.length > teamCountNow ? `<p style="font-size:0.8em; opacity:0.7; margin-top:6px;">Bei aktuell ${teamCountNow} Team${teamCountNow === 1 ? '' : 's'} werden nur die obersten ${teamCountNow} Vereine gezogen (gedimmt = bleibt außen vor). Reihenfolge nach Stärke - stärkste zuerst.</p>` : '');
   }
 }
 // ============================================================================
