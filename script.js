@@ -62,6 +62,7 @@ window.toggleTournamentMode = toggleTournamentMode;
 window.toggleTournamentSport = toggleTournamentSport;
 window.updateMatchInterval = updateMatchInterval;
 window.updateNumFields = updateNumFields;
+window.toggleSingleLegDuoMatches = toggleSingleLegDuoMatches;
 window.resetTournament = resetTournament;
 window.resetKOPhase = resetKOPhase;
 window.resetGroupPhase = resetGroupPhase;
@@ -314,6 +315,12 @@ let tournamentMode = 'duo';
 // Auslosung - siehe toggleClubsEnabled). Bei Darts/Bierpong oder FIFA-Solo wird diese
 // Einstellung ignoriert (siehe effectiveClubsEnabled) - da gilt ohnehin immer fest true/false.
 let clubsEnabled = true;
+// Nur im Duo-Modus relevant: true = jede Partie zählt als EIN gemeinsames Team-Ergebnis (z.B.
+// Bierpong - beide Partner spielen zusammen EIN Spiel), false = die klassische Aufteilung in
+// Hin- (p1 vs. p1) und Rückspiel (p2 vs. p2), deren Summe über die Partie entscheidet (Standard,
+// bisheriges Verhalten, z.B. FIFA). Per Sportart-Standard vorbelegt (siehe toggleTournamentSport),
+// aber für jede Sportart im Admin-Panel frei umschaltbar (siehe toggleSingleLegDuoMatches).
+let singleLegDuoMatches = false;
 // 'fifa' (Standard, mit Vereinen/Clubs), 'darts' (kein Verein, jeder Spieler ist direkt sein
 // eigenes "Team" - siehe createDartsTeamsFromPlayers, läuft technisch als tournamentMode
 // 'solo' weiter) oder 'bierpong' (wie FIFA strukturell - 1er/2er-Teams, Gruppen+KO-Baum,
@@ -1198,6 +1205,7 @@ function resetLocalStateToDefaults() {
   teams = [];
   tournamentMode = 'duo';
   clubsEnabled = true;
+  singleLegDuoMatches = false;
   tournamentSport = 'fifa';
   dartsStartScore = 501;
   dartsLegsToWin = 3;
@@ -1259,6 +1267,7 @@ function attachTournamentListener() {
     teams = data.teams || [];
     tournamentMode = data.tournamentMode || 'duo';
     clubsEnabled = data.clubsEnabled !== false;
+    singleLegDuoMatches = data.singleLegDuoMatches === true;
     tournamentSport = data.tournamentSport || 'fifa';
     dartsStartScore = data.dartsStartScore || 501;
     dartsLegsToWin = data.dartsLegsToWin || 3;
@@ -1339,6 +1348,7 @@ function saveData() {
     teams,
     tournamentMode,
     clubsEnabled,
+    singleLegDuoMatches,
     tournamentSport,
     dartsStartScore,
     dartsLegsToWin,
@@ -4459,6 +4469,22 @@ function toggleTournamentSport() {
   // Nur FIFA kennt Vereine - Darts/Bierpong erzwingen immer "ohne Verein" (siehe
   // effectiveClubsEnabled), FIFA bekommt beim Umschalten den sinnvollen Standard "mit Verein".
   clubsEnabled = tournamentSport === 'fifa';
+  // Bierpong wird physisch als EIN gemeinsames Spiel pro Partie gespielt (beide Partner
+  // gleichzeitig gegen das andere Team), nicht als zwei getrennte Hin-/Rückspiel-Duelle wie
+  // bei FIFA - deshalb hier als sinnvoller Standard, bleibt aber für jede Sportart im Admin-
+  // Panel frei umschaltbar (siehe toggleSingleLegDuoMatches).
+  singleLegDuoMatches = tournamentSport === 'bierpong';
+  saveData();
+  renderAll();
+}
+// Wechselt im Duo-Modus zwischen der klassischen Aufteilung in Hin-/Rückspiel (je ein 1v1-
+// Duell pro Partner, Standard z.B. bei FIFA) und EINEM gemeinsamen Team-Ergebnis pro Partie
+// (z.B. Bierpong, wo beide Partner gleichzeitig EIN Spiel bestreiten). Nur vor Spielplan-
+// Erstellung änderbar, sonst wären bereits erfasste Ergebnisse nicht mehr eindeutig interpretierbar.
+function toggleSingleLegDuoMatches() {
+  if (!hasElevated()) return;
+  if (groupMatches.length > 0 || koMatches.length > 0) return alert('Das kann nach Erstellung des Spielplans nicht mehr geändert werden!');
+  singleLegDuoMatches = !singleLegDuoMatches;
   saveData();
   renderAll();
 }
@@ -4559,8 +4585,12 @@ function formatMatchTime(ms) {
 // Liefert den Platz-Namen für einen 0-basierten Platz-Index ("Platz 1", "Platz 2", ...) -
 // zentral an einer Stelle, damit die Benennung überall (Gruppenspiele, KO-Spiele, Neuzuteilung
 // bei geänderter Platzanzahl) konsistent bleibt.
+// Sportartspezifisches Wort für eine "Spielstätte" - FIFA/Bierpong-Duo spielen auf einem
+// Tisch/Platz, Bierpong-Begriff ist aber "Platte" (Bierpong-Tisch), Darts auf einer Scheibe.
+const COURT_WORD_BY_SPORT = { fifa: 'Platz', bierpong: 'Platte', darts: 'Scheibe' };
 function courtNameForIndex(idx) {
-  return 'Platz ' + (idx + 1);
+  const word = COURT_WORD_BY_SPORT[tournamentSport] || 'Platz';
+  return word + ' ' + (idx + 1);
 }
 // Leitet aus einem gespeicherten Court-Namen einen stabilen 0-basierten Index ab (für die
 // Farbgebung, siehe COURT_COLORS) - inkl. Rückwärtskompatibilität zu den alten, vor dieser
@@ -4568,7 +4598,7 @@ function courtNameForIndex(idx) {
 function courtIndexFromName(name) {
   if (name === 'Hauptplatz') return 0;
   if (name === 'Nebenplatz') return 1;
-  const match = /Platz (\d+)/.exec(name || '');
+  const match = /(?:Platz|Platte|Scheibe) (\d+)/.exec(name || '');
   return match ? parseInt(match[1], 10) - 1 : 0;
 }
 // Farbpalette fürs Platz-Badge (siehe renderMatchCard) - erste beiden Farben bewusst identisch
@@ -5820,15 +5850,19 @@ function submitMatchResult(matchId, isKO) {
     return;
   }
   const solo = tournamentMode === 'solo';
+  // Nur EIN Ergebnis-Feldpaar (kein Hin-/Rückspiel): entweder weil's Solo ist (jeder spielt
+  // selbst, kein Partner da) oder weil der Admin für diese Sportart "ein gemeinsames Team-
+  // Ergebnis pro Partie" eingestellt hat (siehe toggleSingleLegDuoMatches, z.B. Bierpong).
+  const singleLeg = solo || singleLegDuoMatches;
   const h1El = document.getElementById(`m_${matchId}_${isKO ? 'ko_' : ''}h1`);
   const h2El = document.getElementById(`m_${matchId}_${isKO ? 'ko_' : ''}h2`);
   const h1 = h1El ? h1El.value : '';
   const h2 = h2El ? h2El.value : '';
-  // Solo-Modus: nur EIN Ergebnis-Feldpaar (kein Hin-/Rückspiel, jeder Spieler spielt selbst).
-  if (solo) {
+  if (singleLeg) {
     if (h1 === '' || h2 === '') {
       if (hasElevated()) {
         match.score1_h = null; match.score2_h = null;
+        match.score1_r = null; match.score2_r = null;
         match.score1 = null; match.score2 = null;
         match.played = false;
         saveData();
@@ -5843,6 +5877,12 @@ function submitMatchResult(matchId, isKO) {
       return alert('In der KO-Phase muss es einen Sieger geben!');
     }
     match.score1_h = s1; match.score2_h = s2;
+    // Im Duo-Modus (nicht Solo) zählt dasselbe gemeinsame Ergebnis für BEIDE Partner - auch
+    // als "Rückspiel"-Feld mitschreiben, damit die Einzelspieler-Statistik/Elo (siehe
+    // collectIndividualLegsForElo/calculatePlayerMatchLog, die Hin-/Rückspiel als zwei
+    // getrennte 1v1-Beine lesen) beiden Partnern korrekt dasselbe Ergebnis gutschreibt, statt
+    // nur Spieler 1 zu berücksichtigen.
+    if (!solo) { match.score1_r = s1; match.score2_r = s2; }
     match.score1 = s1; match.score2 = s2;
     match.played = true;
     saveData();
@@ -6485,6 +6525,7 @@ function renderMatchBlock(m, isKO) {
   const t1 = teams.find(t => t.id === m.t1Id) || { name: 'Team ?', p1: 'P1', p2: 'P2', club: '' };
   const t2 = teams.find(t => t.id === m.t2Id) || { name: 'Team ?', p1: 'P1', p2: 'P2', club: '' };
   const solo = tournamentMode === 'solo';
+  const singleLeg = solo || singleLegDuoMatches;
   const hinP2 = m.crossed ? t2.p2 : t2.p1;
   const rueckP2 = m.crossed ? t2.p1 : t2.p2;
   const myTeam = getMyTeam();
@@ -6539,9 +6580,9 @@ function renderMatchBlock(m, isKO) {
           </div>
         </details>
         ` : ''}
-        ` : solo ? `
+        ` : singleLeg ? `
         <div style="padding:8px; border-radius:5px; ${hinLegColor}; display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:6px;">
-          <span style="font-size:0.85em;"><strong>Ergebnis:</strong> ${t1.p1} vs. ${t2.p1}</span>
+          <span style="font-size:0.85em;"><strong>Ergebnis:</strong>${solo ? ` ${t1.p1} vs. ${t2.p1}` : ''}</span>
           <div style="display:flex; gap:5px; align-items:center;">
             ${scoreFieldOrText(`${prefix}h1`, m.score1_h, canEdit, locked, 20)}
             :
@@ -6567,7 +6608,7 @@ function renderMatchBlock(m, isKO) {
         </div>
         `}
       </div>
-      ${(m.played && !solo) ? `<div style="text-align:center; font-size:0.85em; color:var(--fal-yellow);">Gesamt: <strong>${m.score1} : ${m.score2}</strong></div>` : ''}
+      ${(m.played && !singleLeg) ? `<div style="text-align:center; font-size:0.85em; color:var(--fal-yellow);">Gesamt: <strong>${m.score1} : ${m.score2}</strong></div>` : ''}
       <div style="display:flex; gap:8px; flex-wrap:wrap;">
         ${(canEdit && !locked) ? `<button class="btn-primary btn-sm" style="flex:1;" onclick="submitMatchResult(${m.id}, ${isKO})">💾 ${m.played ? 'Aktualisieren' : 'Ergebnis eintragen'}</button>` : ''}
         ${(hasElevated() && m.played && !m.confirmed) ? `<button class="btn-primary btn-sm" style="flex:1; background:#2ecc71; color:#fff;" onclick="confirmMatchResult(${m.id}, ${isKO})">✅ Bestätigen</button>` : ''}
@@ -6765,6 +6806,11 @@ function renderAdminPanel() {
       <div style="display:flex; align-items:center; justify-content:space-between; background:rgba(0,0,0,0.2); padding:8px 12px; border-radius:8px; margin-bottom:8px; flex-wrap:wrap; gap:8px;">
         <span style="font-size:0.9em;">${clubsEnabled ? '⚽ 2er-Teams MIT Verein' : '👬 2er-Teams OHNE Verein (z.B. zum Zimmer/Gruppen auslosen)'}</span>
         <button class="btn-secondary btn-sm" onclick="toggleClubsEnabled()">Umschalten</button>
+      </div>` : ''}
+      ${tournamentMode !== 'solo' ? `
+      <div style="display:flex; align-items:center; justify-content:space-between; background:rgba(0,0,0,0.2); padding:8px 12px; border-radius:8px; margin-bottom:8px; flex-wrap:wrap; gap:8px;">
+        <span style="font-size:0.9em;">${singleLegDuoMatches ? '🤝 Pro Partie EIN gemeinsames Team-Ergebnis' : '🟡🔵 Pro Partie Hin- & Rückspiel (je 1 Duell pro Partner)'}</span>
+        <button class="btn-secondary btn-sm" onclick="toggleSingleLegDuoMatches()">Umschalten</button>
       </div>` : ''}` : ''}
       ${plannedPlayerCount ? `<p style="font-size:0.85em; opacity:0.75; margin:0 0 8px 0;">🎯 Geplant: ${plannedPlayerCount} Spieler (aktuell ${players.length})</p>` : ''}
       <div style="display:flex; align-items:center; justify-content:space-between; background:rgba(0,0,0,0.2); padding:8px 12px; border-radius:8px; margin-bottom:8px; flex-wrap:wrap; gap:8px;">
@@ -7739,14 +7785,14 @@ function calculatePlayerMatchLog(playerName) {
       log.push({ opponent: playerA, goalsFor: s2, goalsAgainst: s1, round: roundLabel });
     }
   }
-  const solo = tournamentMode === 'solo';
+  const singleLeg = tournamentMode === 'solo' || singleLegDuoMatches;
   groupMatches.forEach(m => {
-    processLeg(m, true, solo ? m.group : `${m.group} (Hinspiel)`);
-    processLeg(m, false, `${m.group} (Rückspiel)`);
+    processLeg(m, true, singleLeg ? m.group : `${m.group} (Hinspiel)`);
+    processLeg(m, false, singleLeg ? m.group : `${m.group} (Rückspiel)`);
   });
   koMatches.forEach(m => {
-    processLeg(m, true, solo ? m.round : `${m.round} (Hinspiel)`);
-    processLeg(m, false, `${m.round} (Rückspiel)`);
+    processLeg(m, true, singleLeg ? m.round : `${m.round} (Hinspiel)`);
+    processLeg(m, false, singleLeg ? m.round : `${m.round} (Rückspiel)`);
   });
   return log;
 }
