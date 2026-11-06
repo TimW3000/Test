@@ -8898,6 +8898,11 @@ function playGagEffect(effect) {
     const img = document.createElement('img');
     img.src = effect.mediaData;
     img.style.cssText = 'max-width:92vw; max-height:92vh; object-fit:contain; border-radius:8px;';
+    // Kinetischer Animationsstil (siehe GAG_IMAGE_ANIMATION_STYLES/@keyframes gag-img-* in
+    // style.css) - 'none'/fehlend (ältere, vor diesem Feature gespeicherte Effekte) lässt das
+    // Bild wie bisher unbewegt stehen.
+    const animStyle = effect.animationStyle;
+    if (animStyle && animStyle !== 'none') img.classList.add('gag-img-anim-' + animStyle);
     overlay.appendChild(img);
     setTimeout(dismiss, effect.durationMs || 3000);
   } else if (effect.effectType === 'video' && effect.mediaData) {
@@ -8925,10 +8930,22 @@ function playGagEffect(effect) {
 // (z.B. wenn sich durch einen Typ-Wechsel die sichtbaren Felder ändern), damit die Eingabe
 // dabei nicht verloren geht. Wird nur beim Öffnen des Gag-Managers bzw. nach dem Speichern
 // zurückgesetzt.
-let gagFormDraft = { name: '', targetPlayerKey: '', effectType: 'sound', durationMs: 3000, mediaData: null, mediaLabel: '', presetKey: '' };
+let gagFormDraft = { name: '', targetPlayerKey: '', effectType: 'sound', durationMs: 3000, mediaData: null, mediaLabel: '', presetKey: '', animationStyle: 'bounce' };
 function resetGagFormDraft() {
-  gagFormDraft = { name: '', targetPlayerKey: '', effectType: 'sound', durationMs: 3000, mediaData: null, mediaLabel: '', presetKey: '' };
+  gagFormDraft = { name: '', targetPlayerKey: '', effectType: 'sound', durationMs: 3000, mediaData: null, mediaLabel: '', presetKey: '', animationStyle: 'bounce' };
 }
+// Kinetische Animationsstile für hochgeladene BILD-Effekte - macht aus einem einfachen
+// Standbild etwas "Lebendiges" (wackelt/hüpft/dreht rein), statt nur für X Sekunden
+// unbewegt dazustehen. Rein CSS-basiert (siehe @keyframes gag-img-* in style.css), kein
+// Video nötig. 'none' = altes Verhalten (unbewegtes Standbild, Standard für bereits
+// gespeicherte Effekte ohne dieses Feld, damit die rückwärtskompatibel bleiben).
+const GAG_IMAGE_ANIMATION_STYLES = {
+  'none': '📷 Unbewegt (Standbild)',
+  'bounce': '🏀 Reinhüpfen & wackeln',
+  'zoom-pulse': '🔍 Reinzoomen & pulsieren',
+  'spin-in': '🌀 Reindrehen',
+  'shake-laugh': '🤣 Lachflash (zittern/schütteln)'
+};
 // Öffnet den Gag-Manager (nur God) - eigener Screen analog zum God-Panel.
 function openGagManager() {
   if (!isGod()) return;
@@ -9010,6 +9027,7 @@ function saveNewGagEffect() {
     targetPlayerKey: d.targetPlayerKey,
     effectType: d.effectType,
     presetKey: d.effectType === 'preset' ? d.presetKey : null,
+    animationStyle: d.effectType === 'image' ? (d.animationStyle || 'none') : null,
     durationMs: (d.effectType === 'image' || d.effectType === 'preset') ? (parseInt(d.durationMs, 10) || 3000) : null,
     mediaBytes: d.effectType === 'preset' ? 0 : estimateMediaBytes(d.mediaData),
     enabled: true,
@@ -9130,13 +9148,22 @@ function renderGagManager() {
           <input type="file" id="gag-media-file-input" accept="${acceptByType[gagFormDraft.effectType]}" onchange="handleGagMediaFileSelected(event)">
           ${gagFormDraft.mediaData ? `<p style="font-size:0.8em; color:#2ecc71; margin:4px 0 0 0;">✅ Datei bereit: ${escapeHtml(gagFormDraft.mediaLabel)}</p>` : `<p style="font-size:0.8em; opacity:0.7; margin:4px 0 0 0;">Noch keine Datei ausgewählt (max. ${GAG_MEDIA_MAX_BYTES / 1024 / 1024} MB).</p>`}
         </div>
-      ` : `
+      ` : ''}
+      ${gagFormDraft.effectType === 'image' ? `
+        <label style="font-size:0.85em; display:flex; flex-direction:column; gap:4px;">
+          Animationsstil (lässt das Standbild "lebendig" wirken):
+          <select onchange="updateGagFormField('animationStyle', this.value)">
+            ${Object.keys(GAG_IMAGE_ANIMATION_STYLES).map(k => `<option value="${k}" ${gagFormDraft.animationStyle === k ? 'selected' : ''}>${GAG_IMAGE_ANIMATION_STYLES[k]}</option>`).join('')}
+          </select>
+        </label>
+      ` : ''}
+      ${!needsMediaUpload ? `
         <select onchange="updateGagFormField('presetKey', this.value)">
           <option value="">-- Vorgefertigte Animation wählen --</option>
           ${presetOptions}
         </select>
         ${Object.keys(GAG_ANIMATION_PRESETS).length === 0 ? '<p style="font-size:0.8em; opacity:0.7; margin:0;">Noch keine vorgefertigten Animationen hinterlegt - die kommen später dazu.</p>' : ''}
-      `}
+      ` : ''}
       ${showDuration ? `
         <label style="font-size:0.85em; display:flex; align-items:center; gap:6px;">
           Anzeigedauer (Sekunden):
