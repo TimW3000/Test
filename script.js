@@ -61,6 +61,7 @@ window.handleImportJsonFileSelected = handleImportJsonFileSelected;
 window.toggleTournamentMode = toggleTournamentMode;
 window.toggleTournamentSport = toggleTournamentSport;
 window.updateMatchInterval = updateMatchInterval;
+window.updateNumFields = updateNumFields;
 window.resetTournament = resetTournament;
 window.resetKOPhase = resetKOPhase;
 window.resetGroupPhase = resetGroupPhase;
@@ -336,7 +337,8 @@ let koQualifiersTotal = null;
 // Teams mit Freilos direkt in Runde 2, wenn die KO-Teilnehmerzahl keine Zweierpotenz ist
 // (siehe buildKORound1Pairing) - wird nach der ersten KO-Runde wieder geleert.
 let koByeTeamIds = [];
-let matchIntervalMinutes = 20; // Zeitabstand zwischen zwei Spiel-Slots (Hauptplatz+Nebenplatz), admin-einstellbar
+let matchIntervalMinutes = 20; // Zeitabstand zwischen zwei Spiel-Slots, admin-einstellbar
+let numFields = 2; // Anzahl gleichzeitig bespielter Plätze/Tische, admin-einstellbar (siehe updateNumFields)
 // Admin-"Cheat"-Vorauswahl fürs Glücksrad: [{ p1, p2, club }]. Legt fest, welche
 // zwei Spieler garantiert ins selbe Team kommen (und optional welchen Club sie
 // bekommen) - der Rest bleibt komplett echt zufällig. Siehe spinWheel().
@@ -1205,6 +1207,7 @@ function resetLocalStateToDefaults() {
   koQualifiersTotal = null;
   koByeTeamIds = [];
   matchIntervalMinutes = 20;
+  numFields = 2;
   draftCheats = [];
   groupDraftCheats = [];
   groups = [];
@@ -1265,6 +1268,7 @@ function attachTournamentListener() {
     koQualifiersTotal = data.koQualifiersTotal || null;
     koByeTeamIds = data.koByeTeamIds || [];
     matchIntervalMinutes = data.matchIntervalMinutes || 20;
+    numFields = data.numFields || 2;
     draftCheats = data.draftCheats || [];
     groupDraftCheats = data.groupDraftCheats || [];
     groups = data.groups || [];
@@ -1344,6 +1348,7 @@ function saveData() {
     koQualifiersTotal,
     koByeTeamIds,
     matchIntervalMinutes,
+    numFields,
     draftCheats,
     groupDraftCheats,
     groups,
@@ -4475,8 +4480,8 @@ function clearTournamentJoinPassword() {
   saveData();
   renderAll();
 }
-// Ändert den Zeitabstand zwischen zwei Spiel-Slots (Hauptplatz+Nebenplatz) und
-// berechnet den Zeitplan aller noch nicht gestarteten/gespielten Spiele sofort neu
+// Ändert den Zeitabstand zwischen zwei Spiel-Slots und berechnet den Zeitplan aller noch
+// nicht gestarteten/gespielten Spiele sofort neu
 function updateMatchInterval() {
   if (!hasElevated()) return;
   const input = document.getElementById('match-interval-input');
@@ -4488,6 +4493,23 @@ function updateMatchInterval() {
   saveData();
   renderAll();
   alert(`✅ Zeitabstand auf ${val} Minuten geändert – der Spielplan wurde entsprechend aktualisiert.`);
+}
+// Ändert, wie viele Spiele gleichzeitig laufen (= Anzahl Plätze/Tische) und weist allen noch
+// nicht gestarteten/gespielten Spielen sofort neue Plätze UND einen entsprechend angepassten
+// Zeitplan zu (siehe rescheduleWholeArray) - z.B. von 2 auf 3 Plätze erhöht bedeutet, dass ab
+// sofort 3 statt 2 Spiele gleichzeitig starten und sich der restliche Spielplan entsprechend
+// nach vorne zieht.
+function updateNumFields() {
+  if (!hasElevated()) return;
+  const input = document.getElementById('num-fields-input');
+  const val = input ? parseInt(input.value, 10) : NaN;
+  if (isNaN(val) || val <= 0) return alert('Bitte eine gültige Anzahl Plätze (größer als 0) eingeben!');
+  numFields = val;
+  rescheduleWholeArray(groupMatches);
+  rescheduleWholeArray(koMatches);
+  saveData();
+  renderAll();
+  alert(`✅ Anzahl Plätze auf ${val} geändert – Plätze und Zeitplan wurden entsprechend aktualisiert.`);
 }
 // ============================================================================
 // 8. GRUPPEN- & KO-AUSLOSUNG — Gruppenphase erstellen (beliebige Gruppenanzahl), dann eine
@@ -4534,13 +4556,32 @@ function formatMatchTime(ms) {
   if (!ms) return '';
   return new Date(ms).toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' }) + ' Uhr';
 }
-// Verteilt Startzeiten auf eine Liste NEU erstellter Spiele: je 2 direkt aufeinander-
-// folgende Spiele (Hauptplatz + Nebenplatz) bekommen dieselbe Zeit ("spielen zeitgleich"),
-// das nächste Paar ist matchIntervalMinutes später dran, usw. baseTime ist meist "jetzt"
-// (der Moment, in dem der Admin die Auslosung/Runde erstellt).
+// Liefert den Platz-Namen für einen 0-basierten Platz-Index ("Platz 1", "Platz 2", ...) -
+// zentral an einer Stelle, damit die Benennung überall (Gruppenspiele, KO-Spiele, Neuzuteilung
+// bei geänderter Platzanzahl) konsistent bleibt.
+function courtNameForIndex(idx) {
+  return 'Platz ' + (idx + 1);
+}
+// Leitet aus einem gespeicherten Court-Namen einen stabilen 0-basierten Index ab (für die
+// Farbgebung, siehe COURT_COLORS) - inkl. Rückwärtskompatibilität zu den alten, vor dieser
+// Funktion fest verdrahteten Namen "Hauptplatz"/"Nebenplatz" (aus bereits laufenden Turnieren).
+function courtIndexFromName(name) {
+  if (name === 'Hauptplatz') return 0;
+  if (name === 'Nebenplatz') return 1;
+  const match = /Platz (\d+)/.exec(name || '');
+  return match ? parseInt(match[1], 10) - 1 : 0;
+}
+// Farbpalette fürs Platz-Badge (siehe renderMatchCard) - erste beiden Farben bewusst identisch
+// zu den alten Hauptplatz(rot)/Nebenplatz(grün)-Farben, damit sich an Turnieren mit nur 2
+// Plätzen optisch nichts ändert. Bei mehr Plätzen wird einfach weitergezählt.
+const COURT_COLORS = ['#e74c3c', '#2ecc71', '#3498db', '#f1c40f', '#9b59b6', '#1abc9c', '#e67e22', '#fd79a8'];
+// Verteilt Startzeiten auf eine Liste NEU erstellter Spiele: je numFields direkt aufeinander-
+// folgende Spiele (einer pro Platz) bekommen dieselbe Zeit ("spielen zeitgleich"), die nächste
+// Gruppe ist matchIntervalMinutes später dran, usw. baseTime ist meist "jetzt" (der Moment, in
+// dem der Admin die Auslosung/Runde erstellt).
 function assignScheduledTimes(newMatches, baseTime) {
   newMatches.forEach((m, idx) => {
-    m.scheduledTime = baseTime + Math.floor(idx / 2) * matchIntervalMinutes * 60000;
+    m.scheduledTime = baseTime + Math.floor(idx / numFields) * matchIntervalMinutes * 60000;
   });
 }
 // Wird beim Starten eines Spiels aufgerufen: passt die geplanten Uhrzeiten aller NOCH
@@ -4550,25 +4591,27 @@ function assignScheduledTimes(newMatches, baseTime) {
 function rescheduleFollowingMatches(matchArray, startedMatch) {
   const idx = matchArray.indexOf(startedMatch);
   if (idx === -1) return;
-  const startedPairIndex = Math.floor(idx / 2);
+  const startedPairIndex = Math.floor(idx / numFields);
   const anchorTime = startedMatch.scheduledTime;
   matchArray.forEach((m, i) => {
     if (m.started || m.played) return; // Vergangenheit/Laufendes nicht mehr anfassen
-    const pairIndex = Math.floor(i / 2);
+    const pairIndex = Math.floor(i / numFields);
     if (pairIndex < startedPairIndex) return;
     m.scheduledTime = anchorTime + (pairIndex - startedPairIndex) * matchIntervalMinutes * 60000;
   });
 }
-// Wird aufgerufen, wenn der Admin den Zeitabstand (matchIntervalMinutes) ändert: berechnet
-// alle noch nicht gestarteten/gespielten Spiele im Array neu. Anker ist das zuletzt
-// gestartete Spiel (dessen Zeit ist ja Fakt), sonst die Zeit des allerersten Spiels.
+// Wird aufgerufen, wenn der Admin den Zeitabstand (matchIntervalMinutes) ODER die Anzahl der
+// Plätze (numFields) ändert: berechnet alle noch nicht gestarteten/gespielten Spiele im Array
+// neu - inkl. Platz-Neuzuteilung, falls sich numFields geändert hat (bei reiner Intervall-
+// Änderung ergibt das dieselben Plätze wie vorher, ist also ein harmloses No-op). Anker ist
+// das zuletzt gestartete Spiel (dessen Zeit ist ja Fakt), sonst die Zeit des allerersten Spiels.
 function rescheduleWholeArray(matchArray) {
   if (!matchArray || matchArray.length === 0) return;
   let anchorTime = null;
   let anchorPairIndex = 0;
   matchArray.forEach((m, i) => {
     if ((m.started || m.played) && m.scheduledTime) {
-      const pairIndex = Math.floor(i / 2);
+      const pairIndex = Math.floor(i / numFields);
       if (anchorTime === null || pairIndex > anchorPairIndex) {
         anchorTime = m.scheduledTime;
         anchorPairIndex = pairIndex;
@@ -4581,9 +4624,10 @@ function rescheduleWholeArray(matchArray) {
   }
   matchArray.forEach((m, i) => {
     if (m.started || m.played) return;
-    const pairIndex = Math.floor(i / 2);
+    const pairIndex = Math.floor(i / numFields);
     if (pairIndex < anchorPairIndex) return;
     m.scheduledTime = anchorTime + (pairIndex - anchorPairIndex) * matchIntervalMinutes * 60000;
+    m.court = courtNameForIndex(i % numFields);
   });
 }
 // Erzeugt die Gruppen-Bezeichnungen "Gruppe A".."Gruppe Z" (max. 26 Gruppen)
@@ -4736,7 +4780,7 @@ function buildGroupScheduleAndSave() {
   interleavedMatches.forEach((match, idx) => {
     match.id = matchId++;
     match.slot = idx + 1;
-    match.court = (idx % 2 === 1) ? 'Nebenplatz' : 'Hauptplatz';
+    match.court = courtNameForIndex(idx % numFields);
     groupMatches.push(match);
   });
   assignScheduledTimes(groupMatches, Date.now());
@@ -5247,7 +5291,7 @@ function advanceKORound() {
     koMatches = [];
     let matchId = 1;
     pairs.forEach((pair, i) => {
-      const m = makeKOMatch(matchId++, roundName, (i % 2 === 0) ? 'Hauptplatz' : 'Nebenplatz', pair[0].teamId, pair[1].teamId);
+      const m = makeKOMatch(matchId++, roundName, courtNameForIndex(i % numFields), pair[0].teamId, pair[1].teamId);
       m.roundNumber = 0;
       koMatches.push(m);
     });
@@ -5285,11 +5329,11 @@ function advanceKORound() {
     if (!confirm('Finale & Spiel um Platz 3 jetzt erstellen?')) return;
     const newMatches = [];
     if (losers.length >= 2) {
-      const m3 = makeKOMatch(matchId++, '🥉 Spiel um Platz 3', 'Nebenplatz', losers[0].teamId, losers[1].teamId);
+      const m3 = makeKOMatch(matchId++, '🥉 Spiel um Platz 3', courtNameForIndex(1 % numFields), losers[0].teamId, losers[1].teamId);
       m3.roundNumber = currentRoundNumber + 1;
       newMatches.push(m3);
     }
-    const mf = makeKOMatch(matchId++, '🏆 FINALE', 'Hauptplatz', advancing[0].teamId, advancing[1].teamId);
+    const mf = makeKOMatch(matchId++, '🏆 FINALE', courtNameForIndex(0), advancing[0].teamId, advancing[1].teamId);
     mf.roundNumber = currentRoundNumber + 1;
     newMatches.push(mf);
     assignScheduledTimes(newMatches, Date.now());
@@ -5304,7 +5348,7 @@ function advanceKORound() {
   const shuffled = [...advancing].sort(() => Math.random() - 0.5);
   const newMatches = [];
   for (let i = 0; i < shuffled.length; i += 2) {
-    const m = makeKOMatch(matchId++, roundName, (newMatches.length % 2 === 0) ? 'Hauptplatz' : 'Nebenplatz', shuffled[i].teamId, shuffled[i + 1].teamId);
+    const m = makeKOMatch(matchId++, roundName, courtNameForIndex(newMatches.length % numFields), shuffled[i].teamId, shuffled[i + 1].teamId);
     m.roundNumber = currentRoundNumber + 1;
     newMatches.push(m);
   }
@@ -6454,7 +6498,7 @@ function renderMatchBlock(m, isKO) {
   else if (m.started) statusBadge = '<span class="status-badge" style="background:rgba(255,77,77,0.2); color:var(--fal-red); border:1px solid var(--fal-red);">🚦 Läuft (Wetten geschlossen)</span>';
   
   const prefix = `m_${m.id}_${isKO ? 'ko_' : ''}`;
-  const courtColor = m.court === 'Hauptplatz' ? '#e74c3c' : '#2ecc71';
+  const courtColor = COURT_COLORS[courtIndexFromName(m.court) % COURT_COLORS.length];
   const roundLabel = isKO ? m.round : `Runde ${m.slot || ''} • ${m.group}`;
   const timeLabel = m.scheduledTime ? `🕐 ${formatMatchTime(m.scheduledTime)}` : '';
   const hinLegColor = 'border-left: 5px solid #f1c40f; background: rgba(241, 196, 15, 0.1);';
@@ -6699,6 +6743,10 @@ function renderAdminPanel() {
   const intervalInput = document.getElementById('match-interval-input');
   if (intervalInput && document.activeElement !== intervalInput) {
     intervalInput.value = matchIntervalMinutes;
+  }
+  const numFieldsInput = document.getElementById('num-fields-input');
+  if (numFieldsInput && document.activeElement !== numFieldsInput) {
+    numFieldsInput.value = numFields;
   }
   const coinAnimSelect = document.getElementById('coin-animation-select');
   if (coinAnimSelect) coinAnimSelect.value = coinAnimation;
