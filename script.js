@@ -4437,9 +4437,18 @@ const TOURNAMENT_SPORTS = ['fifa', 'darts', 'bierpong'];
 function toggleTournamentSport() {
   if (!hasElevated()) return;
   if (teams.length > 0) return alert('Die Sportart kann nach der Auslosung nicht mehr geändert werden!');
+  const previousSport = tournamentSport;
   const nextIndex = (TOURNAMENT_SPORTS.indexOf(tournamentSport) + 1) % TOURNAMENT_SPORTS.length;
   tournamentSport = TOURNAMENT_SPORTS[nextIndex];
-  if (tournamentSport === 'darts') tournamentMode = 'solo';
+  if (tournamentSport === 'darts') {
+    tournamentMode = 'solo';
+  } else if (previousSport === 'darts') {
+    // Darts erzwingt Solo NUR für sich selbst - beim Weiterschalten auf eine andere Sportart
+    // (z.B. Bierpong) wieder den normalen Duo-Standard herstellen, statt "Solo" unbeabsichtigt
+    // weiter mitzuschleppen (sonst bliebe z.B. "Teams selbst aussuchen" fälschlich gesperrt,
+    // einfach weil man beim Durchklicken der Sportarten kurz bei Darts vorbeikam).
+    tournamentMode = 'duo';
+  }
   // Nur FIFA kennt Vereine - Darts/Bierpong erzwingen immer "ohne Verein" (siehe
   // effectiveClubsEnabled), FIFA bekommt beim Umschalten den sinnvollen Standard "mit Verein".
   clubsEnabled = tournamentSport === 'fifa';
