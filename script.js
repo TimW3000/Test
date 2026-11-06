@@ -194,6 +194,8 @@ window.saveNewGagEffect = saveNewGagEffect;
 window.deleteCustomEffect = deleteCustomEffect;
 window.toggleCustomEffectEnabled = toggleCustomEffectEnabled;
 window.testPlayGagEffect = testPlayGagEffect;
+window.startEditGagEffect = startEditGagEffect;
+window.cancelEditGagEffect = cancelEditGagEffect;
 window.prefetchPlayerDrawnEffects = prefetchPlayerDrawnEffects;
 window.openDbExplorer = openDbExplorer;
 window.closeDbExplorer = closeDbExplorer;
@@ -8934,6 +8936,50 @@ let gagFormDraft = { name: '', targetPlayerKey: '', effectType: 'sound', duratio
 function resetGagFormDraft() {
   gagFormDraft = { name: '', targetPlayerKey: '', effectType: 'sound', durationMs: 3000, mediaData: null, mediaLabel: '', presetKey: '', animationStyle: 'bounce' };
 }
+// Ist gerade ein BESTEHENDER Effekt in Bearbeitung (siehe startEditGagEffect)? Dann speichert
+// saveNewGagEffect() nicht neu an, sondern überschreibt genau diesen Effekt - null = normaler
+// "neuer Effekt"-Modus.
+let gagEditingId = null;
+// Lädt einen bestehenden Effekt zum Bearbeiten ins Formular - inkl. des schon hochgeladenen
+// Mediums. Das muss extra nachgeladen werden (siehe customEffects/customEffectsMedia-
+// Aufteilung oben): normalerweise wird es NICHT dauerhaft im Speicher gehalten, nur beim
+// tatsächlichen Abspielen. Beim Speichern wird dann GENAU dieser Effekt überschrieben statt
+// ein neuer angelegt (siehe saveNewGagEffect()).
+function startEditGagEffect(id) {
+  if (!isGod()) return;
+  const effect = customEffects[id];
+  if (!effect) return;
+  gagEditingId = id;
+  gagFormDraft = {
+    name: effect.name || '',
+    targetPlayerKey: effect.targetPlayerKey || '',
+    effectType: effect.effectType || 'sound',
+    durationMs: effect.durationMs || 3000,
+    mediaData: null,
+    mediaLabel: effect.effectType === 'preset' ? '' : '⏳ Lade bestehende Datei...',
+    presetKey: effect.presetKey || '',
+    animationStyle: effect.animationStyle || 'bounce'
+  };
+  renderGagManager();
+  if (effect.effectType === 'preset') return;
+  db.ref('customEffectsMedia/' + id).once('value').then((snap) => {
+    if (gagEditingId !== id) return; // zwischenzeitlich abgebrochen/anderen Effekt angefangen
+    const media = snap.val();
+    gagFormDraft.mediaData = (media && media.mediaData) || null;
+    gagFormDraft.mediaLabel = gagFormDraft.mediaData ? '(bestehende Datei - zum Ersetzen einfach eine neue auswählen)' : '';
+    renderGagManager();
+  }).catch(() => {
+    if (gagEditingId !== id) return;
+    gagFormDraft.mediaLabel = '⚠️ Datei konnte nicht geladen werden';
+    renderGagManager();
+  });
+}
+// Bricht das Bearbeiten ab, ohne etwas zu speichern - zurück zum normalen "neuer Effekt"-Formular.
+function cancelEditGagEffect() {
+  gagEditingId = null;
+  resetGagFormDraft();
+  renderGagManager();
+}
 // Kinetische Animationsstile für hochgeladene BILD-Effekte - macht aus einem einfachen
 // Standbild etwas "Lebendiges" (wackelt/hüpft/dreht rein), statt nur für X Sekunden
 // unbewegt dazustehen. Rein CSS-basiert (siehe @keyframes gag-img-* in style.css), kein
@@ -8949,6 +8995,7 @@ const GAG_IMAGE_ANIMATION_STYLES = {
 // Öffnet den Gag-Manager (nur God) - eigener Screen analog zum God-Panel.
 function openGagManager() {
   if (!isGod()) return;
+  gagEditingId = null;
   resetGagFormDraft();
   renderGagManager();
   document.getElementById('gag-manager-modal').style.display = 'flex';
@@ -9021,7 +9068,11 @@ function saveNewGagEffect() {
   } else if (!d.mediaData) {
     return alert('Bitte erst eine Datei hochladen.');
   }
-  const newEffectMeta = {
+  // Beim Bearbeiten (gagEditingId gesetzt, siehe startEditGagEffect) bleiben enabled/createdAt
+  // vom bestehenden Effekt erhalten - ein pausierter Effekt soll beim Bearbeiten nicht
+  // stillschweigend wieder aktiv werden, und die Erstellzeit bestimmt die Sortierung der Liste.
+  const existing = gagEditingId ? customEffects[gagEditingId] : null;
+  const effectMeta = {
     name: d.name.trim(),
     triggerType: 'player_drawn',
     targetPlayerKey: d.targetPlayerKey,
@@ -9030,15 +9081,16 @@ function saveNewGagEffect() {
     animationStyle: d.effectType === 'image' ? (d.animationStyle || 'none') : null,
     durationMs: (d.effectType === 'image' || d.effectType === 'preset') ? (parseInt(d.durationMs, 10) || 3000) : null,
     mediaBytes: d.effectType === 'preset' ? 0 : estimateMediaBytes(d.mediaData),
-    enabled: true,
-    createdAt: Date.now()
+    enabled: existing ? existing.enabled !== false : true,
+    createdAt: existing ? (existing.createdAt || Date.now()) : Date.now()
   };
-  const ref = db.ref('customEffects').push();
-  const id = ref.key;
+  const id = gagEditingId || db.ref('customEffects').push().key;
   Promise.all([
-    ref.set(newEffectMeta),
-    d.effectType === 'preset' ? Promise.resolve() : db.ref('customEffectsMedia/' + id).set({ mediaData: d.mediaData })
+    db.ref('customEffects/' + id).set(effectMeta),
+    d.effectType === 'preset' ? db.ref('customEffectsMedia/' + id).remove() : db.ref('customEffectsMedia/' + id).set({ mediaData: d.mediaData })
   ]).then(() => {
+    delete gagMediaCache[id]; // evtl. geändertes Medium beim nächsten Abspielen neu laden, nicht die alte Version aus dem Cache zeigen
+    gagEditingId = null;
     resetGagFormDraft();
     renderGagManager();
   }).catch((error) => alert('⚠️ Speichern fehlgeschlagen:\n' + error.message));
@@ -9102,6 +9154,7 @@ function renderGagManager() {
           </span>
           <div style="display:flex; gap:5px; flex-wrap:wrap;">
             <button class="btn-secondary btn-sm" onclick="testPlayGagEffect('${id}')">▶️ Testen</button>
+            <button class="btn-secondary btn-sm" onclick="startEditGagEffect('${id}')">✏️ Bearbeiten</button>
             <button class="btn-secondary btn-sm" onclick="toggleCustomEffectEnabled('${id}')">${e.enabled === false ? '✅ Aktivieren' : '⏸️ Pausieren'}</button>
             <button class="btn-danger btn-sm" onclick="deleteCustomEffect('${id}')">🗑️</button>
           </div>
@@ -9133,7 +9186,7 @@ function renderGagManager() {
     <h4 style="margin-bottom:6px;">Bestehende Effekte (${effectIds.length})</h4>
     <div style="max-height:220px; overflow-y:auto; margin-bottom:16px;">${list}</div>
 
-    <h4 style="margin-bottom:6px;">+ Neuer Effekt</h4>
+    <h4 style="margin-bottom:6px;">${gagEditingId ? '✏️ Effekt bearbeiten' : '+ Neuer Effekt'}</h4>
     <div style="display:flex; flex-direction:column; gap:8px;">
       <input type="text" id="gag-effect-name-input" placeholder="Name (nur zur eigenen Übersicht, z.B. 'Bobs Gabelstapler')" value="${escapeHtml(gagFormDraft.name)}" oninput="updateGagFormField('name', this.value)">
       <select onchange="updateGagFormField('targetPlayerKey', this.value)">
@@ -9146,7 +9199,11 @@ function renderGagManager() {
       ${needsMediaUpload ? `
         <div>
           <input type="file" id="gag-media-file-input" accept="${acceptByType[gagFormDraft.effectType]}" onchange="handleGagMediaFileSelected(event)">
-          ${gagFormDraft.mediaData ? `<p style="font-size:0.8em; color:#2ecc71; margin:4px 0 0 0;">✅ Datei bereit: ${escapeHtml(gagFormDraft.mediaLabel)}</p>` : `<p style="font-size:0.8em; opacity:0.7; margin:4px 0 0 0;">Noch keine Datei ausgewählt (max. ${GAG_MEDIA_MAX_BYTES / 1024 / 1024} MB).</p>`}
+          ${gagFormDraft.mediaData
+            ? `<p style="font-size:0.8em; color:#2ecc71; margin:4px 0 0 0;">✅ Datei bereit: ${escapeHtml(gagFormDraft.mediaLabel)}</p>`
+            : (gagFormDraft.mediaLabel
+                ? `<p style="font-size:0.8em; opacity:0.8; margin:4px 0 0 0;">${escapeHtml(gagFormDraft.mediaLabel)}</p>`
+                : `<p style="font-size:0.8em; opacity:0.7; margin:4px 0 0 0;">Noch keine Datei ausgewählt (max. ${GAG_MEDIA_MAX_BYTES / 1024 / 1024} MB).</p>`)}
         </div>
       ` : ''}
       ${gagFormDraft.effectType === 'image' ? `
@@ -9170,7 +9227,10 @@ function renderGagManager() {
           <input type="number" min="1" max="30" step="0.5" value="${(gagFormDraft.durationMs / 1000).toFixed(1)}" style="width:70px;" onchange="updateGagFormField('durationMs', Math.round(parseFloat(this.value) * 1000))">
         </label>
       ` : ''}
-      <button class="btn-primary btn-sm" onclick="saveNewGagEffect()">💾 Effekt speichern</button>
+      <div style="display:flex; gap:8px;">
+        <button class="btn-primary btn-sm" onclick="saveNewGagEffect()">💾 ${gagEditingId ? 'Änderungen speichern' : 'Effekt speichern'}</button>
+        ${gagEditingId ? `<button class="btn-secondary btn-sm" onclick="cancelEditGagEffect()">Abbrechen</button>` : ''}
+      </div>
     </div>
   `;
 }
