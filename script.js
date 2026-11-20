@@ -224,9 +224,30 @@ if (!firebase.apps.length) {
   firebase.initializeApp(firebaseConfig);
 }
 const db = firebase.database();
+// Meldet JEDE besuchende Person automatisch & unsichtbar anonym bei Firebase an (kein
+// Login-Formular, keine sichtbare Änderung) - rein technisch nötig, damit die Firebase-
+// Sicherheitsregeln zwischen "kommt über die echte Website" (bekommt dabei automatisch einen
+// Auth-Token) und "spricht die Datenbank direkt/automatisiert an, z.B. ein Scanner-Bot im
+// Internet" (kein Token, wird von den Regeln abgewiesen) unterscheiden können. Startet die
+// eigentliche App (alle Firebase-Listener) erst, NACHDEM die Anmeldung bestätigt ist - sonst
+// würden die allerersten Lese-/Schreibversuche noch ohne Token laufen und (sobald die Regeln
+// entsprechend verschärft sind) mit "Permission denied" fehlschlagen.
+let firebaseAppStarted = false;
+function initFirebaseAuthThenApp(startAppFn) {
+  firebase.auth().onAuthStateChanged((user) => {
+    if (user && !firebaseAppStarted) {
+      firebaseAppStarted = true;
+      startAppFn();
+    }
+  });
+  firebase.auth().signInAnonymously().catch((error) => {
+    console.error('Anonyme Anmeldung fehlgeschlagen:', error);
+    alert('⚠️ Verbindung zur Datenbank fehlgeschlagen (Anmeldung):\n\n' + error.message + '\n\nBitte Seite neu laden.');
+  });
+}
 // Das "God-Passwort" gilt website-weit für den Namen "tim" (siehe isGod()) - komplett
 // unabhängig von den einzelnen, pro Turnier selbst gewählten Admin-Passwörtern.
-const GOD_PASSWORD = "1234";
+const GOD_PASSWORD = "FalTurnier#2026!";
 // Firebase-Schlüssel (hier: ein Spielername, kleingeschrieben als Pfad-Segment unter
 // globalPlayers/...) dürfen laut offizieller Realtime-Database-Beschränkung keines dieser
 // Zeichen enthalten - sonst wirft db.ref(...) SOFORT (synchron) eine Ausnahme. Zentral
@@ -780,21 +801,26 @@ function removeTeamPhoto(teamId) {
 }
 document.addEventListener('DOMContentLoaded', () => {
   registerServiceWorker();
-  // Turnierliste + website-weite Identitäts-Registry/Sperren laufen immer mit
-  attachTournamentsMetaListener();
-  attachGlobalPlayersListener();
-  attachGlobalSettingsListener();
-  attachCustomEffectsListener();
-  migrateOldTournamentIfNeeded().then((migratedId) => {
-    if (migratedId) {
-      currentTournamentId = migratedId;
-      localStorage.setItem('fifa_current_tournament', migratedId);
-    }
-    if (myPlayerName) {
-      proceedAfterGlobalIdentity();
-    } else {
-      document.getElementById('global-identity-modal').style.display = 'flex';
-    }
+  // Erst anonym anmelden, DANACH die eigentliche App starten (siehe initFirebaseAuthThenApp()
+  // oben) - alle Firebase-Listener/-Zugriffe laufen deshalb innerhalb dieses Callbacks, nicht
+  // mehr direkt hier.
+  initFirebaseAuthThenApp(() => {
+    // Turnierliste + website-weite Identitäts-Registry/Sperren laufen immer mit
+    attachTournamentsMetaListener();
+    attachGlobalPlayersListener();
+    attachGlobalSettingsListener();
+    attachCustomEffectsListener();
+    migrateOldTournamentIfNeeded().then((migratedId) => {
+      if (migratedId) {
+        currentTournamentId = migratedId;
+        localStorage.setItem('fifa_current_tournament', migratedId);
+      }
+      if (myPlayerName) {
+        proceedAfterGlobalIdentity();
+      } else {
+        document.getElementById('global-identity-modal').style.display = 'flex';
+      }
+    });
   });
 });
 // Die Selbstheilung der Glücksräder (siehe renderDraftStep()/renderGroupDraftStep()) greift
