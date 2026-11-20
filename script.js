@@ -247,7 +247,7 @@ function initFirebaseAuthThenApp(startAppFn) {
 }
 // Das "God-Passwort" gilt website-weit für den Namen "tim" (siehe isGod()) - komplett
 // unabhängig von den einzelnen, pro Turnier selbst gewählten Admin-Passwörtern.
-const GOD_PASSWORD = "FalTurnier#2026!";
+const GOD_PASSWORD = "1234";
 // Firebase-Schlüssel (hier: ein Spielername, kleingeschrieben als Pfad-Segment unter
 // globalPlayers/...) dürfen laut offizieller Realtime-Database-Beschränkung keines dieser
 // Zeichen enthalten - sonst wirft db.ref(...) SOFORT (synchron) eine Ausnahme. Zentral
